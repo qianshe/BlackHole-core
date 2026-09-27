@@ -1,0 +1,15 @@
+src/**
+esbuild.mjs
+build-config.mjs
+tsconfig.json
+**/*.map
+node_modules/**
+*.log
+
+# Authentication tests and local secrets never belong in a VSIX
+test/**
+**/.dev.vars*
+**/.env*
+
+# Internal release evidence, not Marketplace product documentation
+docs/**

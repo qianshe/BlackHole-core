@@ -1,0 +1,10 @@
+BlackHole — Web Agent Bridge for VS Code
+Copyright 2026 qianshe and BlackHole contributors
+
+The source code under packages/vscode is licensed under the Apache License, Version 2.0, except for separately identified third-party components.
+
+This license does not apply to BlackHole cloud services, payment integrations, account/subscription backends, administrator services, deployment configuration, or other server-side components outside packages/vscode. Those components are not licensed by this file.
+
+The packaged extension may contain separately licensed third-party software and bundled runtime components. Their own license and notice files remain controlling for those components. Apache-2.0 does not replace or broaden those separate terms.
+
+See `THIRD_PARTY_NOTICES.md` for the current bundled-component inventory and attribution details.

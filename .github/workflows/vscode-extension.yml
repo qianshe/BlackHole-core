@@ -1,0 +1,195 @@
+name: Core Runtime CI
+
+on:
+  pull_request:
+    paths:
+      - 'packages/vscode/**'
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.json'
+      - '.github/workflows/vscode-extension.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/vscode/**'
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.json'
+      - '.github/workflows/vscode-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Skill discovery has its own complete native matrix; do not rely on the
+  # older pack/process jobs incidentally selecting some of its tests.
+  gate-skills:
+    name: Skills (${{ matrix.platform }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: win32, arch: x64 }
+          - { runner: windows-11-arm, platform: win32, arch: arm64 }
+          - { runner: ubuntu-latest, platform: linux, arch: x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+          - { runner: macos-15-intel, platform: darwin, arch: x64 }
+          - { runner: macos-latest, platform: darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      BH_REQUIRE_SKILL_SYMLINKS: '1'
+      BH_SKILL_EXPECT_PLATFORM: ${{ matrix.platform }}
+      BH_SKILL_EXPECT_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify native test runtime
+        run: node -e "if (process.platform !== process.env.BH_SKILL_EXPECT_PLATFORM || process.arch !== process.env.BH_SKILL_EXPECT_ARCH) process.exit(1); console.log(process.platform, process.arch, process.version)"
+      - name: Complete skill suite (real filesystem and MCP boundaries)
+        run: pnpm test:skills
+      - name: Guide response contracts
+        run: pnpm test:guide-workflows
+      - name: Prompt and discovery contracts
+        run: pnpm verify:prompts
+      - name: Extension types and settings consumers
+        run: pnpm --dir packages/vscode typecheck
+
+  # POSIX logic gate: contract stability + the whole proxy E2E (M1-M4: stdio/HTTP
+  # upstreams, POSIX process-group kill + orphan sweep, redaction, approvals,
+  # reload). Runs on GitHub's native Ubuntu runner; no Docker-based platform emulation is used.
+  gate-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Handoff storage, protocol and sidebar contracts
+        run: pnpm test:handoff
+      - name: Build
+        run: pnpm build
+      - name: Typecheck extension (no packaging)
+        run: pnpm --dir packages/vscode typecheck
+      - name: Cloudflared settings and daemon restart coordination (no downloads)
+        run: node --test --experimental-test-isolation=none packages/vscode/test/panel-lifecycle.test.mjs packages/vscode/test/daemon-restart.test.mjs packages/vscode/test/restart-recovery.test.mjs packages/vscode/test/daemon-manager-live.test.mjs packages/vscode/test/extension-polling.test.mjs packages/vscode/test/web-agents.test.mjs scripts/daemon-startup-race.test.mjs
+      - name: Account restoration and status projection (isolated credentials and daemon)
+        run: pnpm exec tsc -p packages/vscode/test/tsconfig.cloud-auth.json && node --test --experimental-test-isolation=none packages/vscode/test/cloud-auth.test.mjs packages/vscode/test/statusbar-copy.test.mjs && node scripts/entitlement-http-smoke.mjs
+      - name: MCP Apps presentation and quick terminal-state boundaries (no public tunnel)
+        run: node --test --experimental-test-isolation=none scripts/quick-show.test.mjs && node scripts/verify-tunnel-switch.mjs
+      - name: POSIX test gate (prompts + contract.hash + proxy E2E M1-M4)
+        run: pnpm test:posix
+
+  # Windows behavioral gate: everything linux runs PLUS the 54-check smoke suite
+  # (persistent pwsh, win32 ACL sandbox, env-path gates — Windows-gated by design;
+  # scripts/smoke.mjs refuses to run elsewhere). Windows Job Object child
+  # reaping lives in proxy-e2e M1 and is asserted HERE on real Windows.
+  gate-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Handoff storage, protocol and sidebar contracts
+        run: pnpm test:handoff
+      - name: Build
+        run: pnpm build
+      - name: Daemon upgrade/restart race regression
+        run: pnpm --dir packages/vscode typecheck && node --test --experimental-test-isolation=none packages/vscode/test/daemon-restart.test.mjs packages/vscode/test/restart-recovery.test.mjs packages/vscode/test/daemon-manager-live.test.mjs packages/vscode/test/extension-polling.test.mjs packages/vscode/test/web-agents.test.mjs scripts/daemon-startup-race.test.mjs
+      - name: Account restoration and status projection (isolated credentials and daemon)
+        run: pnpm exec tsc -p packages/vscode/test/tsconfig.cloud-auth.json && node --test --experimental-test-isolation=none packages/vscode/test/cloud-auth.test.mjs packages/vscode/test/statusbar-copy.test.mjs && node scripts/entitlement-http-smoke.mjs
+      - name: Core daemon discovery and execution (no VS Code or VSIX)
+        run: pnpm run test:execution:core
+      - name: Upload core execution diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-execution-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .cache/core-execution/*.json
+          if-no-files-found: warn
+      - name: Native Windows PATH execution contexts
+        run: node --test scripts/windows-path-context.test.mjs
+      - name: Native Windows PATH preflight
+        run: node --test --test-name-pattern "Windows exec and process repair a VS Code-style PATH without System32" scripts/process-native.test.mjs
+      - name: Full test gate (smoke 54 + prompts + contract + proxy E2E M1-M4)
+        shell: bash
+        run: pnpm test:pack
+      - name: Managed processes and exec compatibility
+        run: pnpm run test:process && pnpm run test:execution
+
+  gate-posix-sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Check both Mac CPU families and the newer Seatbelt runtime, not a mocked platform.
+        os: [ubuntu-22.04, macos-latest, macos-15-intel, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+      - name: Install Linux sandbox prerequisite
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Core daemon discovery and execution (no VS Code or VSIX)
+        run: pnpm run test:execution:core
+      - name: Upload core execution diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-execution-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .cache/core-execution/*.json
+          if-no-files-found: warn
+      - name: Native write-boundary gate (a missing runner is a failure)
+        env:
+          BH_REQUIRE_SANDBOX: '1'
+        run: node --test scripts/posix-sandbox.test.mjs scripts/posix-sandbox-integration.test.mjs
+      - name: Classify nested Seatbelt without running user code
+        if: runner.os == 'macOS'
+        run: node --test scripts/macos-seatbelt-nested.test.mjs
+      - name: Managed POSIX processes, exec contract and terminal projection
+        env:
+          BH_REQUIRE_SANDBOX: '1'
+        run: pnpm run test:process:posix

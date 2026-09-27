@@ -1,0 +1,37 @@
+node_modules/
+dist/
+.turbo/
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+logs/
+.DS_Store
+
+.tmp-debug*.sqlite*
+.zcode
+.serena
+tools/
+*.vsix
+*.log
+__pycache__/
+_temp
+.tmp
+.cache
+.workbuddy-ai/
+docs/Oauth
+
+# Root docs is the single documentation home. Only explicitly reviewed files are public.
+/docs/
+.agents
+
+# Private cloud configuration proposals must never be committed.
+/packages/cloud-api/.secrets.*.env
+/packages/cloud-api/.wrangler.env
+config/
+tasks/
+
+# Local plan/recovery artifacts only; other .blackhole configuration remains visible.
+/.blackhole/
+BlackHole_短片素材/

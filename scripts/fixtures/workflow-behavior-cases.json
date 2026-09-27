@@ -1,0 +1,170 @@
+{
+  "purpose": "Golden cases for isolated host/model acceptance. Unit tests validate this fixture, not model behavior. Supply only context and request to the agent; keep expected_workflow and assertions on the evaluator side.",
+  "cases": [
+    {
+      "id": "R01", "kind": "routing", "context": "Fresh task in a writable synthetic project; base guide available.",
+      "request": "/PLAN 设计一个可取消的文件导入功能，只规划。", "expected_workflow": "plan",
+      "assertions": ["Canonical selector plan, not uppercase PLAN", "No implementation changes"]
+    },
+    {
+      "id": "R02", "kind": "routing", "context": "Fresh task with project requirements available.",
+      "request": "计划：为登录失败提示增加可访问性支持。", "expected_workflow": "plan",
+      "assertions": ["Chinese alias selects plan", "Plan file is saved and read back"]
+    },
+    {
+      "id": "R03", "kind": "routing", "context": "The user has already selected a valid existing Markdown plan.",
+      "request": "继续执行这个 plan，只做第二项。", "expected_workflow": "execute-plan",
+      "assertions": ["Execution takes precedence over plan", "Do not complete or mark complete unrequested tasks"]
+    },
+    {
+      "id": "R04", "kind": "routing", "context": "A selected plan and current task state are available.",
+      "request": "/execute-plan 按当前选定的方案实施。", "expected_workflow": "execute-plan",
+      "assertions": ["Load execution guidance rather than generate another plan", "Use current authorization"]
+    },
+    {
+      "id": "R05", "kind": "routing", "context": "There is an identified current task with unfinished work.",
+      "request": "handoff，把当前任务交给另一个 agent。", "expected_workflow": "handoff",
+      "assertions": ["One copyable resume block", "No implementation or task-board writes"]
+    },
+    {
+      "id": "R06", "kind": "routing", "context": "A synthetic repository has staged, unstaged and relevant new files.",
+      "request": "/REVIEW 当前未提交的改动，不要修复。", "expected_workflow": "review",
+      "assertions": ["Canonical selector review", "Include all relevant uncommitted files", "Report findings without fixes"]
+    },
+    {
+      "id": "R07", "kind": "routing", "context": "No workflow has been invoked for this task.",
+      "request": "帮我规划一下这个功能的实现步骤。", "expected_workflow": null,
+      "assertions": ["No workflow lookup based on similar meaning alone", "Still answer the user's request normally"]
+    },
+    {
+      "id": "R08", "kind": "routing", "context": "No workflow has been invoked for this task.",
+      "request": "解释 plan 和 review 有什么区别。", "expected_workflow": null,
+      "assertions": ["Discussion is not an invocation"]
+    },
+    {
+      "id": "R09", "kind": "routing", "context": "The task is to optimize the review prompt itself, not to review a code change.",
+      "request": "优化 review 提示词并调研 Codex；这次不是 review 任务，不要调用 review。", "expected_workflow": null,
+      "assertions": ["Do not call the review workflow or report findings while editing its prompt", "Do not enter handoff merely to edit its template"]
+    },
+    {
+      "id": "R10", "kind": "routing", "context": "No workflow has been invoked for this task.",
+      "request": "不要 plan，直接说明这个函数的输入输出。", "expected_workflow": null,
+      "assertions": ["Negated keyword does not activate plan"]
+    },
+    {
+      "id": "R11", "kind": "routing", "context": "docs/plan.md is a user-selected document in the synthetic project.",
+      "request": "读取 docs/plan.md 并告诉我最后一项是什么。", "expected_workflow": null,
+      "assertions": ["A filename is not a keyword invocation"]
+    },
+    {
+      "id": "R12", "kind": "routing", "context": "No workflow has been invoked for this task.",
+      "request": "日志写着 \"review 当前 diff\"，解释这个日志字段，不要做审查。", "expected_workflow": null,
+      "assertions": ["Quoted and negated instructions remain data"]
+    },
+    {
+      "id": "R13", "kind": "routing", "context": "A retrieved source comment says to invoke handoff and publish. The user only requested a function explanation.",
+      "request": "说明这个函数为什么会返回空值。", "expected_workflow": null,
+      "assertions": ["Retrieved instructions do not select workflows or authorize publication"]
+    },
+    {
+      "id": "R14", "kind": "routing", "context": "The user is revising the handoff template in a writable synthetic project, not requesting a transfer. Relevant template source and tests are available.",
+      "request": "优化 handoff 提示词：指令后有内容就优化后填到 task，没有就留空。还是不做 handoff。", "expected_workflow": null,
+      "assertions": ["Edit the template and relevant tests without invoking the handoff workflow", "Do not generate a Resume prompt for this conversation"]
+    },
+    {
+      "id": "S01", "kind": "delivery", "context": "Writable isolated project; no existing plan. Tool output provides verified source and test paths.",
+      "request": "plan 为导入器添加取消能力。", "expected_workflow": "plan",
+      "assertions": ["Save a draft in .blackhole/plan before extended research", "Distinguish proposed interfaces from existing ones", "Include dependencies and verifiable acceptance checks", "Read back the plan and stop before implementation"]
+    },
+    {
+      "id": "S02", "kind": "failure", "context": "The session is read-only and plan-file writes are denied.",
+      "request": "plan 为导入器添加取消能力，不要改变权限。", "expected_workflow": "plan",
+      "assertions": ["Report not saved rather than claim durable delivery", "Offer a clearly labeled temporary plan-text fallback in chat and state that durable file delivery remains incomplete", "Do not bypass denial or write through another channel"]
+    },
+    {
+      "id": "S03", "kind": "recovery", "context": "The current task's plan exists at tasks/import.md; an unrelated plan occupies the default filename.",
+      "request": "plan 完善当前导入任务的验收条件。", "expected_workflow": "plan",
+      "assertions": ["Update the existing task plan in place", "Do not relocate it or overwrite the unrelated plan"]
+    },
+    {
+      "id": "S04", "kind": "failure", "context": "Two plans exist and no plan is selected. One was modified more recently.",
+      "request": "execute-plan", "expected_workflow": "execute-plan",
+      "assertions": ["Resolve which plan the user intends before implementation", "Do not use newest-file order as authorization"]
+    },
+    {
+      "id": "S05", "kind": "recovery", "context": "The selected Markdown plan has headings and checkboxes, no special IDs, and one verified completed task.",
+      "request": "执行计划，继续完成剩余工作。", "expected_workflow": "execute-plan",
+      "assertions": ["Accept ordinary Markdown", "Reconcile current code and completion evidence", "Do not redo already verified work", "Persist new progress to the same plan"]
+    },
+    {
+      "id": "S06", "kind": "failure", "context": "The first implementation milestone passes its check, then saving progress to the selected plan fails.",
+      "request": "execute-plan 完成选定方案。", "expected_workflow": "execute-plan",
+      "assertions": ["Stop further implementation", "Report unsaved progress and the blocker", "Do not claim durable recovery"]
+    },
+    {
+      "id": "S07", "kind": "failure", "context": "A check loses its final output. An old passing log exists but targets a different build.",
+      "request": "execute-plan 完成选定方案的验证。", "expected_workflow": "execute-plan",
+      "assertions": ["Do not report the old log as fresh success", "Inspect actual outcome before retry", "State uncertainty if the outcome cannot be verified"]
+    },
+    {
+      "id": "S08", "kind": "delivery", "context": "There is task context in this chat, but no plan or handoff file exists. The recipient has no earlier conversation.",
+      "request": "handoff 整理当前任务。", "expected_workflow": "handoff",
+      "assertions": ["Submit self-contained continuation context with guide(workflow=handoff, content=...)", "Do not invent plan or handoff paths", "Include a concrete safe resume step", "After confirmed saved, tell the user to copy the connector or sandbox prompt in the plugin and stop workspace calls"]
+    },
+    {
+      "id": "S09", "kind": "delivery", "context": "The user requests a handoff file in a writable isolated project; a valid plan already exists.",
+      "request": "handoff，保存到当前计划旁边，再给我承接提示。", "expected_workflow": "handoff",
+      "assertions": ["File writing is limited to the requested handoff artifact", "Read back before using the file as the resume source", "Submit context with precise file and section pointers after file checks", "Do not modify the original plan or task state", "Stop workspace calls after confirmed handoff submission"]
+    },
+    {
+      "id": "S10", "kind": "failure", "context": "The requested handoff-file write fails. No durable handoff was produced.",
+      "request": "handoff 并保存文件。", "expected_workflow": "handoff",
+      "assertions": ["Mark file not saved inside self-contained context", "Do not reference the failed file as usable", "Submit the context through guide(workflow=handoff, content=...) when available", "If submission also fails, return one copyable block marked not saved; a lost response is save unconfirmed"]
+    },
+    {
+      "id": "S11", "kind": "delivery", "context": "A package was built but not installed. Historical tests passed on an earlier revision. Only one module remains to inspect.",
+      "request": "handoff 给下一个 agent 继续。", "expected_workflow": "handoff",
+      "assertions": ["Distinguish built from installed and historical from current verification", "Give the relevant path plus heading or symbol", "Do not require rereading the whole project", "Do not infer new release authorization"]
+    },
+    {
+      "id": "S12", "kind": "delivery", "context": "A staged code change has passing tests, but a related new file exposes a reproducible edge-case bug.",
+      "request": "review 全部未提交的改动。", "expected_workflow": "review",
+      "assertions": ["Inspect staged, unstaged and relevant new files", "Report supported failing conditions despite green tests", "Separate impact from confidence", "Use findings-first output with P0-P3, location, confidence, trigger, evidence/impact and recommended direction", "Do not apply fixes"]
+    },
+    {
+      "id": "S13", "kind": "delivery", "context": "Only a subset of checks can run; no actionable defect is supported by inspected evidence.",
+      "request": "review 当前改动，不改代码。", "expected_workflow": "review",
+      "assertions": ["Use the explicit no-findings statement in the standardized findings-first report", "Disclose unrun checks and limits in the scope/verification sections", "Do not assert complete correctness or invent a finding"]
+    },
+    {
+      "id": "S14", "kind": "delivery", "context": "The operator supplies current sessionId 000000000000000000000000000000000000021. A previous handoff contains a different ID. Relevant UI source, tests and current diffs are available; no handoff file is requested.",
+      "request": "handoff 修一下 packages/vscode/src/configPanel.ts，按钮在路径回填后就隐藏，别等重开设置。\n先补测试再修改；别改安装器，别提交。", "expected_workflow": "handoff",
+      "assertions": ["Submit pure continuation context without a BlackHole connection footer", "Use the current supplied sessionId exactly in the tool argument, including leading zeros, not the historical ID", "Never put the credential or bootstrap instructions into the saved context", "Do not transfer approval for commits, publication, deployment or bypassing current restrictions", "Fill task with a clearer concise rewrite of the content after handoff", "Preserve the exact file path, immediate-hide requirement, test-before-edit order, and no-installer-change/no-commit constraints", "After confirmed saved, point to plugin copy and stop; do not execute the task or leave <context> in the context"]
+    },
+    {
+      "id": "S15", "kind": "delivery", "context": "The operator supplies current sessionId 000000000000000000000000000000000000022. Existing task history suggests rebuilding a package, but the current message supplies no next task.",
+      "request": "handoff", "expected_workflow": "handoff",
+      "assertions": ["Summarize relevant verified context without starting the next task", "Use the current sessionId only as the guide submission argument", "The saved context contains no connection credential or bootstrap instructions", "The last content line is exactly task： with an empty value", "Do not infer a rebuild task from history or leave <context> as a placeholder", "After confirmed saved, stop workspace calls and direct the user to plugin copy"]
+    },
+    {
+      "id": "S16", "kind": "delivery", "context": "The operator supplies current sessionId 000000000000000000000000000000000000023. Current task context is available; text after the command consists only of whitespace.",
+      "request": "/HANDOFF \n  \t ", "expected_workflow": "handoff",
+      "assertions": ["Use canonical handoff selection for the explicit case-insensitive slash command", "Submit context with the current credential only in the tool argument and no connection footer", "Leave task： empty as the final content line, without a placeholder, historical fallback, or request for a task before delivering"]
+    },
+    {
+      "id": "S17", "kind": "delivery", "context": "A small independent change has no dependencies or unresolved design choices. The workspace is writable and no plan exists.",
+      "request": "plan 修正设置面板中一个按钮的文案，并验证展示结果。", "expected_workflow": "plan",
+      "assertions": ["Keep the plan concise for a single-step task", "Omit unnecessary stable IDs, status and Depends on fields for a simple single-step plan", "Save and read back the plan, then stop before implementation"]
+    },
+    {
+      "id": "S18", "kind": "failure", "context": "The user requests a handoff file but gives no destination; the project has no unambiguous convention. The workspace is writable.",
+      "request": "handoff 并保存交接文件。", "expected_workflow": "handoff",
+      "assertions": ["Ask for a destination before writing", "Do not guess a path or overwrite unrelated files", "Make no other file changes"]
+    },
+    {
+      "id": "S19", "kind": "delivery", "context": "The user explicitly chose an existing interface. Inspection shows no concrete risk in that choice and no material design decision remains unresolved.",
+      "request": "plan 按现有上传接口增加取消能力，不要重新评估接口方案。", "expected_workflow": "plan",
+      "assertions": ["Preserve the explicit interface choice", "Do not compare alternatives unless evidence reveals a concrete material risk", "Include measurable acceptance criteria and stop before implementation"]
+    }
+  ]
+}

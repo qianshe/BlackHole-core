@@ -1,0 +1,338 @@
+{
+  "name": "blackhole-vscode",
+  "displayName": "BlackHole",
+  "description": "Connect Web Agents to your local workspace, shell and MCP tools with explicit execution boundaries.",
+  "version": "0.3.181",
+  "private": true,
+  "publisher": "qianshe",
+  "icon": "media/icon.png",
+  "pricing": "Trial",
+  "keywords": [
+    "web agent",
+    "ai agent",
+    "mcp",
+    "model context protocol",
+    "coding agent",
+    "workspace",
+    "context search",
+    "developer tools"
+  ],
+  "galleryBanner": {
+    "color": "#07090f",
+    "theme": "dark"
+  },
+  "homepage": "https://blackhole.stellarbridge.dpdns.org/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qianshe/BlackHole-core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qianshe/BlackHole-core/issues"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "scripts": {
+    "build": "pnpm run build:test",
+    "build:test": "node esbuild.mjs --environment test && node ../../scripts/check-webview.mjs && node ../../scripts/proxy-sync-unit.mjs",
+    "build:production": "node esbuild.mjs --environment production && node ../../scripts/check-webview.mjs ../../.tmp/webview-check/extension.js && node ../../scripts/proxy-sync-unit.mjs",
+    "watch": "pnpm run watch:test",
+    "watch:test": "node esbuild.mjs --watch --environment test",
+    "watch:production": "node esbuild.mjs --watch --environment production",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "pnpm run package:test",
+    "package:test": "node ../../scripts/package-vsix.mjs --environment test",
+    "package:production": "node ../../scripts/package-vsix.mjs --environment production",
+    "vscode:prepublish": "node esbuild.mjs --environment production && node ../../scripts/check-webview.mjs && node ../../scripts/proxy-sync-unit.mjs",
+    "test:cloud-auth": "node test/prepare-cloud-auth.mjs && node --test --experimental-test-isolation=none test/cloud-auth.test.mjs"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "BlackHole",
+      "properties": {
+        "blackhole.port": {
+          "type": "number",
+          "default": 7306,
+          "description": "Port the local BlackHole daemon listens on (127.0.0.1 only)."
+        },
+        "blackhole.cloudflaredPath": {
+          "type": "string",
+          "default": "",
+          "description": "Full path to a cloudflared executable. Leave empty, then use the Cloudflare card's explicit one-click initialization to detect PATH or install the pinned build and fill this field. BlackHole does not bundle or silently download cloudflared, and installation never starts a public channel. Setup: https://blackhole.stellarbridge.dpdns.org/#channels"
+        },
+        "blackhole.channelMode": {
+          "type": "string",
+          "enum": [
+            "cloudflare",
+            "openai",
+            "custom"
+          ],
+          "default": "cloudflare",
+          "description": "Default channel tab and connection info. cloudflare = BlackHole manages cloudflared; openai = OpenAI Secure MCP Tunnel (tunnel-client runtime, outbound only); custom = you expose the local daemon yourself and BlackHole only uses publicBaseUrl to generate the MCP URL. Tabs do not switch channels on or off; each channel has its own start/stop."
+        },
+        "blackhole.openaiTunnelClientPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the OpenAI tunnel-client runtime (plain runtime flavor, not runtime-cloudflared). Empty = look on PATH, then the managed install under ~/.blackhole/bin/tunnel-client-runtime installed by the settings page."
+        },
+        "blackhole.openaiTunnelId": {
+          "type": "string",
+          "default": "",
+          "description": "Tunnel ID from OpenAI Platform tunnel settings. Not a URL and not a secret; the Runtime API key is stored in the OS keychain, never in settings."
+        },
+        "blackhole.gitUsrBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Directory holding Git's GNU tools (grep/sed/awk/find) — the usr/bin folder of a Git for Windows install. Prepended to BlackHole exec/process PATH; it does not switch the selected shell to Bash. Empty = leave PATH untouched."
+        },
+        "blackhole.publicBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Public HTTPS base URL. In Cloudflare mode this is the fixed URL of the named tunnel; in custom mode this is the public address you maintain yourself. BlackHole appends the MCP path and token automatically."
+        },
+        "blackhole.namedTunnelName": {
+          "type": "string",
+          "default": "blackhole",
+          "description": "Name of the cloudflared named tunnel the 持久 channel runs (cloudflared tunnel run <name>)."
+        },
+        "blackhole.tunnelProbeProxy": {
+          "type": "string",
+          "default": "",
+          "description": "Public connectivity check proxy (troubleshooting only). Normally leave this empty. If BlackHole says the temporary public address is online but this computer cannot verify it, and you use Clash, mihomo, or another local proxy, enter that proxy's local HTTP address here (for example http://127.0.0.1:7897). This setting is used only for the connectivity check and does not change BlackHole's other network traffic."
+        },
+        "blackhole.connectorName": {
+          "type": "string",
+          "default": "",
+          "description": "Custom connector name interpolated into the copied connector prompt template (the @mention). Useful when several people share one web-agent account: each user names their own connector. Empty = BlackHole."
+        },
+        "blackhole.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 250,
+          "description": "How often to poll the daemon while the window is focused (backs off when unfocused)."
+        },
+        "blackhole.skillsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom Skill library. Empty uses ~/.agents/skills in the daemon user's home. Project and selected user-library skills are merged; same-name project folders take precedence. A custom path replaces only the user default, even when missing. Each skill folder contains SKILL.md. Automatic/project discovery requires a valid session; only the explicit library retains keyless read access. Relative paths use the daemon launch directory; prefer an absolute path or ~/. Changing this setting requires a daemon restart."
+        },
+        "blackhole.customWebAgents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "url"
+            ]
+          },
+          "default": [],
+          "description": "Custom Web AI agents added on the settings page; always shown in the globe picker in addition to the checked predefined ones."
+        },
+        "blackhole.semanticMode": {
+          "type": "string",
+          "enum": [
+            "explicit",
+            "off",
+            "auto"
+          ],
+          "default": "explicit",
+          "markdownEnumDescriptions": [
+            "注册语义搜索工具 `context_search`（仅当已显式提供 Devin/Windsurf key 时）。",
+            "彻底关闭：不探测凭据、不注册工具。",
+            "额外允许读取本机已登录的 Devin/Windsurf 凭据。注意：一次搜索会把工作区的文件路径与代码片段发送到第三方搜索服务，并消耗该账号配额——仅在明确知情后开启。"
+          ],
+          "description": "语义搜索工具 context_search 的凭据策略。key 本身由 daemon 存于 ~/.blackhole/semantic-key（0600），不写进设置文件。修改后需重启 daemon。"
+        },
+        "blackhole.webAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "ChatGPT",
+            "WorkBuddy",
+            "Manus",
+            "Trae CN",
+            "Trae AI",
+            "Arena"
+          ],
+          "description": "Predefined Web AI Agents shown in the globe picker. Managed by the checkboxes on the settings page; unchecked agents are hidden (typed URLs still work)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "blackhole.createSession",
+        "title": "Create Session",
+        "category": "BlackHole",
+        "icon": "$(add)"
+      },
+      {
+        "command": "blackhole.refreshSessions",
+        "title": "Refresh",
+        "category": "BlackHole",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "blackhole.openSession",
+        "title": "Open Session",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.openSettings",
+        "title": "Settings",
+        "category": "BlackHole",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "blackhole.showProcesses",
+        "title": "显示后台进程",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.stopProcess",
+        "title": "停止后台进程",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.stopAndCloseProcess",
+        "title": "停止并关闭后台进程",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.pauseSession",
+        "title": "Pause",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.resumeSession",
+        "title": "Resume",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.revokeSession",
+        "title": "Revoke",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.rotateSession",
+        "title": "Rotate URL",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.copySessionUrl",
+        "title": "Copy MCP URL",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.stopDaemon",
+        "title": "Stop Daemon",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.restartDaemon",
+        "title": "Restart Daemon",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.openWebAgent",
+        "title": "Open Web Agent",
+        "category": "BlackHole",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "blackhole.openLocalWeb",
+        "title": "打开本地 Web",
+        "category": "BlackHole",
+        "icon": "$(browser)"
+      },
+      {
+        "command": "blackhole.accountSignIn",
+        "title": "账号：登录",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountBuyCard",
+        "title": "订阅：购买时长",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountOrders",
+        "title": "订阅：购买记录与领卡",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountRefund",
+        "title": "订阅：申请支付宝退款",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountRedeemCard",
+        "title": "订阅：兑换订阅卡",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountSignOut",
+        "title": "账号：退出登录",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.accountStatus",
+        "title": "账号：检查登录状态",
+        "category": "BlackHole"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "blackhole",
+          "title": "BlackHole",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "blackhole": [
+        {
+          "type": "webview",
+          "id": "blackhole.sidebar",
+          "name": "BlackHole"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "blackhole.openLocalWeb",
+          "when": "view == blackhole.sidebar",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.1.0",
+    "esbuild": "^0.25.0",
+    "javascript-obfuscator": "4.1.1",
+    "qrcode-generator": "1.4.4",
+    "typescript": "^5.7.2"
+  }
+}

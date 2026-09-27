@@ -1,0 +1,12 @@
+{
+  "name": "@blackhole/host-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Short-lived bootstrap run by the desktop launcher: attach to or start the local daemon, then open the signed-in local Web UI. Bundled to dist/bootstrap.cjs.",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node build.mjs && node --test --experimental-test-isolation=none \"test/*.test.mjs\""
+  }
+}

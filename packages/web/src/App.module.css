@@ -1,0 +1,45 @@
+.center {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--sp-6);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: min(440px, 100%);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+}
+
+.cardText {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.cardHint {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-md);
+}

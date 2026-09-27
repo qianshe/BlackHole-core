@@ -1,0 +1,119 @@
+name: Desktop launcher CI
+
+on:
+  pull_request:
+    paths:
+      - 'packages/desktop-launcher/**'
+      - 'packages/host-runtime/**'
+      - 'packages/contracts/**'
+      - 'src/**'
+      - 'scripts/fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/launcher-native.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/desktop-launcher/**'
+      - 'packages/host-runtime/**'
+      - 'packages/contracts/**'
+      - 'src/**'
+      - 'scripts/fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/launcher-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Go format/vet/test on every OS the launcher ships to, plus the bootstrap
+  # against an isolated daemon (never port 7306 or a real ~/.blackhole).
+  # Dev artifacts only: no signing, no release secrets.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: packages/desktop-launcher/go.sum
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: WebKitGTK (Linux app window, cgo)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          # webview_go asks pkg-config for webkit2gtk-4.0; link the 4.1 ABI current distros ship.
+          mkdir -p "$RUNNER_TEMP/pc" && printf 'Name: webkit2gtk-4.0\nDescription: shim\nVersion: 2.40\nRequires: webkit2gtk-4.1\n' > "$RUNNER_TEMP/pc/webkit2gtk-4.0.pc"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pc" >> "$GITHUB_ENV"
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l packages/desktop-launcher)"
+      - name: go vet
+        run: go -C packages/desktop-launcher vet ./...
+      - name: go test
+        run: go -C packages/desktop-launcher test ./...
+      - name: Build daemon
+        run: pnpm build
+      - name: Bootstrap against an isolated daemon
+        run: pnpm test:host-runtime
+
+  build:
+    needs: test
+    # Windows is pure Go (WebView2 + tray). macOS (WKWebView, tray) and Linux
+    # (WebKitGTK window) need cgo, so they build natively on their own runners.
+    runs-on: ${{ matrix.target.runner }}
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: ${{ matrix.target.cgo }}
+    strategy:
+      matrix:
+        target:
+          - { goos: windows, goarch: amd64, ext: .exe, ldflags: '-H windowsgui -s -w', runner: ubuntu-latest, cgo: '0' }
+          - { goos: windows, goarch: arm64, ext: .exe, ldflags: '-H windowsgui -s -w', runner: ubuntu-latest, cgo: '0' }
+          - { goos: darwin, goarch: amd64, ext: '', ldflags: '-s -w', runner: macos-latest, cgo: '1' }
+          - { goos: darwin, goarch: arm64, ext: '', ldflags: '-s -w', runner: macos-latest, cgo: '1' }
+          # Linux app window uses WebKitGTK via cgo: build natively per arch.
+          - { goos: linux, goarch: amd64, ext: '', ldflags: '-s -w', runner: ubuntu-latest, cgo: '1' }
+          - { goos: linux, goarch: arm64, ext: '', ldflags: '-s -w', runner: ubuntu-24.04-arm, cgo: '1' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: packages/desktop-launcher/go.sum
+      - name: WebKitGTK
+        if: matrix.target.goos == 'linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          # webview_go asks pkg-config for webkit2gtk-4.0; link the 4.1 ABI current distros ship.
+          mkdir -p "$RUNNER_TEMP/pc" && printf 'Name: webkit2gtk-4.0\nDescription: shim\nVersion: 2.40\nRequires: webkit2gtk-4.1\n' > "$RUNNER_TEMP/pc/webkit2gtk-4.0.pc"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pc" >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+        run: |
+          out="launcher/${GOOS}-${GOARCH}"
+          go -C packages/desktop-launcher build -trimpath -ldflags="${{ matrix.target.ldflags }}" -o "../../${out}/blackhole${{ matrix.target.ext }}" ./cmd/blackhole
+          ( cd "$out" && shasum -a 256 blackhole* > SHA256SUMS && printf 'commit=%s\ngo=%s\ntarget=%s/%s\nprotocol=1\n' "$GITHUB_SHA" "$(go version)" "$GOOS" "$GOARCH" > BUILDINFO )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blackhole-launcher-dev-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: launcher/
+          retention-days: 7

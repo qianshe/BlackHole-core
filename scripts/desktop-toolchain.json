@@ -1,0 +1,49 @@
+{
+  "$comment": "Toolchain and dependency baseline for the unified Web / desktop launcher plan (.blackhole/plan/unified-web-launcher.md, T0). Observed 2026-09-26 on the Windows x64 dev machine. 'planned' dependencies are not installed yet; lock exact versions when the owning task adds them and re-check licenses/advisories then.",
+  "observedAt": "2026-09-26",
+  "go": {
+    "dev": "1.26.1",
+    "releaseMinimum": "1.26.8",
+    "env": { "GOTOOLCHAIN": "local", "CGO_ENABLED": "0" },
+    "verified": "vet, test, -H windowsgui build, run, cross-build windows/darwin/linux x amd64/arm64 without runtime/cgo"
+  },
+  "node": {
+    "devMachine": "22.20.0",
+    "target": "24 LTS",
+    "gate": "dev machine upgrades to Node 24 LTS before T2 starts; T0/T1 must not use Node-24-only APIs",
+    "vscodeElectron": { "vscode": "1.139.1", "electron": "43.6.0", "node": "24.20.0", "modules": "148", "napi": "10" }
+  },
+  "pnpm": "10.0.0",
+  "workspace": {
+    "@blackhole/contracts": { "zod": "3.25.76" }
+  },
+  "planned": {
+    "react": { "version": "19.3.0", "license": "MIT", "task": "T3" },
+    "react-dom": { "version": "19.3.0", "license": "MIT", "task": "T3" },
+    "react-router": { "version": "8.4.0", "license": "MIT", "node": ">=22.22.0", "task": "T3" },
+    "vite": { "version": "8.3.1", "license": "MIT", "node": "^20.19.0 || >=22.12.0", "task": "T3" },
+    "@vitejs/plugin-react": { "version": "6.1.1", "license": "MIT", "task": "T3" },
+    "vitest": { "version": "5.0.2", "license": "MIT", "node": "^22.12.0 || ^24.0.0 || >=26.0.0", "task": "T3" },
+    "@testing-library/react": { "version": "16.3.3", "license": "MIT", "task": "T3" },
+    "@playwright/test": { "version": "1.63.0", "license": "Apache-2.0", "task": "T3" },
+    "qrcode": { "version": "1.5.4", "license": "MIT", "task": "T5" },
+    "@napi-rs/keyring": {
+      "version": "2.1.0",
+      "license": "MIT",
+      "task": "T2A",
+      "prebuiltTargets": ["win32-x64-msvc", "win32-arm64-msvc", "darwin-x64", "darwin-arm64", "linux-x64-gnu", "linux-arm64-gnu"]
+    }
+  },
+  "targets": {
+    "win32-x64": { "localMachine": true, "ciRunner": "windows-latest" },
+    "win32-arm64": { "localMachine": false, "ciRunner": "windows-11-arm" },
+    "darwin-x64": { "localMachine": false, "ciRunner": "macos-15-intel" },
+    "darwin-arm64": { "localMachine": false, "ciRunner": "macos-latest" },
+    "linux-x64": { "localMachine": false, "ciRunner": "ubuntu-latest" },
+    "linux-arm64": { "localMachine": false, "ciRunner": "ubuntu-24.04-arm" }
+  },
+  "signing": {
+    "windows": "unknown - not verified; release blocker until provided",
+    "macos": "unknown - Developer ID and notarization credentials not verified; release blocker until provided"
+  }
+}

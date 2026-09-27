@@ -1,0 +1,237 @@
+import { useState } from 'react';
+import type { AccountView, ProjectView, SessionView } from '../api';
+import { groupSessions, relativeTime, sessionTitle, sessionTone, SESSION_STATUS_LABEL } from '../format';
+import { Icon } from '../ui';
+import { useMenu } from './common';
+import c from './console.module.css';
+
+export interface ChannelSummary {
+  text: string;
+  ok: boolean;
+}
+
+interface Props {
+  sessions: SessionView[];
+  projects: ProjectView[];
+  /** session id → pending approvals */
+  pending: Map<string, number>;
+  current: string | null;
+  view: 'session' | 'channels';
+  channel: ChannelSummary;
+  account: AccountView | null;
+  now: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  onSelect: (id: string) => void;
+  onNew: (path?: string) => void;
+  onSearch: () => void;
+  onChannels: () => void;
+  onAddProject: () => void;
+  onRenameProject: (p: ProjectView) => void;
+  onPinProject: (p: ProjectView) => void;
+  onRemoveProject: (p: ProjectView) => void;
+  onAccount: (action: 'buy' | 'orders' | 'settings' | 'signout') => void;
+}
+
+function SessionItem({ x, current, pending, now, onSelect }: { x: SessionView; current: boolean; pending: number; now: number; onSelect: () => void }) {
+  const running = x.status === 'active' && x.activity === 'running';
+  const tone = pending ? 'warn' : sessionTone(x.status, running);
+  const state = pending ? `${pending} 待审批` : running ? '运行中' : SESSION_STATUS_LABEL[x.status] ?? x.status;
+  return (
+    <li>
+      <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} · ${state}`}>
+        <span className={c[`dot_${tone}`]} aria-hidden="true" />
+        <span className={c.rowLabel}>{sessionTitle(x)}</span>
+        {pending ? <span className={c.rowMetaWarn}>{pending} 待审批</span> : <span className={c.rowMeta}>{running ? '运行中' : relativeTime(x.last_active_at ?? x.created_at, now)}</span>}
+      </button>
+    </li>
+  );
+}
+
+function ProjectMenu({ p, onNew, onRename, onPin, onRemove }: { p: ProjectView; onNew: () => void; onRename: () => void; onPin: () => void; onRemove: () => void }) {
+  const m = useMenu();
+  const pick = (fn: () => void) => () => {
+    m.close();
+    fn();
+  };
+  return (
+    <div ref={m.wrapRef} onKeyDown={m.onKeyDown}>
+      <button type="button" className={c.more} aria-label={`${p.label} 更多操作`} aria-haspopup="menu" aria-expanded={m.open} onClick={m.toggle}>
+        <Icon name="more" size={14} />
+      </button>
+      {m.open && (
+        <div className={c.menu} role="menu" style={{ right: 4, top: 36 }}>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick(onNew)}>
+            在此新建会话
+          </button>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick(onRename)} disabled={!p.saved}>
+            重命名
+          </button>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick(onPin)}>
+            {p.pinned ? '取消置顶' : '置顶'}
+          </button>
+          <div className={c.menuSep} />
+          <button type="button" role="menuitem" className={c.menuDanger} onClick={pick(onRemove)} disabled={!p.saved}>
+            从列表移除
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function accountLine(a: AccountView | null): { name: string; sub: string; tone: '' | 'warn' | 'bad' } {
+  if (!a || a.state === 'logged_out') return { name: '未登录', sub: '登录后使用', tone: 'warn' };
+  const name = a.account?.name || a.account?.email || '账号';
+  if (a.state === 'unavailable') return { name, sub: '登录已失效', tone: 'bad' };
+  const left = a.remainingSeconds ?? 0;
+  if (left <= 0) return { name, sub: '订阅已到期', tone: 'bad' };
+  const days = Math.floor(left / 86400);
+  const sub = days >= 1 ? `剩余 ${days} 天` : `剩余 ${Math.max(1, Math.floor(left / 3600))} 小时`;
+  return { name, sub, tone: left < 3 * 86400 ? 'warn' : '' };
+}
+
+function AccountButton({ account, onAction }: { account: AccountView | null; onAction: Props['onAccount'] }) {
+  const m = useMenu();
+  const a = accountLine(account);
+  const pick = (k: Parameters<Props['onAccount']>[0]) => () => {
+    m.close();
+    onAction(k);
+  };
+  const signedIn = !!account && account.state !== 'logged_out';
+  return (
+    <div className={c.sideBottom} ref={m.wrapRef} onKeyDown={m.onKeyDown}>
+      <button type="button" className={c.accountBtn} aria-haspopup="menu" aria-expanded={m.open} onClick={m.toggle} title={`${a.name} · ${a.sub}`}>
+        <span className={c.avatar} aria-hidden="true">
+          {a.name.slice(0, 1).toUpperCase()}
+        </span>
+        <span className={c.accountMain}>
+          <span className={c.accountName}>{a.name}</span>
+          <span className={a.tone === 'bad' ? c.accountSubBad : a.tone === 'warn' ? c.accountSubWarn : c.accountSub}>{a.sub}</span>
+        </span>
+        <span className={c.accountMore}>
+          <Icon name="more" size={14} />
+        </span>
+      </button>
+      {m.open && (
+        <div className={c.accountMenu} role="menu">
+          <div className={c.menuHead}>
+            <div className={c.menuTitle}>{a.name}</div>
+            <div className={c.menuMeta}>
+              {account?.account?.email ? `${account.account.email} · ` : ''}
+              {a.sub}
+            </div>
+          </div>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick('buy')} disabled={!signedIn}>
+            购买时长 <Icon name="card" size={14} />
+          </button>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick('orders')} disabled={!signedIn}>
+            购买记录 <Icon name="receipt" size={14} />
+          </button>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick('settings')}>
+            设置 <Icon name="gear" size={14} />
+          </button>
+          <div className={c.menuSep} />
+          <button type="button" role="menuitem" className={c.menuDanger} onClick={pick('signout')} disabled={!signedIn}>
+            退出登录 <Icon name="logout" size={14} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Sidebar(p: Props) {
+  const [closed, setClosed] = useState<Set<string>>(() => new Set());
+  const { groups, recent, loose } = groupSessions(p.projects, p.sessions);
+  const toggleGroup = (id: string): void =>
+    setClosed((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const item = (x: SessionView) => <SessionItem key={x.id} x={x} current={p.view === 'session' && p.current === x.id} pending={p.pending.get(x.id) ?? 0} now={p.now} onSelect={() => p.onSelect(x.id)} />;
+
+  return (
+    <aside className={c.sidebar} aria-label="导航">
+      <div className={c.sideTop}>
+        <span className={c.brand} aria-hidden="true">
+          BH
+        </span>
+        <span className={c.brandName}>BlackHole</span>
+        <button type="button" className={c.collapse} aria-label={p.collapsed ? '展开侧栏' : '收起侧栏'} aria-expanded={!p.collapsed} onClick={p.onToggle}>
+          <Icon name="sidebar" />
+        </button>
+      </div>
+
+      <button type="button" className={c.primaryNav} onClick={() => p.onNew()} title="新建会话">
+        <span className={c.navIcon}>
+          <Icon name="plus" />
+        </span>
+        <span className={c.navLabel}>新建会话</span>
+      </button>
+      <button type="button" className={c.navBtn} onClick={p.onSearch} title="搜索 (Ctrl+K)">
+        <span className={c.navIcon}>
+          <Icon name="search" />
+        </span>
+        <span className={c.navLabel}>搜索</span>
+        <span className={c.kbd}>Ctrl K</span>
+      </button>
+      <button type="button" className={c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
+        <span className={c.navIcon}>
+          <Icon name="globe" />
+        </span>
+        <span className={c.navLabel}>公网渠道</span>
+        <span className={p.channel.ok ? c.navSummaryOk : c.navSummary}>{p.channel.text}</span>
+      </button>
+
+      <nav className={c.sideScroll} aria-label="项目与会话">
+        <div className={c.sectionLabel}>
+          项目
+          <button type="button" className={c.sectionAction} aria-label="添加项目" title="添加项目" onClick={p.onAddProject}>
+            <Icon name="plus" size={14} />
+          </button>
+        </div>
+        {groups.length === 0 && loose.length === 0 && <div className={c.sideEmpty}>还没有项目。新建会话时选择的文件夹会出现在这里。</div>}
+        {groups.map(({ project, sessions }) => {
+          const open = !closed.has(project.id);
+          const waiting = sessions.reduce((n, x) => n + (p.pending.get(x.id) ?? 0), 0);
+          return (
+            <div key={project.id} className={c.project}>
+              <button type="button" className={c.projectHead} aria-expanded={open} onClick={() => toggleGroup(project.id)} title={project.path}>
+                <span className={open ? c.chevOpen : c.chev} aria-hidden="true">
+                  <Icon name="chevron" size={12} />
+                </span>
+                <span className={c.projectName}>{project.label}</span>
+                {project.pinned && (
+                  <span className={c.pinMark} aria-label="已置顶">
+                    <Icon name="pin" size={12} />
+                  </span>
+                )}
+                {waiting > 0 ? <span className={c.dot_warn} aria-label={`${waiting} 个待审批`} /> : <span className={c.projectCount}>{sessions.length || ''}</span>}
+                <span style={{ width: 22 }} aria-hidden="true" />
+              </button>
+              <ProjectMenu p={project} onNew={() => p.onNew(project.path)} onRename={() => p.onRenameProject(project)} onPin={() => p.onPinProject(project)} onRemove={() => p.onRemoveProject(project)} />
+              {open && sessions.length > 0 && <ul className={c.projectSessions}>{sessions.map(item)}</ul>}
+            </div>
+          );
+        })}
+        {loose.length > 0 && (
+          <>
+            <div className={c.sectionLabel}>其他会话</div>
+            <ul className={c.recentList}>{loose.map(item)}</ul>
+          </>
+        )}
+        {recent.length > 0 && (
+          <>
+            <div className={c.sectionLabel}>最近结束</div>
+            <ul className={c.recentList}>{recent.map(item)}</ul>
+          </>
+        )}
+      </nav>
+
+      <AccountButton account={p.account} onAction={p.onAccount} />
+    </aside>
+  );
+}

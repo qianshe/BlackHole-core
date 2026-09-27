@@ -1,0 +1,180 @@
+/*
+ * Design tokens — BlackHole local Web.
+ * Direction: data-dense developer console. Calm neutral surfaces, one blue
+ * accent, status colours always paired with a text label or icon (never colour
+ * alone). Dark follows the system; both themes target WCAG AA for text.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* type scale */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --lh-tight: 1.3;
+  --lh-base: 1.5;
+
+  /* radius / elevation / motion */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-full: 999px;
+  --shadow-1: 0 1px 2px rgb(15 23 42 / 6%), 0 1px 3px rgb(15 23 42 / 8%);
+  --shadow-pop: 0 8px 24px rgb(15 23 42 / 14%);
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 160ms;
+
+  /* z-index scale */
+  --z-sticky: 10;
+  --z-header: 20;
+  --z-toast: 50;
+
+  /* light theme */
+  --bg: #f7f7f7;
+  --sidebar: #f3f3f3;
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --raised: #ffffff;
+  --surface-hover: #ebebeb;
+  --sel: #e1e1e1;
+  --border: #e5e5e5;
+  --border-strong: #cecece;
+  --text: #1f1f1f;
+  --text-bright: #000000;
+  --text-2: #3b3b3b;
+  --text-3: #616161;
+  --accent: #005fb8;
+  --accent-hover: #0258a8;
+  --accent-soft: #e5eff9;
+  --accent-text: #004c94;
+  --focus: #005fb8;
+
+  --ok: #2e7d32;
+  --ok-soft: #e8f3e9;
+  --warn: #8a6100;
+  --warn-soft: #fbf3dd;
+  --bad: #c62828;
+  --bad-soft: #fdecec;
+  --run: #005fb8;
+  --run-soft: #e5eff9;
+  --muted: #616161;
+  --muted-soft: #f0f0f0;
+
+  --mono: 'Cascadia Code', ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  --sans: 'Segoe UI', system-ui, -apple-system, 'Microsoft YaHei UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
+
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #181818;
+    --sidebar: #202020;
+    --surface: #1b1b1b;
+    --surface-2: #1f1f1f;
+    --raised: #242424;
+    --surface-hover: #2a2d2e;
+    --sel: #343434;
+    --border: #303031;
+    --border-strong: #414141;
+    --text: #d0d0d0;
+    --text-bright: #f2f2f2;
+    --text-2: #b0b0b0;
+    --text-3: #8f8f8f;
+    --accent: #3794ff;
+    --accent-hover: #5aa6ff;
+    --accent-soft: #1b2b40;
+    --accent-text: #8cc2ff;
+    --focus: #3794ff;
+
+    --ok: #89d185;
+    --ok-soft: #1d2a1c;
+    --warn: #d7ba7d;
+    --warn-soft: #2a2518;
+    --bad: #f48771;
+    --bad-soft: #321d1a;
+    --run: #75beff;
+    --run-soft: #1b2b40;
+    --muted: #8f8f8f;
+    --muted-soft: #262626;
+
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-pop: 0 18px 60px rgb(0 0 0 / 60%);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+

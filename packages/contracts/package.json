@@ -1,0 +1,32 @@
+{
+  "name": "@blackhole/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Data-only protocol contracts shared by the daemon, host runtime and Web UI. No Node, VS Code or browser runtime imports.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host-protocol": {
+      "types": "./dist/host-protocol.d.ts",
+      "default": "./dist/host-protocol.js"
+    },
+    "./capabilities": {
+      "types": "./dist/capabilities.d.ts",
+      "default": "./dist/capabilities.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}

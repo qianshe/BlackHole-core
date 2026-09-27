@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- BlackHole, after the reference render: the event-horizon void, a
+       tilted accretion-disk ring, and a relativistic jet escaping pole-on,
+       with one background star. Single color, strokes + solid fills only,
+       so the icon survives VS Code's CSS-mask rendering. -->
+  <circle cx="12" cy="12" r="2.8" fill="currentColor"/>
+  <ellipse cx="12" cy="12" rx="7.8" ry="2.9" transform="rotate(-18 12 12)"
+           stroke="currentColor" stroke-width="1.6" fill="none"/>
+  <path fill="currentColor" d="M13.53 8.99L16.48 2.64 12.8 1.66 12.17 8.63Z"/>
+  <circle cx="4.8" cy="18.4" r="0.9" fill="currentColor"/>
+</svg>
