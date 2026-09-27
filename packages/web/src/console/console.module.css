@@ -44,6 +44,19 @@
   place-items: center;
   flex: 0 0 auto;
 }
+.brandBtn {
+  composes: brand;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.brandBtn:hover {
+  opacity: 0.85;
+}
+.brandBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .brandName {
   font-weight: 650;
   color: var(--text-bright);
@@ -65,11 +78,10 @@
   color: var(--text);
 }
 .collapsed .sideTop {
-  padding: 0 13px;
   flex-direction: column;
   height: auto;
-  padding-top: 12px;
-  gap: 6px;
+  padding: 10px 0 6px;
+  gap: 0;
 }
 .collapsed .collapse {
   margin-left: 0;
@@ -118,11 +130,20 @@
   font: 11px var(--mono);
   color: var(--text-3);
 }
+/* collapsed rail: logo, nav items and account are all 40x40, 4px apart */
 .collapsed .navBtn {
-  grid-template-columns: 18px;
-  justify-content: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  margin: 0 auto 4px;
   padding: 0;
-  margin: 0 10px;
+  grid-template-columns: 40px;
+  justify-items: center;
+  gap: 0;
+}
+.collapsed .brandBtn {
+  width: 40px;
+  height: 40px;
 }
 .collapsed .navLabel,
 .collapsed .navSummary,
@@ -140,6 +161,7 @@
 }
 .collapsed .sideScroll {
   visibility: hidden;
+  pointer-events: none;
 }
 .sectionLabel {
   padding: 12px 14px 5px;
@@ -170,7 +192,7 @@
   position: relative;
 }
 .projectHead {
-  width: 100%;
+  width: calc(100% - 30px);
   min-height: 40px;
   border: 0;
   background: transparent;
@@ -258,6 +280,9 @@
 .sessionRow[aria-current='true'] {
   background: var(--sel);
   color: var(--text-bright);
+}
+.sessionRow[aria-current='true'] .rowMeta {
+  color: var(--text-2);
 }
 .rowLabel {
   flex: 1;
@@ -369,9 +394,18 @@
   composes: accountSub;
   color: var(--bad);
 }
+.collapsed .sideBottom {
+  padding: 8px 0;
+}
 .collapsed .accountBtn {
-  grid-template-columns: 32px;
-  justify-content: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  margin: 0 auto;
+  padding: 0;
+  grid-template-columns: 40px;
+  justify-items: center;
+  gap: 0;
 }
 .collapsed .accountMain,
 .collapsed .accountMore {
@@ -439,6 +473,11 @@
 .menuDanger {
   composes: menuItem;
   color: var(--bad);
+}
+.menuGroupLabel {
+  padding: 4px 9px 2px;
+  font-size: 11px;
+  color: var(--text-3);
 }
 .menuSep {
   height: 1px;
@@ -575,12 +614,12 @@
 }
 .btnPrimary {
   composes: btn;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
 }
 .btnPrimary:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: var(--accent-fill-hover);
   color: #fff;
 }
 .btnDanger {
@@ -669,9 +708,10 @@
   background: transparent;
   text-align: left;
   display: grid;
-  grid-template-columns: 76px 140px minmax(0, 1fr) 84px;
+  /* status · tool+target · diff · duration: fixed side columns keep rows aligned */
+  grid-template-columns: 76px minmax(0, 1fr) 76px 64px;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-height: 46px;
   padding: 0 16px;
   color: var(--text);
@@ -694,19 +734,39 @@
   gap: 6px;
   font-size: 11px;
 }
+.callMain {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .tool {
-  font: 11px var(--mono);
+  flex: 0 0 auto;
+  font: 600 11px var(--mono);
   color: var(--text-bright);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .desc {
+  flex: 1 1 auto;
+  min-width: 0;
   font: 11px var(--mono);
   color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.diff {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  font: 11px var(--mono);
+  white-space: nowrap;
+}
+.diffAdd {
+  color: var(--ok);
+}
+.diffDel {
+  color: var(--bad);
 }
 .duration {
   font: 11px var(--mono);
@@ -1453,8 +1513,10 @@
   .inspector {
     border-left: 0;
     border-top: 1px solid var(--border);
-    order: -1;
     overflow: visible;
+  }
+  .narrowApprovals {
+    display: flex;
   }
 }
 @media (max-width: 760px) {
@@ -1478,11 +1540,16 @@
     flex-wrap: wrap;
   }
   .callRow {
-    grid-template-columns: 64px minmax(0, 1fr) 64px;
+    grid-template-columns: 60px minmax(0, 1fr) auto 52px;
+    gap: 8px;
+    padding-block: 6px;
   }
-  .callRow .desc {
-    grid-column: 2 / 4;
-    grid-row: 2;
+  .callMain {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .callMain .desc {
+    width: 100%;
   }
   .callBody {
     padding-left: 16px;
@@ -1524,6 +1591,24 @@
     padding: 0;
   }
 }
+.narrowApprovals {
+  display: none;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.narrowApprovals span:last-child {
+  margin-left: auto;
+}
 .moreApprovals {
   composes: mini;
   width: 100%;
@@ -1537,4 +1622,60 @@
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* after the base rule so it wins: approvals bar and wrapping toolbar on narrow screens */
+@media (max-width: 1100px) {
+  .narrowApprovals {
+    display: flex;
+  }
+}
+@media (max-width: 760px) {
+  .feedHead {
+    flex-wrap: wrap;
+    padding: 8px 16px;
+  }
+  .feedActions {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .miniSearch {
+    flex: 1 1 100%;
+    width: auto;
+  }
+  .feedActions select {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+/* session row "···" menu (after .menu/.more: composes needs them defined first) */
+.sessionItem {
+  position: relative;
+}
+.sessionItem .sessionRow {
+  padding-right: 34px;
+}
+.sessionMore {
+  composes: more;
+  top: 7px;
+  right: 4px;
+}
+.sessionItem:hover .sessionMore,
+.sessionItem:focus-within .sessionMore,
+.sessionRow[aria-current='true'] + div .sessionMore {
+  opacity: 1;
+}
+@media (hover: none) {
+  .sessionMore,
+  .more {
+    opacity: 1;
+  }
+}
+.rowMenu {
+  composes: menu;
+  right: 0;
+  top: 36px;
+  width: 200px;
 }

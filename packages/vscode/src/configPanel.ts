@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { commands, ConfigurationTarget, ViewColumn, env, window, workspace, type Disposable, type WebviewPanel } from 'vscode';
+import { commands, ConfigurationTarget, ViewColumn, Uri, env, window, workspace, type Disposable, type WebviewPanel } from 'vscode';
 import type { AuthView } from './cloudAuthClient';
 import type { ApprovalGrantsInfo, ControlApi, ProxiesInfo, ProxiesRevalidateReport, ProxyToolsResult } from './controlApi';
 import type { DaemonManager } from './daemonManager';
@@ -78,6 +78,11 @@ const KEYS = FIELDS.map((f) => f.key);
 const RESTART_KEYS = new Set(['port', 'publicBaseUrl', 'tunnelProbeProxy', 'cloudflaredPath', 'gitUsrBinPath', 'daemonEntry', 'namedTunnelName', 'skillsDir']);
 /** Same rule as the daemon's settings store: a Tunnel ID, never a URL. */
 const OPENAI_TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
+/** OpenAI onboarding pages the panel may open (developers.openai.com secure-mcp-tunnels guide). */
+const OPENAI_LINKS = new Map([
+  ['platform', 'https://platform.openai.com/settings/organization/tunnels'],
+  ['chatgpt', 'https://chatgpt.com/plugins'],
+]);
 type OpenAIAction = 'start' | 'stop' | 'saveKey' | 'clearKey' | 'diagnostics';
 /** Fixed daemon codes → copy; anything else falls back to the daemon's own reason text. */
 const OPENAI_ERRORS: Record<string, string> = {
@@ -94,10 +99,10 @@ const OPENAI_ERRORS: Record<string, string> = {
   daemon_changed: 'daemon 已重启；请重试。',
   cancelled: '启动已被取消。',
   native_loopback_required: '请求被拒绝：仅允许本机扩展调用。',
-  credential_store_unavailable: '系统钥匙串不可用，无法读写 Runtime API Key。',
-  credential_store_timeout: '系统钥匙串响应超时；请稍后重试。',
-  credential_store_failed: '写入系统钥匙串失败；密钥状态已重新读取。',
-  credential_delete_unconfirmed: '无法确认密钥已从系统钥匙串删除；请稍后重试。',
+  credential_store_unavailable: '无法读写本机保存的 Runtime API Key。',
+  credential_store_timeout: '读写 Runtime API Key 超时；请稍后重试。',
+  credential_store_failed: '保存 Runtime API Key 失败；密钥状态已重新读取。',
+  credential_delete_unconfirmed: '无法确认密钥已删除；请稍后重试。',
 };
 type ChannelMode = 'cloudflare' | 'openai' | 'custom';
 const normalizeChannelMode = (v: unknown): ChannelMode => (v === 'custom' || v === 'openai' ? v : 'cloudflare');
@@ -119,6 +124,8 @@ type PanelMessage =
   | { type: 'grantsClear' }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
+  | { type: 'copyTunnelId' }
+  | { type: 'openLink'; target: string }
   | { type: 'addCustomAgent'; name: string; url: string }
   | { type: 'removeCustomAgent'; name: string }
   | { type: 'semanticSave'; key: string }
@@ -167,6 +174,8 @@ export class ConfigPanel {
   private webviewReady = false;
   private remoteTick = 0;
   private remoteIds: Set<string> | null = null;
+  /** pairing requests already shown as a notification */
+  private remoteAsked = new Set<string>();
   /** Semantic state is fetched once per daemon lifetime; false retries after startup races. */
   private semanticSynced = false;
 
@@ -267,6 +276,8 @@ export class ConfigPanel {
     else if (m.type === 'grantsClear') await this.grantsClear();
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
+    else if (m.type === 'copyTunnelId') await this.copyTunnelId();
+    else if (m.type === 'openLink') await this.openLink(m.target);
     else if (m.type === 'addCustomAgent') await this.addCustomAgent(m.name, m.url);
     else if (m.type === 'removeCustomAgent') await this.removeCustomAgent(m.name);
     else if (m.type === 'semanticSave') await this.semanticSave(m.key);
@@ -351,7 +362,7 @@ export class ConfigPanel {
     const health = await this.api.health().catch(() => undefined);
     if (!health) {
       this.lastUrl = null;
-      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null };
+      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, openai_tunnel_id: this.savedTunnelId(), tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null };
     }
     this.lastUrl = health.tunnel_url;
     // Devin Key 卡片随状态轮询自愈：保存/重启后无需手动刷新页面
@@ -375,6 +386,7 @@ export class ConfigPanel {
       mcp_url: health.mcp_url,
       mcp_path: health.mcp_path ?? null,
       openai_tunnel: health.openai_tunnel ?? null,
+      openai_tunnel_id: this.savedTunnelId(),
       stats: health.stats ?? null,
       activity_days: health.activity_days ?? [],
       ...(semantic !== undefined ? { semantic } : {}),
@@ -434,8 +446,22 @@ export class ConfigPanel {
         }
       }
       this.remoteIds = ids;
+      for (const r of view.requests ?? []) if (!this.remoteAsked.has(r.id)) void this.askPair(r);
     }
     await this.post({ type: 'remote', view, paired });
+  }
+
+  /** A phone scanned the QR code: it only gets in after 允许 here (or in the Web UI). */
+  private async askPair(r: { id: string; name: string }): Promise<void> {
+    this.remoteAsked.add(r.id);
+    const pick = await window.showWarningMessage(`BlackHole：手机「${r.name}」请求访问。不是你本人扫的码，请点「拒绝」。`, '允许', '拒绝');
+    if (pick !== '允许' && pick !== '拒绝') return; // dismissed: the request expires by itself
+    try {
+      await this.api.remoteDecide(r.id, pick === '允许');
+    } catch {
+      void window.showWarningMessage('BlackHole：这个请求已经处理过或已过期');
+    }
+    if (!this.disposed) await this.pushRemote();
   }
 
   private async remoteAction(m: { action: 'toggle' | 'pair' | 'revoke'; on?: boolean; id?: string; name?: string }): Promise<void> {
@@ -506,6 +532,27 @@ export class ConfigPanel {
     ].join('\n');
     await env.clipboard.writeText(desc);
     void window.showInformationMessage('BlackHole：连接器描述已复制。');
+  }
+
+  /** Saved Tunnel ID: an identifier (not a URL or secret), so the card may show and copy it offline. */
+  private savedTunnelId(): string | null {
+    return (workspace.getConfiguration('blackhole').get<string>('openaiTunnelId') ?? '').trim() || null;
+  }
+
+  private async copyTunnelId(): Promise<void> {
+    const id = this.savedTunnelId();
+    if (!id) {
+      void window.showWarningMessage('BlackHole: 尚未保存 Tunnel ID，请先在 OpenAI 页签填写并保存。');
+      return;
+    }
+    await env.clipboard.writeText(id);
+    void window.showInformationMessage('BlackHole：Tunnel ID 已复制。在 ChatGPT 开发者模式应用中把 Connection 设为「Tunnel」后选中或粘贴它。');
+  }
+
+  /** Only the fixed OpenAI onboarding pages; the webview cannot open arbitrary URLs. */
+  private async openLink(target: string): Promise<void> {
+    const url = OPENAI_LINKS.get(target);
+    if (url) await env.openExternal(Uri.parse(url));
   }
 
   private async installCloudflared(currentPath: string, channelMode: string): Promise<void> {
@@ -607,12 +654,12 @@ export class ConfigPanel {
         const key = typeof m.key === 'string' ? m.key.trim() : '';
         if (!key) throw new Error('empty_api_key');
         const r = await this.api.openaiTunnelSetKey(daemonId, view.credential_revision, key);
-        message = r.pending_restart ? 'Runtime API Key 已保存到系统钥匙串；重新启动 OpenAI 渠道后生效。' : 'Runtime API Key 已保存到系统钥匙串。';
+        message = r.pending_restart ? 'Runtime API Key 已保存；重新启动 OpenAI 渠道后生效。' : 'Runtime API Key 已保存。';
       } else if (m.action === 'clearKey') {
-        const pick = await window.showWarningMessage('BlackHole：清除 Runtime API Key 会先停止 OpenAI 渠道，再从系统钥匙串删除密钥。', { modal: true }, '清除密钥');
+        const pick = await window.showWarningMessage('BlackHole：清除 Runtime API Key 会先停止 OpenAI 渠道，再删除本机保存的密钥。', { modal: true }, '清除密钥');
         if (pick !== '清除密钥' || this.disposed) return;
         await this.api.openaiTunnelClearKey(daemonId, view.credential_revision);
-        message = 'Runtime API Key 已从系统钥匙串删除；OpenAI 渠道已停止。';
+        message = 'Runtime API Key 已删除；OpenAI 渠道已停止。';
       } else if (m.action === 'start') {
         const revision = await this.syncOpenaiSettings(m.tunnelId, m.clientPath);
         const r = await this.api.openaiTunnelStart(daemonId, revision, view.credential_revision);
@@ -1254,7 +1301,7 @@ export class ConfigPanel {
   <div class="card">
     <div class="channel-mode"><span class="lbl">渠道方式</span><button type="button" class="agchip" data-channel-mode="cloudflare">Cloudflare</button><button type="button" class="agchip" data-channel-mode="openai">OpenAI</button><button type="button" class="agchip" data-channel-mode="custom">自定义</button></div>
     <div id="channelCloudflare"><div class="fgrid channel-config">${cloudflaredField}${publicUrlField}</div><button id="cfInstall" class="secondary" type="button">一键初始化安装</button><div id="cfInstallMessage" class="hint" role="status" aria-live="polite">准备并验证 cloudflared；验证后可选择保存并重启 daemon，不会自动启动渠道。</div><div class="channel-required">cloudflared 由 BlackHole 启停；固定公网地址仅用于持久渠道。修改后需重启 daemon。</div></div>
-    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label>Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存入系统钥匙串"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在系统钥匙串，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
+    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label>Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存在本机"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在本机，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">准备：在 <a href="#" id="oaLinkPlatform" data-link="platform">OpenAI Platform 隧道设置</a> 创建 Tunnel 并复制 Tunnel ID；Runtime API Key 需 Tunnels Read/Use 权限（创建/编辑 Tunnel 另需 Manage），Tunnel 还需关联要使用的 ChatGPT workspace。这些权限本地无法验证，诊断只能提示检查。</div><div class="channel-required">接入 ChatGPT：启动本渠道后，在 <a href="#" id="oaLinkChatgpt" data-link="chatgpt">chatgpt.com/plugins</a> 点 + 新建开发者模式应用（需先在 设置 → 安全 开启开发者模式），Connection 选「Tunnel」并选中该 Tunnel ID；应用名建议与「连接器名称」一致，复制的连接器提示词才能 @ 到它。</div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址，所以只支持连接器提示词，不支持沙箱直连；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
     <div id="channelCustom" style="display:none"><div class="fgrid channel-config">${customPublicUrlField}</div><div class="channel-custom-note">将公网 HTTPS 流量转发到 <code id="customLocalTarget">http://127.0.0.1:7306</code>；隧道与反向代理由你自行维护。</div></div>
     <div class="chrow channel-actions">
       <span class="chst dim" id="cnst" style="display:none"></span>
@@ -1284,7 +1331,7 @@ export class ConfigPanel {
       <div class="buy-dialog-actions"><button class="secondary" id="rmClose">关闭</button><button id="rmAgain">重新生成</button></div>
     </div>
   </div>
-  <div class="sec">MCP 连接</div>
+  <div class="sec" id="mcpSec">MCP 连接</div>
   <div class="card">
     <div class="mcpurl"><span id="mcpurl">MCP 链接尚未就绪</span><div class="mcp-actions"><button id="mcpCopy">复制 MCP 链接</button><button id="mcpDesc" class="secondary">复制连接器描述</button><button id="mcpRotate" class="secondary">重置 MCP 链接</button></div></div>
   </div>
@@ -1501,16 +1548,32 @@ export class ConfigPanel {
         st.textContent = '未启动'; st.style.display = ''; st.className = 'chst dim';
       }
       }
+      if (channelMode === 'openai') {
+        // OpenAI 没有 URL：卡片显示并复制已保存的 Tunnel ID（离线也可），不提供重置 MCP 链接；连接器描述照常可复制给 ChatGPT 应用。
+        const tid = o.openai_tunnel_id || '';
+        $('mcpSec').textContent = 'OpenAI 连接';
+        $('mcpurl').dataset.url = '';
+        $('mcpurl').textContent = tid ? 'Tunnel ID：' + tid : '尚未保存 Tunnel ID';
+        $('mcpCopy').textContent = '复制 Tunnel ID';
+        $('mcpCopy').disabled = !tid;
+        $('mcpRotate').style.display = 'none';
+        $('mcpDesc').disabled = false;
+      } else {
       // 自定义渠道只有通过真实公网探测后才发布完整 MCP 链接。
       const customReady = channelMode === 'custom' && customProbe.state === 'online' && customProbe.url;
       const mcpValue = channelMode === 'custom' ? (customReady && o.mcp_path ? customProbe.url + o.mcp_path : '') : (o.mcp_url || '');
+      // 回环链接只有本机可用：照常允许复制，但不标成“已就绪”。
+      const mcpLocal = mcpValue.indexOf('://127.') > 0 || mcpValue.indexOf('://localhost') > 0 || mcpValue.indexOf('://[::1]') > 0;
+      $('mcpSec').textContent = 'MCP 连接';
       $('mcpurl').dataset.url = mcpValue;
-      $('mcpurl').textContent = mcpValue ? 'MCP 链接已就绪' : (channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪');
+      $('mcpurl').textContent = mcpValue ? (mcpLocal ? 'MCP 链接仅本机可用（公网渠道未启动）' : 'MCP 链接已就绪') : (channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪');
       $('mcpCopy').textContent = '复制 MCP 链接';
       $('mcpCopy').disabled = !mcpValue;
       // Reset stays clickable even while daemon state is stale/unreachable so the host can explain the failure instead of silently swallowing the click.
+      $('mcpRotate').style.display = '';
       $('mcpRotate').disabled = false;
       $('mcpDesc').disabled = !mcpValue;
+      }
       // semantic 字段只在整页刷新时携带（status 轮询不带，见 overview 注释）
       if (o.semantic !== undefined) renderSemantic(o.semantic ?? null);
     }
@@ -1580,8 +1643,8 @@ export class ConfigPanel {
       const live = !!v && (v.status === 'starting' || v.status === 'ready' || v.status === 'recovering');
       const ks = $('oaKeyState');
       if (!v) { ks.textContent = o.version ? '当前 daemon 不支持 OpenAI 渠道（请重启 daemon）' : 'daemon 未连接'; ks.className = 'chst dim'; }
-      else if (v.credential_configured === null) { ks.textContent = '系统钥匙串不可读'; ks.className = 'chst bad'; }
-      else if (v.credential_configured) { ks.textContent = v.pending_restart ? '已保存 · 重新启动渠道后生效' : '已保存到系统钥匙串'; ks.className = 'chst ' + (v.pending_restart ? 'warn' : 'ok'); }
+      else if (v.credential_configured === null) { ks.textContent = '无法读取已保存的密钥'; ks.className = 'chst bad'; }
+      else if (v.credential_configured) { ks.textContent = v.pending_restart ? '已保存 · 重新启动渠道后生效' : '已保存'; ks.className = 'chst ' + (v.pending_restart ? 'warn' : 'ok'); }
       else { ks.textContent = '未保存'; ks.className = 'chst dim'; }
       $('oaKeyClear').style.display = v && v.credential_configured ? '' : 'none';
       $('oaStart').style.display = live ? 'none' : '';
@@ -2212,10 +2275,12 @@ export class ConfigPanel {
       vs.postMessage({ type: 'customProbe', url });
     });
     $('mcpCopy').addEventListener('click', () => {
+      if (channelMode === 'openai') { vs.postMessage({ type: 'copyTunnelId' }); return; }
       const url = $('mcpurl').dataset.url || '';
       if (url) vs.postMessage({ type: 'copyUrl', url });
     });
     $('mcpDesc').addEventListener('click', () => vs.postMessage({ type: 'copyConnectorDesc' }));
+    for (const id of ['oaLinkPlatform', 'oaLinkChatgpt']) $(id).addEventListener('click', (e) => { e.preventDefault(); vs.postMessage({ type: 'openLink', target: $(id).dataset.link }); });
     // Destructive confirmation lives in the extension host (rotateToken), not window.confirm:
     // host dialogs are reliable in VS Code webviews and keep one confirmation source of truth.
     $('mcpRotate').addEventListener('click', () => vs.postMessage({ type: 'rotateToken' }));
@@ -2242,7 +2307,8 @@ export class ConfigPanel {
         b.addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'revoke', id: d.id, name: d.name }));
         li.append(t, b); return li;
       }));
-      if (paired && $('rmModal').style.display !== 'none') closeRemoteQr();
+      // scanned (the 允许 / 拒绝 notification takes over) or paired: the QR code is used up
+      if ((paired || (v.requests && v.requests.length)) && $('rmModal').style.display !== 'none') closeRemoteQr();
     }
     function closeRemoteQr() { $('rmModal').style.display = 'none'; if (rmTimer) clearInterval(rmTimer); rmTimer = null; }
     function showRemoteQr(m) {
@@ -2253,7 +2319,7 @@ export class ConfigPanel {
       svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '配对二维码');
       const p = document.createElementNS(NS, 'path'); p.setAttribute('d', m.path); p.setAttribute('fill', '#000');
       svg.append(p); $('rmQr').replaceChildren(svg);
-      $('rmNote').textContent = m.kind === 'quick' ? '二维码仅可使用一次。临时通道重启后需要重新扫码。' : '二维码仅可使用一次。';
+      $('rmNote').textContent = '扫码后在 VS Code 右下角点「允许」。二维码仅可使用一次' + (m.kind === 'quick' ? '，临时通道重启后需要重新扫码。' : '。');
       $('rmModal').style.display = 'flex';
       const end = new Date(m.expiresAt).getTime();
       const tick = () => {

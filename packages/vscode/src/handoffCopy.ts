@@ -1,5 +1,5 @@
 import type { ControlApi } from './controlApi';
-import { renderPrompt, type TemplateKind } from './templates';
+import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL, type TemplateKind } from './templates';
 
 /** Read one fresh control-plane snapshot; never accept context or credentials from the webview. */
 export async function prepareHandoffPrompt(
@@ -20,8 +20,17 @@ export async function prepareHandoffPrompt(
   try { endpoint = new URL(snapshot.mcp_url); }
   catch { throw new Error('当前连接地址不可用，请检查 BlackHole 渠道。'); }
   if (!['https:', 'http:'].includes(endpoint.protocol)) throw new Error('当前连接地址必须使用 HTTP(S)。');
-  if (/^(localhost|127\..*|\[::1\])$/i.test(endpoint.hostname)) {
-    throw new Error('当前地址仅本机可达，请先启动公网渠道再复制Handoff 提示词。');
+  // Same decision as the copy menu: a connector prompt is URL-free and also
+  // works over the OpenAI tunnel; a sandbox prompt needs a public HTTP URL.
+  const local = /^(localhost|127\..*|\[::1\])$/i.test(endpoint.hostname);
+  const target = connectionTarget({ public_base_url: local ? null : snapshot.mcp_url, openai_tunnel: snapshot.openai_tunnel ?? null });
+  if (kind === 'sandbox' && !target.sandbox) {
+    throw new Error(target.openai === 'ready' ? SANDBOX_NEEDS_PUBLIC_URL : '当前地址仅本机可达，请先启动公网渠道再复制Handoff 提示词。');
+  }
+  if (kind === 'connector' && !target.connector) {
+    throw new Error(target.openai === 'starting'
+      ? 'OpenAI 渠道正在启动，就绪后再复制Handoff 提示词。'
+      : '当前没有可用渠道，请先启动 Cloudflare 或 OpenAI 渠道再复制Handoff 提示词。');
   }
   return renderPrompt(kind, snapshot.mcp_url, snapshot.session.session_id, snapshot.handoff.content, connectorName, 'handoff');
 }

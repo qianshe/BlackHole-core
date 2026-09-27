@@ -54,6 +54,8 @@ export function RemoteSection({ enabled, onToggle, toast, confirm }: { enabled: 
         }
       }
       known.current = ids;
+      // scanned: the 允许 / 拒绝 prompt takes over from the QR code
+      if (v.requests?.length) setPair(null);
     } catch { /* daemon restarting: keep the last view */ }
   }, [toast]);
   useEffect(() => { void load(); const t = setInterval(() => void load(), pair ? 2000 : 5000); return () => clearInterval(t); }, [load, pair, enabled]);
@@ -110,7 +112,7 @@ export function RemoteSection({ enabled, onToggle, toast, confirm }: { enabled: 
             <div className="buy-dialog-head"><div className="buy-dialog-eyebrow">BLACKHOLE · 手机访问</div><div className="buy-dialog-title" id="bhpQrTitle">用手机相机扫码</div></div>
             <div className="buy-dialog-body bhp-qr-body">
               {left > 0 ? <QrCode text={pair.url} /> : <div className="bhp-qr-expired">二维码已过期</div>}
-              <div className="buy-dialog-note" role="status">{left > 0 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} 后过期 · 只能使用一次` : '请重新生成。'}</div>
+              <div className="buy-dialog-note" role="status">{left > 0 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} 后过期 · 扫码后在电脑上点「允许」` : '请重新生成。'}</div>
             </div>
             <div className="buy-dialog-actions">
               <button className="secondary" type="button" onClick={() => setPair(null)}>关闭</button>

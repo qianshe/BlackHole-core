@@ -10,6 +10,17 @@ type Tone = 'ok' | 'warn' | 'bad' | 'muted';
 export function channelState(h: Health | null, mode: SettingsValues['channelMode'] | undefined): { tone: Tone; text: string } {
   if (!h) return { tone: 'muted', text: '未连接' };
   if (mode === 'custom') return h.public_base_url ? { tone: 'ok', text: '自定义地址' } : { tone: 'muted', text: '未配置' };
+  if (mode === 'openai') {
+    const oa: Record<string, { tone: Tone; text: string }> = {
+      ready: { tone: 'ok', text: '就绪' },
+      recovering: { tone: 'warn', text: '恢复中' },
+      starting: { tone: 'warn', text: '启动中…' },
+      stopping: { tone: 'warn', text: '停止中…' },
+      error: { tone: 'bad', text: '启动失败' },
+      unavailable: { tone: 'bad', text: '不可用' },
+    };
+    return oa[h.openai_tunnel?.status ?? 'off'] ?? { tone: 'muted', text: '未启动' };
+  }
   const map: Record<string, { tone: Tone; text: string }> = {
     online: { tone: 'ok', text: h.tunnel_mode === 'named' ? '持久在线' : '临时在线' },
     unverified: { tone: 'warn', text: '未验证' },
@@ -43,7 +54,9 @@ export function ChannelsPane({
   const [busy, setBusy] = useState(false);
   const mode = values?.channelMode ?? 'cloudflare';
   const st = channelState(health, mode);
-  const url = health?.tunnel_url ?? health?.public_base_url ?? null;
+  // OpenAI has no URL; its row shows the saved Tunnel ID instead.
+  const url = mode === 'openai' ? null : (health?.tunnel_url ?? health?.public_base_url ?? null);
+  const reason = mode === 'openai' ? (health?.openai_tunnel?.reason ?? null) : (health?.tunnel_reason ?? null);
   const hasNamed = !!values?.namedTunnelName && !!values?.publicBaseUrl;
   const running = health ? ['online', 'unverified', 'starting'].includes(health.tunnel) : false;
 
@@ -65,7 +78,7 @@ export function ChannelsPane({
         <header className={c.channelsHead}>
           <div>
             <h1>公网渠道</h1>
-            <p>网页版 AI 通过公网渠道连到这台电脑。同一时间使用一个渠道。</p>
+            <p>网页版 AI 通过连接渠道连到这台电脑。Cloudflare / 自定义提供公网地址；OpenAI 渠道经 OpenAI 隧道只连 ChatGPT，可与 Cloudflare 同时运行。</p>
           </div>
           <button type="button" className={c.btnPrimary} onClick={() => onSettings('channel')}>
             <Icon name="plus" size={14} /> 添加渠道
@@ -93,16 +106,18 @@ export function ChannelsPane({
               </div>
               <div className={c.channelDesc}>{MODE_LABEL[mode][1]}</div>
               <div className={c.channelUrl} title={url ?? ''}>
-                {url ?? (needCf ? '需要先安装 cloudflared' : '启动后显示公网地址')}
+                {mode === 'openai'
+                  ? (values?.openaiTunnelId ? `Tunnel ID ${values.openaiTunnelId}` : '尚未配置 Tunnel ID')
+                  : (url ?? (needCf ? '需要先安装 cloudflared' : '启动后显示公网地址'))}
               </div>
-              {health?.tunnel_reason && st.tone !== 'ok' && <div className={c.channelDesc} style={{ color: 'var(--bad)' }}>{health.tunnel_reason}</div>}
+              {reason && st.tone !== 'ok' && <div className={c.channelDesc} style={{ color: 'var(--bad)' }}>{reason}</div>}
             </div>
             <div className={c.channelMeta}>
               <span>
                 状态 <b className={c[`stateText_${st.tone}`]}>{st.text}</b>
               </span>
               <span>
-                地址类型 <b>{health?.tunnel_mode === 'named' || mode === 'custom' ? '固定' : '每次启动会变化'}</b>
+                地址类型 <b>{mode === 'openai' ? '无公网地址（仅连接器）' : health?.tunnel_mode === 'named' || mode === 'custom' ? '固定' : '每次启动会变化'}</b>
               </span>
             </div>
             <div className={c.rowActions}>
@@ -121,7 +136,9 @@ export function ChannelsPane({
                   </button>
                 </>
               )}
-              {mode !== 'custom' && running && (
+              {mode === 'openai' && <span className={c.channelDesc}>在 VS Code 设置页启动/停止</span>}
+              {/* 停止只作用于 Cloudflare：OpenAI 页签下绝不能误停另一条渠道 */}
+              {mode === 'cloudflare' && running && (
                 <button type="button" className={c.btnDanger} disabled={busy} onClick={() => run(() => panel.tunnelStop(), '渠道已停止')}>
                   停止
                 </button>

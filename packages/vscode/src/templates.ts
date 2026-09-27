@@ -1,5 +1,40 @@
 export type TemplateKind = 'connector' | 'sandbox';
 
+/** Health fields the connection-target decision reads; VS Code and Local Web health both fit. */
+export interface ConnectionHealth {
+  tunnel?: string | null;
+  tunnel_url?: string | null;
+  public_base_url?: string | null;
+  openai_tunnel?: { status?: string | null } | null;
+}
+
+/**
+ * One pure decision shared by create-session, copy, handoff and the sidebar
+ * (plan section 6). Connector prompts carry no URL, so a public URL or a
+ * serving OpenAI tunnel both qualify. Sandbox bootstrap downloads bh.py over
+ * HTTP and needs a public URL; a Tunnel ID never substitutes for one. Nothing
+ * here starts, stops or switches a channel.
+ */
+export interface ConnectionTarget {
+  /** Base a web sandbox can reach: Cloudflare online, else the fixed public base. */
+  publicUrl: string | null;
+  /** OpenAI Secure MCP Tunnel: ready (incl. recovering), starting, or off/failed. */
+  openai: 'ready' | 'starting' | 'off';
+  /** URL-free connector prompts can reach this machine. */
+  connector: boolean;
+  /** HTTP sandbox prompts can reach this machine. */
+  sandbox: boolean;
+}
+
+export function connectionTarget(h: ConnectionHealth | null | undefined): ConnectionTarget {
+  const publicUrl = (h?.tunnel === 'online' && h.tunnel_url) || h?.public_base_url || null;
+  const status = h?.openai_tunnel?.status;
+  const openai = status === 'ready' || status === 'recovering' ? 'ready' : status === 'starting' ? 'starting' : 'off';
+  return { publicUrl, openai, connector: !!publicUrl || openai === 'ready', sandbox: !!publicUrl };
+}
+
+export const SANDBOX_NEEDS_PUBLIC_URL = '沙箱直连需要公网地址（Cloudflare 渠道或自定义地址）；OpenAI 渠道只支持连接器方式，请改用连接器提示词。';
+
 /** POSIX quoting for the remote sandbox bootstrap, including apostrophes. */
 const shellQuote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
 

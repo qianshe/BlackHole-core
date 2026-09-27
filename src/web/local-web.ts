@@ -541,7 +541,8 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   const data = Router();
   api.use(data);
   data.get('/sessions', (_req, res) => {
-    res.json({ sessions: deps.sessions.list().map(sessionView), version: VERSION });
+    // Ended sessions are gone for users: never list them on any surface (phone included).
+    res.json({ sessions: deps.sessions.list().filter((s) => s.status !== 'revoked' && s.status !== 'archived').map(sessionView), version: VERSION });
   });
 
   data.get('/sessions/:id', (req, res) => {
@@ -898,6 +899,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     // session controls in the Web console header (plan 6.15 W1)
     ['GET', /^\/sessions\/[^/]+$/],
     ['POST', /^\/sessions\/[^/]+\/(pause|resume|revoke|rotate)$/],
+    ['PATCH', /^\/sessions\/[^/]+\/mode$/],
     ['POST', /^\/proxies\/(revalidate|config\/fields|add|import|tools|remove)$/],
   ];
   api.use('/panel', (req, res, next) => {
@@ -926,6 +928,11 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   });
 
   // ─── phone access: this computer's controls (plan 6.13 R4) ─────────────
+  const decidePair = (id: string, allow: boolean): boolean => {
+    const ok = remoteAccess.decide(id, allow);
+    if (ok) deps.events.append(null, allow ? 'remote_pair_allowed' : 'remote_pair_denied', {});
+    return ok;
+  };
   const remoteView = () => {
     const enabled = remoteEnabled();
     const ch = channelInfo();
@@ -937,7 +944,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       : values?.channelMode === 'custom' ? 'custom_not_https'
       : deps.tunnel?.status === 'online' || deps.tunnel?.status === 'unverified' ? 'not_https'
       : 'channel_offline';
-    return { enabled, available: enabled && !!ch, reason, origin: ch?.origin ?? null, kind: ch?.kind ?? null, devices: enabled ? remoteAccess.list() : [] };
+    return { enabled, available: enabled && !!ch, reason, origin: ch?.origin ?? null, kind: ch?.kind ?? null, devices: enabled ? remoteAccess.list() : [], requests: enabled ? remoteAccess.pending(ch) : [] };
   };
   deps.remote = {
     view: remoteView,
@@ -952,6 +959,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       if (ok) deps.events.append(null, 'remote_device_revoked', {});
       return ok;
     },
+    decide: (id, allow) => decidePair(id, allow),
   };
   api.get('/remote', (_req, res) => { res.json(remoteView()); });
   api.post('/remote/pair', (_req, res) => {
@@ -967,6 +975,19 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     const ok = remoteAccess.revoke(String(req.params.id));
     if (ok) deps.events.append(null, 'remote_device_revoked', {});
     res.status(ok ? 200 : 404).json(ok ? remoteView() : { error: 'device_not_found' });
+  });
+  // 允许 / 拒绝 a phone that just scanned the code
+  api.post('/remote/requests/:id', (req, res) => {
+    const allow = (req.body as { allow?: unknown } | undefined)?.allow;
+    if (typeof allow !== 'boolean') {
+      res.status(400).json({ error: 'invalid_body' });
+      return;
+    }
+    if (!decidePair(String(req.params.id), allow)) {
+      res.status(404).json({ error: 'request_not_found', ...remoteView() });
+      return;
+    }
+    res.json(remoteView());
   });
   api.post('/remote/revoke-all', (_req, res) => {
     const n = remoteAccess.revokeAll();
@@ -1039,14 +1060,30 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     const name = deviceName(req.headers['user-agent']);
-    const paired = remoteAccess.pair((req.body as { code?: unknown } | undefined)?.code, res.locals.channel as PublicChannel, name, user);
-    if (!paired) {
+    // The code alone grants nothing: it files a request someone on the computer must allow.
+    const pending = remoteAccess.requestPair((req.body as { code?: unknown } | undefined)?.code, res.locals.channel as PublicChannel, name, user);
+    if (!pending) {
       res.status(401).json({ error: 'pair_invalid' });
       return;
     }
-    res.setHeader('Set-Cookie', deviceCookie(paired.secret, Math.floor(DEVICE_IDLE_MS / 1000)));
-    deps.events.append(null, 'remote_device_paired', { name, kind: paired.device.kind });
-    res.json({ ok: true, device: name });
+    deps.events.append(null, 'remote_pair_requested', { name });
+    res.status(202).json({ state: 'pending', token: pending.token, device: name, expires_at: iso(pending.expiresAt) });
+  });
+
+  // The phone polls here until the computer answers.
+  remote.post('/pair/claim', (req, res) => {
+    const r = remoteAccess.claim((req.body as { token?: unknown } | undefined)?.token, res.locals.channel as PublicChannel);
+    if (r.state === 'approved') {
+      res.setHeader('Set-Cookie', deviceCookie(r.secret, Math.floor(DEVICE_IDLE_MS / 1000)));
+      deps.events.append(null, 'remote_device_paired', { name: r.device.name, kind: r.device.kind });
+      res.json({ state: 'approved', device: r.device.name });
+      return;
+    }
+    if (r.state === 'pending') {
+      res.json({ state: 'pending' });
+      return;
+    }
+    res.status(r.state === 'denied' ? 403 : 401).json({ error: r.state === 'denied' ? 'pair_denied' : 'pair_expired' });
   });
 
   // Everything below needs a paired device on this origin.

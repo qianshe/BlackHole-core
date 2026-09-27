@@ -94,3 +94,16 @@ func TestParseStopResult(t *testing.T) {
 		t.Fatal("launch success without receipt must still be rejected")
 	}
 }
+
+func TestExplicitRuntimeDoesNotFallBackToAnotherEnvironment(t *testing.T) {
+	root := filepath.FromSlash("/app")
+	files := map[string]bool{
+		filepath.Join(root, "runtime", "node"):             true,
+		filepath.Join(root, "runtime", "bootstrap.cjs"):    true,
+		filepath.Join(root, "runtime", "daemon", "cli.js"): true,
+	}
+	_, err := Locate(fakeEnv(files, map[string]string{"BLACKHOLE_RUNTIME_DIR": filepath.FromSlash("/missing-test-runtime")}, root, root))
+	if !errors.Is(err, ErrAssetMissing) {
+		t.Fatalf("explicit missing test runtime must not select the production fallback: %v", err)
+	}
+}

@@ -66,6 +66,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   private view: WebviewView | undefined;
   private sessions: SessionInfo[] = [];
   private tunnel: TunnelState | null = null;
+  /** OpenAI tunnel status for the channel pill; runs in parallel with Cloudflare. */
+  private openai: string | null = null;
   private disposed = false;
   private viewGeneration = 0;
   private subscriptions: Disposable[] = [];
@@ -223,6 +225,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       this.sessions = sessions.filter((s) => s.status !== 'revoked' && s.status !== 'archived');
     }
     this.tunnel = health ? { status: health.tunnel, url: health.tunnel_url, mode: health.tunnel_mode, reason: health.tunnel_reason } : null;
+    this.openai = health?.openai_tunnel?.status ?? null;
     this.pending = pendingAll;
     this.handoffSynchronized = sessions !== undefined && health !== undefined;
     const endpoint = JSON.stringify(getConfig());
@@ -304,6 +307,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       daemon: this.daemon.currentState,
       currentRoot: currentWorkspaceRoot(),
       tunnel: this.tunnel,
+      openai: this.openai,
       selected: this.mode === 'calls' ? this.selected() : undefined,
       // 只送当前页：旧会话几百条记录时不再每轮全量展开+解析+过桥大 payload
       calls:
@@ -885,6 +889,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       else if (t.status === 'starting') { cls = 'warn'; label = '渠道启动中…'; }
       else if (t.status === 'error') { cls = 'bad'; label = '渠道启动失败'; }
       else if (t.status === 'unavailable') { cls = 'bad'; label = '渠道不可用'; }
+      // OpenAI 渠道与 Cloudflare 并行：Cloudflare 未启动时单独显示 OpenAI，两条都在时并列。
+      const oaMap = { ready: ['ok', 'OpenAI 就绪'], recovering: ['warn', 'OpenAI 恢复中'], starting: ['warn', 'OpenAI 启动中…'], stopping: ['warn', 'OpenAI 停止中…'], error: ['bad', 'OpenAI 失败'], unavailable: ['bad', 'OpenAI 不可用'] };
+      const oa = d.daemon === 'running' && d.openai ? oaMap[d.openai] : null;
+      if (oa && label === '渠道未启动') { cls = oa[0]; label = oa[1]; }
+      else if (oa) { label += ' · ' + oa[1]; }
       pill.className = 'chanpill ' + cls;
       $('chtxt').textContent = label;
       if (cherr && t && t.reason && (t.status === 'starting' || t.status === 'error' || t.status === 'unavailable')) { cherr.style.display = 'block'; cherr.textContent = t.reason; }

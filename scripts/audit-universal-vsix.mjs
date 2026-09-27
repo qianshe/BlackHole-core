@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {resolveBuildConfig,PRODUCTION_CLOUD_ORIGIN} from '../packages/vscode/build-config.mjs';
+import {assertServiceBuild} from './environment-config.mjs';
 
 const ext=fileURLToPath(new URL('../packages/vscode/',import.meta.url));
 const require=createRequire(path.join(ext,'package.json'));
@@ -21,7 +22,7 @@ export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
    if(entry.uncompressedSize>((name.endsWith('/extension.js')||name.endsWith('/cli.js'))?32:1)*1024*1024)return fail(new Error('Oversized package metadata/bundle'));
    zip.openReadStream(entry,(err,stream)=>{
     if(err)return fail(err);const chunks=[],hash=createHash('sha256');stream.on('error',fail);
-    stream.on('data',chunk=>{hash.update(chunk);if(!(name.endsWith('/extension.js')||name.endsWith('/cli.js')))chunks.push(chunk);});stream.on('end',()=>{hashes.set(name,hash.digest('hex'));if(!(name.endsWith('/extension.js')||name.endsWith('/cli.js')))texts.set(name,Buffer.concat(chunks).toString('utf8'));zip.readEntry();});
+    stream.on('data',chunk=>{hash.update(chunk);chunks.push(chunk);});stream.on('end',()=>{hashes.set(name,hash.digest('hex'));texts.set(name,Buffer.concat(chunks).toString('utf8'));zip.readEntry();});
    });
   });zip.readEntry();
  }));
@@ -36,16 +37,23 @@ export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
  assert.ok(entries.includes('extension/dist/daemon/cli.js'));
  assert.ok(entries.includes('extension/dist/daemon/web/index.html'),'local Web page must ship');
  assert.ok(entries.some(name=>/koffi-win32-x64\/win32_x64\/koffi\.node$/.test(name)),'universal candidate must retain Windows x64 native support');
-for(const target of ['win32-x64-msvc','win32-arm64-msvc','darwin-x64','darwin-arm64','linux-x64-gnu','linux-arm64-gnu'])assert.ok(entries.some(name=>name.endsWith(`dist/daemon/node_modules/@napi-rs/keyring-${target}/keyring.${target}.node`)),`universal candidate must ship the ${target} keyring binary (run scripts/fetch-keyring-prebuilds.mjs)`);
+assert.ok(!entries.some(name=>name.includes('node_modules/@napi-rs/keyring')),'the OS keyring module must not ship (credentials are user-only files)');
  for(const name of ['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','readme.md'])assert.ok(entries.includes('extension/'+name),'missing '+name);
  let buildReport={};
  const rawBuild=texts.get('extension/dist/cloud-build.json');
- if(expectedBuild)assert.ok(rawBuild,'build metadata must ship');
+ assert.ok(rawBuild,'build metadata must ship; cannot validate a package by filename alone');
  if(rawBuild){
   const info=JSON.parse(rawBuild);
   const selected=resolveBuildConfig(info.environment,info.environment==='test'?info.origin:undefined,info.environment==='test'?info.entitlementPublicKey:undefined,profiles);
   assert.equal(info.origin,selected.origin);
   assert.equal(info.entitlementPublicKey,selected.entitlementPublicKey);
+  assertServiceBuild(selected);
+  for(const name of ['extension/dist/extension.js','extension/dist/daemon/cli.js']){
+   const text=texts.get(name)??'';
+   assert.ok(text.includes(selected.origin),'selected origin is absent from '+name);
+   assert.ok(!text.includes('blackhole-build-fixture.example.org'),'offline fixture leaked into '+name);
+  }
+  assert.ok(texts.get('extension/dist/daemon/cli.js').includes(selected.entitlementPublicKey),'selected daemon public key is absent');
   assert.equal(info.daemonSha256,hashes.get('extension/dist/daemon/cli.js'),'stale or mixed daemon bundle');
   const supervisorHash=hashes.get('extension/dist/daemon/process-supervisor.cjs');
   if(info.processSupervisorSha256!==undefined||supervisorHash!==undefined){
@@ -68,3 +76,4 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  if(!process.argv[2])throw new Error('Usage: node scripts/audit-universal-vsix.mjs <file.vsix>');
  console.log(JSON.stringify(await auditUniversalVsix(path.resolve(process.argv[2])),null,2));
 }
+

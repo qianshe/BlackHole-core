@@ -26,7 +26,18 @@ interface Confirmation { id: string; session_id: string; tool: string; args: unk
 interface Project { id: string; label: string; path: string; sessions: number }
 interface Created { session: SessionView; session_id: string; mcp_url: string }
 
-type Phase = { k: 'loading' } | { k: 'unpaired'; failed?: boolean } | { k: 'account' } | { k: 'offline' } | { k: 'ready'; me: Me };
+type Phase =
+  | { k: 'loading' }
+  | { k: 'unpaired'; failed?: boolean }
+  | { k: 'waiting'; token: string; device: string }
+  | { k: 'denied' }
+  | { k: 'timeout' }
+  | { k: 'account' }
+  | { k: 'offline' }
+  | { k: 'ready'; me: Me };
+
+// survives a reload while the computer has not answered yet
+const TOKEN_KEY = 'bh_pair_wait';
 
 function takePairCode(): string | null {
   const m = /^#pair=([A-Za-z0-9_-]{22})$/.exec(window.location.hash);
@@ -48,13 +59,23 @@ function boot(): Promise<Phase> {
   started ??= (async () => {
     const code = takePairCode();
     if (code) {
-      try { await call('/pair', { code }); } catch (e) {
+      try {
+        const r = await call<{ token: string; device: string }>('/pair', { code });
+        sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token: r.token, device: r.device }));
+        return { k: 'waiting', token: r.token, device: r.device } as Phase;
+      } catch (e) {
         if (e instanceof RemoteError && e.code === 'account_required') return { k: 'account' } as Phase;
         const me = await whoAmI();
         return me.k === 'unpaired' ? { k: 'unpaired', failed: true } : me;
       }
     }
-    return whoAmI();
+    const me = await whoAmI();
+    if (me.k !== 'unpaired') return me;
+    try {
+      const w = JSON.parse(sessionStorage.getItem(TOKEN_KEY) ?? 'null') as { token?: unknown; device?: unknown } | null;
+      if (w && typeof w.token === 'string') return { k: 'waiting', token: w.token, device: String(w.device ?? '') } as Phase;
+    } catch { /* ignore */ }
+    return me;
   })();
   return started;
 }
@@ -77,10 +98,50 @@ export function RemoteApp() {
     else if (e instanceof RemoteError && (e.status === 401 || e.status === 404)) setPhase({ k: 'unpaired' });
   }, []);
   if (phase.k === 'loading') return <main className={s.notice} aria-busy="true"><div className={s.brand}>BlackHole</div><p>正在连接…</p></main>;
+  if (phase.k === 'waiting') return <Waiting token={phase.token} device={phase.device} onDone={setPhase} />;
+  if (phase.k === 'denied') return <Notice title="电脑拒绝了访问" text="如需使用，请在电脑上重新生成二维码再扫码。" />;
+  if (phase.k === 'timeout') return <Notice title="等待超时" text="电脑上没有点「允许」。请在电脑上重新生成二维码再扫码。" />;
   if (phase.k === 'unpaired') return <Notice title={phase.failed ? '二维码已失效' : '需要扫码'} text="请在电脑上打开 BlackHole 设置 → 手机访问，生成二维码后用手机扫码。" />;
   if (phase.k === 'account') return <Notice title="电脑端需要重新登录" text="请在电脑上登录 BlackHole，登录后这里会恢复。" />;
   if (phase.k === 'offline') return <Notice title="连不上电脑" text="请确认电脑上的 BlackHole 和公网渠道正在运行。" />;
   return <Ready me={phase.me} lost={lost} />;
+}
+
+/** Scanned; the computer has to click 允许 before this phone gets in. */
+function Waiting({ token, device, onDone }: { token: string; device: string; onDone: (p: Phase) => void }) {
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const end = (p: Phase): void => {
+      sessionStorage.removeItem(TOKEN_KEY);
+      onDone(p);
+    };
+    const poll = async (): Promise<void> => {
+      try {
+        const r = await call<{ state: string }>('/pair/claim', { token });
+        if (!alive) return;
+        if (r.state === 'approved') return end(await whoAmI());
+      } catch (e) {
+        if (!alive) return;
+        if (e instanceof RemoteError && e.code === 'pair_denied') return end({ k: 'denied' });
+        if (e instanceof RemoteError && e.code === 'pair_expired') return end({ k: 'timeout' });
+        if (e instanceof RemoteError && e.code === 'account_required') return end({ k: 'account' });
+      }
+      timer = setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [token, onDone]);
+  return (
+    <main className={s.notice} aria-busy="true">
+      <div className={s.brand}>BlackHole</div>
+      <h1>请在电脑上点「允许」</h1>
+      <p>电脑上会弹出「手机请求访问」{device ? `（${device}）` : ''}，点「允许」后这里会自动进入。</p>
+    </main>
+  );
 }
 
 type Tab = 'approvals' | 'sessions' | 'new';

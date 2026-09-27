@@ -4,7 +4,7 @@ import { env, window, workspace } from 'vscode';
 import type { ControlApi, SessionAction, SessionInfo } from './controlApi';
 import type { DaemonManager } from './daemonManager';
 import { getConfig } from './config';
-import { renderPrompt, type TemplateKind } from './templates';
+import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL, type TemplateKind } from './templates';
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -54,13 +54,15 @@ const DAEMON_NOT_READY = 'BlackHole: daemon 正在启动或配置交接中，尚
 /**
  * The channel is user-driven: never start/stop it behind the user's back.
  * A listener attached solely for an upgrade is not ready for session writes.
- * Verify the same live daemon health that provides the public URL against the
- * manager's lifecycle revision, version and launch fingerprint first.
+ * Verify the same live daemon health that reports the channels against the
+ * manager's lifecycle revision, version and launch fingerprint first. Any
+ * channel that can carry a connector prompt qualifies: Cloudflare/custom URL
+ * or a serving OpenAI tunnel (plan R6); an OpenAI-only setup is not blocked.
  */
-async function requireChannelReady(api: ControlApi, daemon: DaemonManager): Promise<string | undefined> {
+async function requireChannelReady(api: ControlApi, daemon: DaemonManager): Promise<boolean> {
   if (daemon.currentState !== 'running') {
     void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
+    return false;
   }
   const observation = daemon.captureHealthObservation();
   let h: Awaited<ReturnType<ControlApi['health']>>;
@@ -68,18 +70,18 @@ async function requireChannelReady(api: ControlApi, daemon: DaemonManager): Prom
     h = await api.health(8_000, observation.port);
   } catch {
     void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
+    return false;
   }
   if (!daemon.observeHealth(h, observation) || daemon.currentState !== 'running') {
     void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
+    return false;
   }
-  if (h.tunnel === 'online' && h.tunnel_url) return h.tunnel_url;
-  if (h.public_base_url) return h.public_base_url;
-  void window.showWarningMessage(
-    'BlackHole: 公网渠道未启动。请点击右下角状态图标打开设置，启动「持久」或「临时」渠道后再创建会话。',
-  );
-  return undefined;
+  const target = connectionTarget(h);
+  if (target.connector) return true;
+  void window.showWarningMessage(target.openai === 'starting'
+    ? 'BlackHole: OpenAI 渠道正在启动，就绪后再创建会话。'
+    : 'BlackHole: 还没有可用的连接渠道。请点击右下角状态图标打开设置，启动 Cloudflare（持久或临时）或 OpenAI 渠道后再创建会话。');
+  return false;
 }
 
 export async function createSession(api: ControlApi, daemon: DaemonManager, after: () => void): Promise<void> {
@@ -88,8 +90,7 @@ export async function createSession(api: ControlApi, daemon: DaemonManager, afte
   const task = await askTask();
   if (task === undefined) return;
   if (!(await daemon.ensureRunning())) return;
-  const publicUrl = await requireChannelReady(api, daemon);
-  if (!publicUrl) return;
+  if (!(await requireChannelReady(api, daemon))) return;
 
   let created;
   try {
@@ -141,12 +142,32 @@ function isLoopbackUrl(url: string): boolean {
   }
 }
 
+/**
+ * OpenAI connectors use a Tunnel ID instead of a URL. Offer the saved ID (the
+ * running one if it differs) rather than a loopback link nobody remote can use.
+ */
+async function offerTunnelId(message: string, activeId: string | null | undefined): Promise<void> {
+  const id = (activeId || getConfig().openaiTunnelId || '').trim();
+  const copy = '复制 Tunnel ID';
+  if ((await (id ? window.showInformationMessage(message, copy) : window.showInformationMessage(message))) !== copy) return;
+  await env.clipboard.writeText(id);
+  window.setStatusBarMessage('BlackHole: Tunnel ID 已复制', 3000);
+}
+
 /** Copy the machine-level MCP URL — stable, so this needs no session credential. */
 export async function copySessionUrl(api: ControlApi, node: SessionInfo): Promise<void> {
   const h = await api.health().catch(() => undefined);
   const url = h?.mcp_url;
   if (!url) {
     void window.showErrorMessage('BlackHole: 无法获取 MCP 链接（daemon 未运行）');
+    return;
+  }
+  const target = connectionTarget(h);
+  if (isLoopbackUrl(url) && target.openai === 'ready') {
+    await offerTunnelId(
+      'BlackHole: 当前只有 OpenAI 渠道，它不使用 MCP 链接。在 ChatGPT 开发者模式应用中选择 Connection「Tunnel」并选中这个 Tunnel ID 即可；会话用复制的连接器提示词开始。',
+      h?.openai_tunnel?.active_tunnel_id,
+    );
     return;
   }
   await env.clipboard.writeText(url);
@@ -175,13 +196,24 @@ export async function copyTemplateSession(api: ControlApi, node: SessionInfo, ki
     return;
   }
   const connectorName = getConfig().connectorName || 'BlackHole';
+  const target = connectionTarget(h);
+  // A sandbox prompt embeds an HTTP bootstrap URL: never hand out a loopback one.
+  if (kind === 'sandbox' && (!target.sandbox || isLoopbackUrl(url))) {
+    void window.showWarningMessage(target.openai === 'ready'
+      ? `BlackHole: ${SANDBOX_NEEDS_PUBLIC_URL}未复制。`
+      : 'BlackHole: 沙箱直连需要公网地址，请先在设置页启动 Cloudflare 渠道或配置自定义地址（点击右下角状态图标进入）。未复制。');
+    return;
+  }
+  // The connector prompt is URL-free: it only needs some channel to be up.
   await env.clipboard.writeText(renderPrompt(kind, url, sessionId, node.name, connectorName));
-  if (isLoopbackUrl(url)) {
-    void window.showWarningMessage('BlackHole: 提示词已复制，但其中的 MCP 链接当前是本机回环地址——公网渠道未启动，网页 AI 无法访问。请先在设置页启动渠道（点击右下角状态图标进入）后再复制。');
+  if (!target.connector) {
+    void window.showWarningMessage('BlackHole: 连接器提示词已复制，但当前没有可用的连接渠道——请先在设置页启动 Cloudflare 或 OpenAI 渠道（点击右下角状态图标进入），网页 AI 才能调用。');
     return;
   }
   window.setStatusBarMessage(
-    kind === 'connector' ? 'BlackHole: 连接器提示词已复制' : 'BlackHole: 沙箱直连提示词已复制',
-    3000,
+    kind === 'sandbox' ? 'BlackHole: 沙箱直连提示词已复制'
+      : target.publicUrl ? 'BlackHole: 连接器提示词已复制'
+        : `BlackHole: 连接器提示词已复制（经 OpenAI 渠道：ChatGPT 中需有名为 @${connectorName} 的 Tunnel 应用）`,
+    4000,
   );
 }

@@ -114,3 +114,19 @@ test('--stop shuts a running daemon down and is a no-op when nothing runs', asyn
   assert.deepEqual([r.code, r.result.ok, r.result.stopped], [0, true, true], JSON.stringify(r.result));
   assert.equal(await fetch(`http://127.0.0.1:${iso.port}/api/health`).catch(() => null), null);
 });
+
+// Environment mismatch must be rejected before any ticket, settings write, restart or browser open.
+test('desktop refuses a daemon from another Cloud environment or without environment metadata', async t => {
+  const {createServer}=await import('node:http');
+  const iso=await createIsolatedEnv({name:'launcher-environment'});
+  let origin='https://wrong.example.org';const requests=[];
+  const server=createServer((q,s)=>{requests.push(q.url);s.setHeader('content-type','application/json');s.end(JSON.stringify({ok:true,version:'fixture',daemon_id:'fixture',...(origin?{cloud_origin:origin}:{})}));});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(async()=>{await new Promise(r=>server.close(r));iso.cleanup();});
+  for(const value of ['https://wrong.example.org','']){
+    origin=value;requests.length=0;
+    const result=await boot(iso.env,['--port',String(server.address().port)]);
+    assert.equal(result.code,1);assert.equal(result.result.code,'protocol_incompatible');
+    assert.deepEqual(requests,['/api/health']);
+  }
+});

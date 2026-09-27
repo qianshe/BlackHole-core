@@ -19,7 +19,7 @@ if (process.argv.includes('--fixture-daemon')) {
   process.on('message', (m) => { if (m === 'stop') void daemon.stop().then(() => process.exit(0), () => process.exit(1)); });
   process.send({ ready: true });
 } else {
-  test('phone access: off by default, host-bound, one-time pairing, phone routes only', { timeout: 60_000 }, async (t) => {
+  test('phone access: off by default, host-bound, one-time pairing allowed on the computer, phone routes only', { timeout: 60_000 }, async (t) => {
     const iso = await createIsolatedEnv({ name: 'remote-access' });
     const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env: { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     const exited = new Promise((r) => child.once('exit', r));
@@ -103,6 +103,20 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.match((await req('/', { host: PUB, headers: { accept: '*/*' } })).text, /daemon/);
     assert.equal((await req('/ui/index.html', { host: 'evil.test' })).status, 403, 'assets only for the public address');
 
+    // scan -> allow on the computer -> claim; returns the device cookie
+    const pairDevice = async (code, { host = PUB, headers = {}, allowVia = 'web' } = {}) => {
+      const scan = await phone('/pair', { method: 'POST', body: { code }, host, headers });
+      assert.equal(scan.status, 202, scan.text);
+      const id = (await web('/remote')).json.requests.at(-1).id;
+      const ok = allowVia === 'control'
+        ? await req(`/api/remote/requests/${id}`, { method: 'POST', body: { allow: true } })
+        : await web(`/remote/requests/${id}`, 'POST', { allow: true });
+      assert.equal(ok.status, 200, ok.text);
+      const claim = await phone('/pair/claim', { method: 'POST', body: { token: scan.json.token }, host, headers });
+      assert.equal(claim.status, 200, claim.text);
+      return String(claim.headers['set-cookie']).split(';')[0];
+    };
+
     // Pairing: one-time code, fragment only.
     // VS Code panel controls go through the loopback control API (R4).
   const cv = await req('/api/remote');
@@ -115,8 +129,23 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.match(pair.url, new RegExp(`^${origin}/#pair=[A-Za-z0-9_-]{22}$`));
     const code = pair.url.split('#pair=')[1];
     assert.equal((await phone('/pair', { method: 'POST', body: { code }, headers: { origin: 'https://evil.test' } })).status, 403, 'cross-origin pairing');
-    const paired = await phone('/pair', { method: 'POST', body: { code }, headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1' } });
+    const scanned = await phone('/pair', { method: 'POST', body: { code }, headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1' } });
+    assert.equal(scanned.status, 202, scanned.text);
+    assert.equal(scanned.headers['set-cookie'], undefined, 'the code alone grants nothing');
+    const token = scanned.json.token;
+    // Waiting: no access until the computer allows it.
+    assert.equal((await phone('/pair/claim', { method: 'POST', body: { token } })).json.state, 'pending');
+    const waiting = (await web('/remote')).json.requests;
+    assert.equal(waiting.length, 1);
+    assert.equal(waiting[0].name, 'iPhone Safari');
+    assert.equal((await phone('/pair/claim', { method: 'POST', body: { token: 'A'.repeat(43) } })).status, 401);
+    assert.equal((await web(`/remote/requests/${waiting[0].id}`, 'POST', { allow: 'yes' })).status, 400);
+    assert.equal((await web(`/remote/requests/${waiting[0].id}`, 'POST', { allow: true })).status, 200);
+    assert.equal((await web(`/remote/requests/${waiting[0].id}`, 'POST', { allow: false })).status, 404, 'answered once');
+    const paired = await phone('/pair/claim', { method: 'POST', body: { token } });
     assert.equal(paired.status, 200, paired.text);
+    assert.equal(paired.json.state, 'approved');
+    assert.equal((await phone('/pair/claim', { method: 'POST', body: { token } })).status, 401, 'token is single-use');
     const setCookie = String(paired.headers['set-cookie']);
     for (const part of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/remote-api']) assert.ok(setCookie.includes(part), `cookie ${part}`);
     const dev = setCookie.split(';')[0];
@@ -148,13 +177,29 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal(made.json.session.auto_approve, false);
     assert.equal((await phone('/sessions', { cookie: dev, method: 'POST', body: { project_id: 'missing' } })).status, 400);
 
+    // Revoked sessions are gone from the phone list too.
+    const revoked = await req(`/api/sessions/${made.json.session.id}/revoke`, { method: 'POST', body: {} });
+    if (revoked.status === 200) assert.ok(!(await phone('/sessions', { cookie: dev })).json.sessions.some((x) => x.id === made.json.session.id), 'revoked session hidden');
+    else assert.fail(`session revoke: ${revoked.status} ${revoked.text}`);
+
+    // 拒绝 on the computer: the phone is told and gets nothing.
+    const codeD = (await web('/remote/pair', 'POST', {})).json.url.split('#pair=')[1];
+    const scanD = await phone('/pair', { method: 'POST', body: { code: codeD } });
+    const idD = (await web('/remote')).json.requests.at(-1).id;
+    assert.equal((await web(`/remote/requests/${idD}`, 'POST', { allow: false })).status, 200);
+    const denied = await phone('/pair/claim', { method: 'POST', body: { token: scanD.json.token } });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.json.error, 'pair_denied');
+    assert.equal(denied.headers['set-cookie'], undefined);
+    assert.equal((await web('/remote')).json.devices.length, 1, 'denied phone not added');
+
     // Revoke from the computer.
     assert.equal((await web(`/remote/devices/${devices[0].id}/revoke`, 'POST', {})).status, 200);
     assert.equal((await phone('/session', { cookie: dev })).status, 401, 'revoked');
 
     // Address change: old devices end.
     const code2 = (await web('/remote/pair', 'POST', {})).json.url.split('#pair=')[1];
-    const dev2 = String((await phone('/pair', { method: 'POST', body: { code: code2 } })).headers['set-cookie']).split(';')[0];
+    const dev2 = await pairDevice(code2, { allowVia: 'control' });
     assert.equal((await phone('/session', { cookie: dev2 })).status, 200);
     await settings({ publicBaseUrl: 'https://other.example.test' });
     assert.equal((await phone('/session', { cookie: dev2, host: 'other.example.test', headers: { origin: 'https://other.example.test' } })).status, 401, 'bound to the old origin');
@@ -163,7 +208,7 @@ if (process.argv.includes('--fixture-daemon')) {
     // Turning phone access off closes everything.
     const code3 = (await web('/remote/pair', 'POST', {})).json.url.split('#pair=')[1];
     const other = 'https://other.example.test';
-    const dev3 = String((await phone('/pair', { method: 'POST', body: { code: code3 }, host: 'other.example.test', headers: { origin: other } })).headers['set-cookie']).split(';')[0];
+    const dev3 = await pairDevice(code3, { host: 'other.example.test', headers: { origin: other } });
     assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 200);
     await settings({ remoteAccess: false });
     assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 404);
@@ -172,7 +217,7 @@ if (process.argv.includes('--fixture-daemon')) {
 
     // A different machine account ends the pairing (sign-out needs the cloud; not reachable here).
     const code4 = (await web('/remote/pair', 'POST', {})).json.url.split('#pair=')[1];
-    const dev4 = String((await phone('/pair', { method: 'POST', body: { code: code4 }, host: 'other.example.test', headers: { origin: other } })).headers['set-cookie']).split(';')[0];
+    const dev4 = await pairDevice(code4, { host: 'other.example.test', headers: { origin: other } });
     assert.equal((await phone('/session', { cookie: dev4, host: 'other.example.test' })).status, 200);
     const switched = await req('/api/account/migrate', { method: 'POST', body: { credential: { ...cred, userId: 'user_2', sessionId: '22222222-3333-4444-8555-666666666666', loginOrder: 8 } } });
     const nowUser = (await req('/api/account')).json?.userId;

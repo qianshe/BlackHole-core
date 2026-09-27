@@ -20,6 +20,9 @@ import {
 } from '../../contracts/src/host-protocol.ts';
 import { localWebUrl, REDIRECT_TTL_MS, writeRedirect } from './redirect.ts';
 
+declare const __BLACKHOLE_BUILD__: { environment: 'production' | 'test'; origin: string };
+// Bundled launchers use the SAME public build selection as VS Code, not shell variables.
+const expectedOrigin = typeof __BLACKHOLE_BUILD__ === 'undefined' ? undefined : __BLACKHOLE_BUILD__.origin;
 const DEFAULT_PORT = 7306;
 const READY_TIMEOUT_MS = 30_000;
 
@@ -64,6 +67,7 @@ interface Health {
   version: string;
   daemon_id: string;
   db_path?: string;
+  cloud_origin?: string;
 }
 
 type Probe = { state: 'down' } | { state: 'foreign' } | { state: 'ok'; health: Health };
@@ -77,6 +81,9 @@ async function probe(port: number): Promise<Probe> {
   }
   const body = (await res.json().catch(() => null)) as Partial<Health> | null;
   if (res.ok && body?.ok === true && typeof body.daemon_id === 'string' && typeof body.version === 'string') {
+    if (expectedOrigin && body.cloud_origin !== expectedOrigin) {
+      throw new LaunchError('protocol_incompatible', '当前 daemon 的 Cloud 环境与桌面启动器不一致（或版本太旧无法确认环境）。请使用同环境的 daemon/插件及独立端口；不会自动重启或切换账号。');
+    }
     return { state: 'ok', health: body as Health };
   }
   return { state: 'foreign' };

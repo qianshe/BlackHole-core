@@ -6,7 +6,7 @@ import express from 'express';
 import type { EntitlementGate } from './cloud/entitlement-gate.js';
 import { ENTITLEMENT_ORIGIN } from './cloud/entitlement-public-key.js';
 import { AccountService } from './account/service.js';
-import { openSecretBackend } from './account/secret-store.js';
+import { accountSecretFile, openSecretBackend, type SecretBackend } from './account/secret-store.js';
 import { openUrl } from './account/open-url.js';
 import fs from 'node:fs';
 import type { Server } from 'node:http';
@@ -15,7 +15,7 @@ import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
 import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
-import { openOpenAITunnelCredential } from './tunnel/openai-credential.js';
+import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
 import { mountMcp } from './mcp/router.js';
 import { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import { mountPanel } from './panel/index.js';
@@ -300,13 +300,19 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     res.status(404).type('text/plain').send('bh.py not found (set BLACKHOLE_BH_PY)');
   });
 
-  // Plan 6.11: the daemon owns the cloud account; the OS credential store is probed read-only.
+  // Plan 6.11: the daemon owns the cloud account; credentials live in user-only files under the data dir.
   const accountOrigin = entitlement?.cloudOrigin ?? ENTITLEMENT_ORIGIN;
+  const dataDir = path.dirname(path.resolve(cfg.dbPath));
+  // A bad origin disables the account only; it must never stop the daemon from serving.
+  const openAccountSecrets = (origin: string): SecretBackend => {
+    try { return openSecretBackend(accountSecretFile(dataDir, origin)); }
+    catch { log('account: cloud origin rejected; signing in is unavailable'); return { kind: 'unavailable', reason: 'cloud_origin_invalid' }; }
+  };
   deps.account = new AccountService({
     origin: accountOrigin,
-    dataDir: path.dirname(path.resolve(cfg.dbPath)),
+    dataDir,
     machineState,
-    secrets: await openSecretBackend(AccountService.serviceName(accountOrigin)),
+    secrets: openAccountSecrets(accountOrigin),
     gate: entitlement,
     openExternal: openUrl,
     // Isolated tests only: refuse every cloud request so fixtures never reach a real service.
@@ -318,7 +324,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // OpenAI Secure MCP Tunnel (plan §5): parallel to the Cloudflare channel, started only on request.
   deps.openaiTunnel = new OpenAITunnelManager({
     settings: () => settings.get(),
-    credential: await openOpenAITunnelCredential(),
+    credential: await openOpenAITunnelCredential(undefined, openAITunnelSecretFile(dataDir)),
     target: () => `http://127.0.0.1:${cfg.port}${mcpPath()}`,
     log,
     onEvent: (status, detail) => {
@@ -416,3 +422,4 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     throw error;
   }
 }
+

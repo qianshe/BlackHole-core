@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # CI dependencies only; application dependency changes belong to the runtime owner.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1
+    groups:
+      actions-maintenance:
+        patterns: ['*']
+    commit-message:
+      prefix: 'ci'

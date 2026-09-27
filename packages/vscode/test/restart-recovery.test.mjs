@@ -10,6 +10,8 @@ const require = createRequire(import.meta.url), ts = require('typescript');
 const compile = name => ts.transpileModule(fs.readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const managerJs = compile('daemonManager'), statusbarJs = compile('statusbar'), sessionActionsJs = compile('sessionActions');
+// Real connection-target decision; only the prompt text is stubbed.
+const templatesModule = () => { const module = { exports: {} }; vm.runInNewContext(compile('templates'), { module, exports: module.exports }); return module.exports; };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function host(options = {}) {
@@ -63,7 +65,7 @@ function sessionActionFor(h, task = 'fixture task', options = {}) {
   const module = {exports:{}};
   vm.runInNewContext(sessionActionsJs, {module, exports:module.exports, console,
     require:name=>name==='vscode'?vscode:name==='./config'?{getConfig:()=>({connectorName:'BlackHole'})}
-      :name==='./templates'?{renderPrompt:()=>''}:require(name)});
+      :name==='./templates'?{...templatesModule(), renderPrompt:()=>''}:require(name)});
   let after = 0;
   h.api.createSession = async (...args) => { created.push(args); return {name:task,workspace_path:args[0]}; };
   return {warnings,errors,created,statuses,inputs,picks,
@@ -378,6 +380,22 @@ test('Create Session rejects a health response captured before Stop without revi
   assert.equal(h.manager.currentState, 'stopped');
   assert.equal(action.created.length, 0); assert.equal(action.after, 0);
   assert.match(action.warnings.join('\n'), /尚未确认就绪/);
+});
+
+test('Create Session accepts an OpenAI-only channel and names both channels when none is up', async t => {
+  const h = host(); t.after(() => h.manager.dispose());
+  let openai = { status: 'ready' };
+  h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
+    public_base_url:null, tunnel:'off', tunnel_url:null, openai_tunnel:openai});
+  const ready = sessionActionFor(h); await ready.run();
+  assert.equal(ready.created.length, 1); assert.deepEqual(ready.warnings, []);
+  openai = { status: 'starting' };
+  const starting = sessionActionFor(h); await starting.run();
+  assert.equal(starting.created.length, 0); assert.match(starting.warnings.join('\n'), /OpenAI 渠道正在启动/);
+  openai = { status: 'error' };
+  const none = sessionActionFor(h); await none.run();
+  assert.equal(none.created.length, 0); assert.match(none.warnings.join('\n'), /Cloudflare（持久或临时）或 OpenAI/);
+  assert.equal(h.spawns, 0, 'channel checks never start anything');
 });
 
 test('Create Session keeps a verified daemon and user-started public channel working', async t => {

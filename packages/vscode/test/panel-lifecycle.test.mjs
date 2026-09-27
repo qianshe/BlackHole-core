@@ -530,3 +530,22 @@ test('OpenAI runtime controls: key goes to the daemon only, start is bound to sa
   assert.match(result().message,/重启 daemon/);
   assert.equal(h.restarts,0,'OpenAI controls never restart the daemon');
 });
+
+test('OpenAI connection card: saved Tunnel ID shown and copied offline, fixed onboarding links only', async t => {
+  const h=harness();t.after(()=>h.panels[0]?.close());const opened=[],TID='tunnel_0123456789abcdef0123456789abcdef';
+  h.vscode.env.openExternal=async u=>{opened.push(u);return true;};h.vscode.Uri={parse:s=>({href:s})};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[]);assert.match(h.warnings.at(-1),/尚未保存 Tunnel ID/);
+  h.settings.openaiTunnelId=TID;h.api.health=async()=>{throw Error('offline');};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[TID],'copy works while the daemon is unreachable');
+  await h.instance.dispatch({type:'ready'});await settle();await settle();
+  const overview=h.panels[0].messages.map(m=>m.overview).filter(Boolean).at(-1);
+  assert.equal(overview.openai_tunnel_id,TID);
+  for(const target of ['platform','chatgpt','constructor','__proto__','https://evil.example'])await h.instance.dispatch({type:'openLink',target});
+  assert.deepEqual(opened.map(u=>u.href),['https://platform.openai.com/settings/organization/tunnels','https://chatgpt.com/plugins']);
+  const html=h.panels[0].webview.html;
+  for(const id of ['mcpSec','oaLinkPlatform','oaLinkChatgpt'])assert.ok(html.includes('id="'+id+'"'),id);
+  const card=html.slice(html.indexOf('id="channelOpenai"'),html.indexOf('id="channelCustom"'));
+  assert.match(card,/Tunnels Read\/Use/);assert.match(card,/不支持沙箱直连/);
+});

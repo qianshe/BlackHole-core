@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView } from '../api';
-import { readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
+import { pickDefaultSession, readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
 import { NewSessionDialog } from '../NewSession';
 import { FolderPicker } from '../FolderPicker';
 import { SubscriptionBanner } from '../SubscriptionBanner';
@@ -14,6 +14,8 @@ import { SessionPane } from './SessionPane';
 import { SettingsModal } from './SettingsModal';
 import { Sidebar } from './Sidebar';
 import c from './console.module.css';
+import { useSessionActions } from './sessionActions';
+import { PairPrompt } from './PairPrompt';
 
 function useViewState(): [ViewState, (patch: Partial<ViewState>) => void] {
   const [view, setView] = useState<ViewState>(() => readViewState(window.location.search));
@@ -138,7 +140,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   useEffect(() => {
     if (!sessions.data) return;
     if (view.session && list.some((x) => x.id === view.session)) return;
-    const first = list.find((x) => x.status === 'active' || x.status === 'paused') ?? list[0];
+    const first = pickDefaultSession(list);
     setView({ session: first?.id ?? null });
   }, [sessions.data, list, view.session, setView]);
   const current = list.find((x) => x.id === view.session) ?? null;
@@ -165,7 +167,16 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const refreshAll = (): void => {
     sessions.refresh();
     confirmations.refresh();
-  };
+  };  // one implementation shared by the sidebar row menu and the session header menu
+  const actions = useSessionActions({
+    toast,
+    confirm: setConfirmSpec,
+    onChanged: refreshAll,
+    onRotated: setRotated,
+    connectorName: settings.data?.values.connectorName ?? 'BlackHole',
+    mcpUrl: health.data?.mcp_url ?? null,
+  });
+
 
   const onAccount = (k: 'buy' | 'orders' | 'settings' | 'signout'): void => {
     if (k !== 'signout') return openSettings(k === 'settings' ? 'overview' : 'account');
@@ -195,6 +206,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         account={account}
         now={now}
         collapsed={collapsed}
+        actions={actions}
         onToggle={() => setCollapsed((x) => !x)}
         onSelect={select}
         onNew={(path) => setNewSession(path ?? '')}
@@ -258,13 +270,10 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
               session={current}
               approvals={pendingList.filter((x) => x.session_id === current.id)}
               now={now}
-              connectorName={settings.data?.values.connectorName ?? 'BlackHole'}
-              mcpUrl={health.data?.mcp_url ?? null}
+              actions={actions}
               onApprove={setApproving}
               onApprovalsChanged={refreshAll}
               onChanged={refreshAll}
-              confirm={setConfirmSpec}
-              onRotated={setRotated}
             />
           ) : (
             <div className={c.center}>
@@ -324,6 +333,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         />
       )}
       {confirmSpec && <ConfirmDialog spec={confirmSpec} onClose={() => setConfirmSpec(null)} />}
+      <PairPrompt toast={toast} />
       {renaming && (
         <PromptDialog
           title="重命名项目"

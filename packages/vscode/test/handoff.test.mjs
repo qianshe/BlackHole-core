@@ -145,3 +145,31 @@ test('list Handoff actions use a right anchor and a shared status column', () =>
   assert.match(handoffStyles, /#list\[data-mode="sessions"\] \.row \.st\s*\{[^}]*text-align:right/);
   assert.doesNotMatch(handoffStyles, /\.st\s*\{[^}]*width:\s*7em/);
 });
+
+test('OpenAI-only handoff: URL-free connector prompt is allowed, sandbox is refused with guidance', async () => {
+  const local = over => ({ ...snapshot(), mcp_url: 'http://127.0.0.1:7306/mcp/token', ...over });
+  const ready = local({ openai_tunnel: { status: 'ready' } });
+  const text = await prepareHandoffPrompt({ handoff: async () => ready }, 'session-a', 'handoff-a', 'connector', 'BlackHole');
+  assert.ok(text.startsWith('@BlackHole\n')); assert.ok(!text.includes('127.0.0.1'));
+  await assert.rejects(prepareHandoffPrompt({ handoff: async () => ready }, 'session-a', 'handoff-a', 'sandbox', 'BlackHole'), /沙箱直连需要公网地址/);
+  await assert.rejects(prepareHandoffPrompt({ handoff: async () => local({ openai_tunnel: { status: 'starting' } }) }, 'session-a', 'handoff-a', 'connector', 'BlackHole'), /正在启动/);
+  for (const oa of [undefined, null, { status: 'off' }, { status: 'error' }, { status: 'stopping' }]) {
+    await assert.rejects(prepareHandoffPrompt({ handoff: async () => local({ openai_tunnel: oa }) }, 'session-a', 'handoff-a', 'connector', 'BlackHole'), /Cloudflare 或 OpenAI/);
+  }
+  const both = { ...snapshot(), openai_tunnel: { status: 'ready' } };
+  assert.match(await prepareHandoffPrompt({ handoff: async () => both }, 'session-a', 'handoff-a', 'sandbox', 'BlackHole'), /https:\/\/example\.invalid\/bridge\/bh\.py\?sessionid=/);
+});
+
+test('connectionTarget is the one pure decision for create, copy and handoff', () => {
+  const { connectionTarget } = handoffModules['./templates'];
+  const t = h => ({ ...connectionTarget(h) });
+  const none = { publicUrl: null, openai: 'off', connector: false, sandbox: false };
+  assert.deepEqual(t(null), none);
+  assert.deepEqual(t({ tunnel: 'online', tunnel_url: 'https://q.example' }), { publicUrl: 'https://q.example', openai: 'off', connector: true, sandbox: true });
+  assert.deepEqual(t({ tunnel: 'starting', tunnel_url: 'https://q.example' }), none);
+  assert.deepEqual(t({ tunnel: 'off', public_base_url: 'https://fixed.example' }), { publicUrl: 'https://fixed.example', openai: 'off', connector: true, sandbox: true });
+  assert.deepEqual(t({ tunnel: 'off', openai_tunnel: { status: 'ready' } }), { publicUrl: null, openai: 'ready', connector: true, sandbox: false });
+  assert.deepEqual(t({ openai_tunnel: { status: 'recovering' } }), { publicUrl: null, openai: 'ready', connector: true, sandbox: false });
+  assert.deepEqual(t({ openai_tunnel: { status: 'starting' } }), { ...none, openai: 'starting' });
+  for (const status of ['off', 'stopping', 'error', 'unavailable']) assert.deepEqual(t({ openai_tunnel: { status } }), none);
+});

@@ -2,21 +2,30 @@ name: Cloudflared Install CI
 
 on:
   pull_request:
+    branches: [main]
     paths:
+      - 'src/tunnel/cloudflared-install.ts'
       - 'packages/vscode/src/cloudflaredInstall.ts'
       - 'packages/vscode/test/cloudflared-install*.test.mjs'
-      - '.github/workflows/cloudflared-install.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'packages/vscode/src/cloudflaredInstall.ts'
-      - 'packages/vscode/test/cloudflared-install*.test.mjs'
+      - 'package.json'
+      - 'packages/vscode/package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/cloudflared-install.yml'
   workflow_dispatch:
+    inputs:
+      live_downloads:
+        description: 'Run real upstream downloads on all supported installer platforms'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: installer-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   detect-and-install:
@@ -48,12 +57,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.0.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22.20.0
           cache: pnpm
@@ -62,6 +73,7 @@ jobs:
       - name: Installer unit tests
         run: node --test --experimental-test-isolation=none packages/vscode/test/cloudflared-install.test.mjs
       - name: Real download, verification, reuse and PATH detection
+        if: github.event_name == 'workflow_dispatch' && inputs.live_downloads
         env:
           BH_CLOUDFLARED_LIVE: '1'
           BH_EXPECTED_PLATFORM: ${{ matrix.platform }}

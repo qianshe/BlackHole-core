@@ -149,6 +149,8 @@ export interface HandoffSnapshot {
   available: boolean;
   session: SessionInfo;
   mcp_url: string;
+  /** Status only; older daemons omit it. Lets handoff accept URL-free connector prompts over OpenAI. */
+  openai_tunnel?: { status: OpenAITunnelStatus } | null;
 }
 
 export interface CreatedSession extends SessionInfo {
@@ -372,6 +374,8 @@ export interface RemoteView {
   origin: string | null;
   kind: 'quick' | 'fixed' | null;
   devices: RemoteDevice[];
+  /** phones that scanned the code and wait for 允许 on this computer */
+  requests?: { id: string; name: string; created_at: string; expires_at: string }[];
 }
 
 export class ControlApi {
@@ -391,6 +395,10 @@ export class ControlApi {
 
   remotePair(): Promise<{ url: string; expires_at: string; kind: string }> {
     return this.req('POST', '/remote/pair', undefined, 4000);
+  }
+
+  remoteDecide(id: string, allow: boolean): Promise<RemoteView> {
+    return this.req('POST', `/remote/requests/${encodeURIComponent(id)}`, { allow }, 4000);
   }
 
   remoteRevoke(id: string): Promise<RemoteView> {

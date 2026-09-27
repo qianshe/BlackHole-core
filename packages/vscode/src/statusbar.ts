@@ -174,7 +174,7 @@ export class StatusBarController implements Disposable {
     } else if (t === 'unreachable') {
       this.set('$(broadcast) BlackHole', 'BlackHole daemon：运行中（渠道状态未知，点击打开设置）', before);
     } else {
-      this.set('$(circle-slash) 渠道未启动', 'BlackHole 渠道：未启动。创建会话前需先启动（点击打开设置）', before);
+      this.set('$(circle-slash) 渠道未启动', 'BlackHole 渠道：未启动。创建会话前需先启动 Cloudflare 或 OpenAI 渠道（点击打开设置）', before);
     }
     this.item.backgroundColor = t === 'error' ? new ThemeColor('statusBarItem.errorBackground') : undefined;
   }

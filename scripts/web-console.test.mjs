@@ -113,8 +113,13 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await web(`/panel/sessions/${sid}/rotate`, 'POST', {})).status, 200);
     assert.notEqual((await web(`/panel/sessions/${sid}`)).json.session_id, before, 'rotate issues a new id');
     assert.equal((await web(`/panel/sessions/${sid}/pause`, 'POST', {}, { noCsrf: true })).status, 403);
-    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { mode: 'danger-full-access' })).status, 404, 'only listed actions pass');
+    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { permission_mode: 'read-only' }, { noCsrf: true })).status, 403);
+    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { permission_mode: 'read-only' })).status, 200);
+    assert.equal((await web('/sessions')).json.sessions.find((x) => x.id === sid).permission_mode, 'read-only');
+    assert.equal((await web(`/panel/sessions/${sid}/writable_dirs`, 'PATCH', { writable_dirs: [] })).status, 404, 'only listed actions pass');
     assert.equal((await web(`/panel/sessions/${sid}/revoke`, 'POST', {})).status, 200);
-    assert.equal(await status(), 'revoked');
+    // ended sessions are gone from every list (the row itself is kept but never shown)
+    assert.equal((await web('/sessions')).json.sessions.some((x) => x.id === sid), false, 'revoked session hidden');
+    assert.equal((await web(`/sessions/${sid}`)).json.status, 'revoked');
   });
 }

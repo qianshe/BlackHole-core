@@ -88,6 +88,8 @@ export interface DaemonDeps {
     view(): unknown;
     pair(): { url: string; expires_at: string | null; kind: string } | null;
     revoke(id: string): boolean;
+    /** 允许 / 拒绝 a phone that scanned the code; false when the request is gone */
+    decide(id: string, allow: boolean): boolean;
   };
   /** wired by daemon.ts once the graceful stop path exists (POST /api/shutdown) */
   shutdown?: () => Promise<void>;

@@ -15,7 +15,6 @@ const LABEL: Record<SettingsSection, string> = {
   common: '常用',
   grants: '授权管理',
   proxies: 'MCP Proxies',
-  agents: 'Web Agent 显示',
   advanced: '高级',
 };
 

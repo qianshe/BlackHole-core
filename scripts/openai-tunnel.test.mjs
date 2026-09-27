@@ -2,7 +2,7 @@
 // Uses a fake child process only — never starts tunnel-client or reaches OpenAI.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import express from 'express';
 import { OpenAITunnelManager, OpenAITunnelError, classifyLog } from '../dist/tunnel/openai-manager.js';
-import { CredentialStoreError, memoryEntryFactory, openOpenAITunnelCredential, strictStore } from '../dist/tunnel/openai-credential.js';
+import { CredentialStoreError, memoryEntryFactory, openAITunnelSecretFile, openOpenAITunnelCredential, strictStore } from '../dist/tunnel/openai-credential.js';
 import { mountOpenAITunnel, nativeLoopbackRequest } from '../dist/control/openai-tunnel-routes.js';
 
 const ID = 'tunnel_0123456789abcdef0123456789abcdef';
@@ -243,16 +243,35 @@ test('strict credential store: set reads back, delete is confirmed, failures are
   await s.set(KEY);
   assert.equal(await s.has(), true);
   assert.equal(await s.remove(), 'deleted');
-  const lying = strictStore('keyring', () => ({ setPassword: async () => {}, getPassword: async () => 'other', deletePassword: async () => true }));
+  const lying = strictStore('file', () => ({ setPassword: async () => {}, getPassword: async () => 'other', deletePassword: async () => true }));
   await assert.rejects(lying.set(KEY), (e) => e instanceof CredentialStoreError && e.code === 'credential_store_failed');
   await assert.rejects(lying.remove(), (e) => e.code === 'credential_delete_unconfirmed');
-  const hung = strictStore('keyring', () => ({ setPassword: () => new Promise(() => {}), getPassword: () => new Promise(() => {}), deletePassword: async () => true }), 20);
+  const hung = strictStore('file', () => ({ setPassword: () => new Promise(() => {}), getPassword: () => new Promise(() => {}), deletePassword: async () => true }), 20);
   const keepAlive = setInterval(() => {}, 5); // the store's timer is unref'd (the daemon keeps the loop alive)
   try { await assert.rejects(hung.get(), (e) => e.code === 'credential_store_timeout'); } finally { clearInterval(keepAlive); }
-  const broken = strictStore('keyring', () => ({ setPassword: async () => { throw new Error(`boom ${KEY}`); }, getPassword: async () => undefined, deletePassword: async () => true }));
+  const broken = strictStore('file', () => ({ setPassword: async () => { throw new Error(`boom ${KEY}`); }, getPassword: async () => undefined, deletePassword: async () => true }));
   await assert.rejects(broken.set(KEY), (e) => e.code === 'credential_store_failed' && !e.message.includes(KEY));
-  assert.equal((await openOpenAITunnelCredential(undefined, async () => { throw new Error('no module'); })).kind, 'unavailable');
+  assert.equal((await openOpenAITunnelCredential(undefined)).kind, 'unavailable', 'no data dir, no store');
+  const blocker = path.join(mkdtempSync(path.join(tmpdir(), 'bh-oa-')), 'not-a-dir');
+  writeFileSync(blocker, 'x');
+  assert.equal((await openOpenAITunnelCredential(undefined, path.join(blocker, 'secrets', 'openai-tunnel.json'))).kind, 'unavailable', 'unwritable dir');
+  rmSync(path.dirname(blocker), { recursive: true, force: true });
   assert.equal((await openOpenAITunnelCredential('memory')).kind, 'memory');
+});
+
+test('file credential store: survives a restart, sealed on Windows, delete removes the file', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bh-oa-file-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = openAITunnelSecretFile(dir);
+  const a = await openOpenAITunnelCredential(undefined, file);
+  assert.equal(a.kind, 'file');
+  assert.equal(await a.has(), false);
+  await a.set(KEY);
+  assert.ok(!readFileSync(file, 'utf8').includes(KEY) || process.platform !== 'win32', 'Windows seals the key with DPAPI');
+  const b = await openOpenAITunnelCredential(undefined, file); // a restarted daemon
+  assert.equal(await b.get(), KEY);
+  assert.equal(await b.remove(), 'deleted');
+  assert.equal(existsSync(file), false, 'nothing left on disk');
+  assert.equal(await a.has(), false);
 });
 
 // ---- control routes ------------------------------------------------------
@@ -330,3 +349,4 @@ test('native loopback predicate', () => {
   assert.equal(nativeLoopbackRequest(req('127.0.0.1:7777', {}, '10.0.0.2')), false);
   assert.equal(nativeLoopbackRequest(req('127.0.0.1:7777', { 'cf-connecting-ip': '1.1.1.1' })), false);
 });
+

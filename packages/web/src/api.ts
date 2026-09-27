@@ -173,6 +173,7 @@ export const api = {
   resolveConfirmation: (id: string, action: 'approve' | 'deny', scope?: ApprovalScope) =>
     request<{ id: string; status: string | null }>(`/confirmations/${encodeURIComponent(id)}/${action}`, json('POST', action === 'approve' ? { scope: scope ?? 'once' } : {})),
   sessionCredential: (id: string) => request<{ session_id: string; name: string | null }>(`/panel/sessions/${encodeURIComponent(id)}`),
+  setSessionMode: (id: string, mode: PermissionMode) => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/mode`, json('PATCH', { permission_mode: mode })),
   sessionAction: (id: string, action: 'pause' | 'resume' | 'revoke' | 'rotate') => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/${action}`, json('POST', {})),
 };
 
@@ -212,6 +213,9 @@ export interface Health {
   tunnel_url: string | null;
   tunnel_reason: string | null;
   public_base_url: string | null;
+  /** present when the daemon has the OpenAI tunnel manager (see src/tunnel/openai-manager.ts) */
+  openai_tunnel_api_version?: number;
+  openai_tunnel?: { status: string; reason: string | null; reason_code?: string | null; active_tunnel_id?: string | null; pending_restart?: boolean } | null;
   mcp_url: string;
   mcp_path: string;
   stats?: { total: number; diff_added: number; diff_removed: number } | null;
@@ -274,11 +278,12 @@ export const panel = {
 
 // ─── phone access (plan 6.13 R4) ─────────────────────────────────────────
 export interface RemoteDevice { id: string; name: string; created_at: string; last_seen_at: string }
-export interface RemoteView { enabled: boolean; available: boolean; reason: string | null; origin: string | null; kind: 'quick' | 'fixed' | null; devices: RemoteDevice[] }
+export interface RemotePairRequest { id: string; name: string; created_at: string; expires_at: string }
+export interface RemoteView { enabled: boolean; available: boolean; reason: string | null; origin: string | null; kind: 'quick' | 'fixed' | null; devices: RemoteDevice[]; requests?: RemotePairRequest[] }
 export const remoteAdmin = {
   view: () => request<RemoteView>('/remote'),
   pair: () => request<{ url: string; expires_at: string; kind: string }>('/remote/pair', json('POST', {})),
   revoke: (id: string) => request<RemoteView>(`/remote/devices/${encodeURIComponent(id)}/revoke`, json('POST', {})),
   revokeAll: () => request<RemoteView>('/remote/revoke-all', json('POST', {})),
+  decide: (id: string, allow: boolean) => request<RemoteView>(`/remote/requests/${encodeURIComponent(id)}`, json('POST', { allow })),
 };
-

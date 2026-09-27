@@ -548,27 +548,6 @@ export function SettingsPanel() {
       <div className="sec" id="set-proxies">MCP Proxies</div>
       <Proxies ui={ui} />
 
-      <div className="sec" id="set-agents">Web Agent 显示</div>
-      <div className="card">
-        <div className="hint" style={{ margin: '0 0 10px' }}>选择要显示的预置站点；自定义站点始终显示。</div>
-        <div className="agrid">
-          {AGENTS.map((a) => <button key={a.name} type="button" className={'agchip' + (agentsOn.has(a.name) ? ' on' : '')} title={a.description} onClick={() => setAgentsOn((s) => { const n = new Set(s); if (n.has(a.name)) n.delete(a.name); else n.add(a.name); return n; })}><span className="d" />{a.name}</button>)}
-        </div>
-        <div className="subsec">自定义站点（手动添加）</div>
-        <div>
-          {!server?.values.customWebAgents.length ? <div className="hint" style={{ margin: 0 }}>还没有自定义站点。</div>
-            : server.values.customWebAgents.map((a) => (
-              <div className="ag-row" key={a.name}><span className="mono-g">{(a.name || '?').charAt(0).toUpperCase()}</span><span className="nm">{a.name}</span><span className="u">{a.url}</span>
-                <button className="del" type="button" title="删除该自定义站点" onClick={() => void removeCustomAgent(a.name)}>删除</button></div>
-            ))}
-        </div>
-        <div className="waadd">
-          <input name="wa-name" aria-label="Web Agent 名称" className="nm" placeholder="名称，如 Kimi" spellCheck={false} value={waName} onChange={(e) => setWaName(e.target.value)} />
-          <input name="wa-url" aria-label="Web Agent 网址" placeholder="网址，如 kimi.com" spellCheck={false} value={waUrl} onChange={(e) => setWaUrl(e.target.value)} />
-          <button className="secondary" type="button" onClick={() => void addCustomAgent()}>添加</button>
-        </div>
-      </div>
-
       <details id="set-advanced"><summary>高级</summary><div className="card" style={{ marginTop: 8 }}><div className="fgrid">
         {field('tunnelProbeProxy')}
         {field('gitUsrBinPath')}

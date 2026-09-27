@@ -6,7 +6,7 @@ import c from './console.module.css';
 
 // ─── toasts ───────────────────────────────────────────────────────────
 type ToastTone = 'ok' | 'warn' | 'bad';
-type ToastFn = (text: string, tone?: ToastTone) => void;
+export type ToastFn = (text: string, tone?: ToastTone) => void;
 const ToastCtx = createContext<ToastFn>(() => undefined);
 export const useToast = (): ToastFn => useContext(ToastCtx);
 
@@ -224,7 +224,7 @@ export function useMenu(): {
     };
     document.addEventListener('mousedown', onDown);
     // focus the first item so keyboard users land inside the menu
-    requestAnimationFrame(() => wrapRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus());
+    requestAnimationFrame(() => wrapRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled)')?.focus());
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
   const onKeyDown = (e: React.KeyboardEvent): void => {
@@ -237,7 +237,7 @@ export function useMenu(): {
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
-    const items = [...(wrapRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+    const items = [...(wrapRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)') ?? [])];
     const i = items.indexOf(document.activeElement as HTMLElement);
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
   };

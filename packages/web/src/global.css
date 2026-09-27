@@ -57,6 +57,8 @@
   --text-3: #616161;
   --accent: #005fb8;
   --accent-hover: #0258a8;
+  --accent-fill: #005fb8;
+  --accent-fill-hover: #0258a8;
   --accent-soft: #e5eff9;
   --accent-text: #004c94;
   --focus: #005fb8;
@@ -98,6 +100,8 @@
     --text-3: #8f8f8f;
     --accent: #3794ff;
     --accent-hover: #5aa6ff;
+    --accent-fill: #1f6fd1;
+    --accent-fill-hover: #2a7de0;
     --accent-soft: #1b2b40;
     --accent-text: #8cc2ff;
     --focus: #3794ff;

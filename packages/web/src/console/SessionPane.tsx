@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, panel, type CallView, type ConfirmationView, type SessionView } from '../api';
-import { renderPrompt } from '../../../vscode/src/templates';
+import { api, type CallView, type ConfirmationView, type SessionView } from '../api';
+import { toolCallDisplay } from '../../../vscode/src/callDisplay';
+import { displayToolName } from '../../../vscode/src/toolNames';
 import {
-  argsPreview,
   callDuration,
+  callHeadline,
   callTone,
+  resultBody,
+  resultDiff,
   CALL_STATUS_LABEL,
   formatFull,
   matchCall,
@@ -19,7 +22,8 @@ import {
 import { POLL_MS, usePoll } from '../usePoll';
 import { CopyButton, Icon } from '../ui';
 import { ApprovalCard } from './Approval';
-import { copyText, failText, useMenu, useToast, type ConfirmSpec } from './common';
+import { failText, useMenu } from './common';
+import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
 
 const PAGE = 50;
@@ -28,13 +32,10 @@ interface Props {
   session: SessionView;
   approvals: ConfirmationView[];
   now: number;
-  connectorName: string;
-  mcpUrl: string | null;
+  actions: SessionActions;
   onApprove: (x: ConfirmationView) => void;
   onApprovalsChanged: () => void;
   onChanged: () => void;
-  confirm: (spec: ConfirmSpec) => void;
-  onRotated: (sessionId: string) => void;
 }
 
 /** Pending approval for an awaiting row: same tool and args, else the oldest of the session. */
@@ -44,8 +45,12 @@ function approvalFor(call: CallView, list: ConfirmationView[]): ConfirmationView
 }
 
 function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: boolean; fresh: boolean; onToggle: () => void; onApprove?: () => void }) {
-  const preview = argsPreview(x.args) || x.result_summary || '';
-  const argsText = JSON.stringify(x.args, null, 2);
+  // same wording as the VS Code sidebar card (tool name, summary, details)
+  const shown = toolCallDisplay(x.tool, JSON.stringify(x.args ?? {}));
+  const head = callHeadline(displayToolName(x.tool), x.args, shown.summary);
+  const argsText = shown.details;
+  const diff = resultDiff(x.result_summary);
+  const body = resultBody(x.result_summary);
   const tone = callTone(x.status);
   const dur = callDuration(x);
   return (
@@ -55,9 +60,13 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
           <span className={c[`dot_${tone}`]} aria-hidden="true" />
           {CALL_STATUS_LABEL[x.status] ?? x.status}
         </span>
-        <span className={c.tool}>{x.tool}</span>
-        <span className={c.desc} title={preview}>
-          {preview}
+        <span className={c.callMain} title={`${head.label} · ${head.target}`}>
+          <span className={c.tool}>{head.label}</span>
+          <span className={c.desc}>{head.target}</span>
+        </span>
+        <span className={c.diff} aria-label={diff ? `新增 ${diff.added} 行，删除 ${diff.removed} 行` : undefined}>
+          {diff && diff.added > 0 && <span className={c.diffAdd}>+{diff.added}</span>}
+          {diff && diff.removed > 0 && <span className={c.diffDel}>−{diff.removed}</span>}
         </span>
         <span className={c.duration} title={formatFull(x.created_at)}>
           {onApprove ? '' : dur ?? (x.status === 'started' ? '执行中' : '')}
@@ -78,13 +87,13 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
             </div>
             <pre className={c.pre}>{argsText}</pre>
           </div>
-          {x.result_summary && (
+          {body && (
             <div className={c.block}>
               <div className={c.blockHead}>
-                <span>结果摘要</span>
-                <CopyButton text={x.result_summary} />
+                <span>结果</span>
+                <CopyButton text={body} />
               </div>
-              <pre className={c.pre}>{x.result_summary}</pre>
+              <pre className={c.pre}>{body}</pre>
             </div>
           )}
           <div className={c.callFoot}>
@@ -99,9 +108,8 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
   );
 }
 
-function SessionMenu({ session, onRotate, onPrompt, onRevoke }: { session: SessionView; onRotate: () => void; onPrompt: (k: 'connector' | 'sandbox') => void; onRevoke: () => void }) {
+function SessionMenu({ session, actions, goal }: { session: SessionView; actions: SessionActions; goal: string | null }) {
   const m = useMenu();
-  const ended = session.status === 'revoked' || session.status === 'archived';
   const pick = (fn: () => void) => () => {
     m.close();
     fn();
@@ -113,27 +121,15 @@ function SessionMenu({ session, onRotate, onPrompt, onRevoke }: { session: Sessi
       </button>
       {m.open && (
         <div className={c.sessionMenu} role="menu">
-          <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => onPrompt('connector'))}>
-            复制连接器提示词
-          </button>
-          <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => onPrompt('sandbox'))}>
-            复制沙箱提示词
-          </button>
-          <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(onRotate)}>
-            重置会话 ID
-          </button>
-          <div className={c.menuSep} />
-          <button type="button" role="menuitem" className={c.menuDanger} disabled={ended} onClick={pick(onRevoke)}>
-            终止会话
-          </button>
+          <SessionMenuItems s={session} actions={actions} pick={pick} goal={goal} />
         </div>
       )}
     </div>
   );
 }
 
-export function SessionPane({ session, approvals, now, connectorName, mcpUrl, onApprove, onApprovalsChanged, onChanged, confirm, onRotated }: Props) {
-  const toast = useToast();
+export function SessionPane({ session, approvals, now, actions, onApprove, onApprovalsChanged, onChanged }: Props) {
+
   const [page, setPage] = useState(1);
   const [tool, setTool] = useState('');
   const [status, setStatus] = useState('');
@@ -182,57 +178,8 @@ export function SessionPane({ session, approvals, now, connectorName, mcpUrl, on
 
   const act = (action: 'pause' | 'resume'): void => {
     setBusy(true);
-    api.sessionAction(session.id, action).then(
-      () => {
-        toast(action === 'pause' ? '会话已暂停，AI 暂时无法调用工具' : '会话已恢复');
-        onChanged();
-      },
-      (e: unknown) => toast(failText(e), 'bad'),
-    ).finally(() => setBusy(false));
+    void actions.pauseResume(session, action).finally(() => setBusy(false));
   };
-
-  const copyConnection = async (): Promise<void> => {
-    const url = mcpUrl ?? (await panel.health().then((h) => h.mcp_url, () => null));
-    if (!url) return toast('还没有可用的连接地址', 'warn');
-    const ok = await copyText(url);
-    toast(ok ? '连接地址已复制' : '复制失败，请手动复制', ok ? 'ok' : 'bad');
-  };
-
-  const copyPrompt = async (kind: 'connector' | 'sandbox'): Promise<void> => {
-    try {
-      const [cred, url] = await Promise.all([api.sessionCredential(session.id), mcpUrl ? Promise.resolve(mcpUrl) : panel.health().then((h) => h.mcp_url)]);
-      const text = renderPrompt(kind, url, cred.session_id, todos.data?.contract?.goal ?? null, connectorName);
-      const ok = await copyText(text);
-      toast(ok ? (kind === 'connector' ? '连接器提示词已复制，发给 AI 即可开始' : '沙箱提示词已复制，发给 AI 即可开始') : '复制失败', ok ? 'ok' : 'bad');
-    } catch (e) {
-      toast(failText(e), 'bad');
-    }
-  };
-
-  const rotate = (): void =>
-    confirm({
-      title: '重置会话 ID',
-      body: '旧 ID 会立即失效，会话内容保留。之后需要把新的提示词发给 AI。',
-      action: '重置',
-      run: async () => {
-        const r = (await api.sessionAction(session.id, 'rotate')) as { session_id?: string };
-        onChanged();
-        if (r.session_id) onRotated(r.session_id);
-      },
-    });
-
-  const revoke = (): void =>
-    confirm({
-      title: '终止会话',
-      body: `终止「${sessionTitle(session)}」后，AI 无法再用它调用工具，正在运行的命令会被停止。此操作不能撤销。`,
-      action: '终止会话',
-      danger: true,
-      run: async () => {
-        await api.sessionAction(session.id, 'revoke');
-        toast('会话已终止');
-        onChanged();
-      },
-    });
 
   const board = todos.data;
   const items = board?.items ?? [];
@@ -263,10 +210,10 @@ export function SessionPane({ session, approvals, now, connectorName, mcpUrl, on
                   <Icon name="pause" size={14} /> 暂停
                 </button>
               ))}
-            <button type="button" className={c.btn} disabled={ended} onClick={() => void copyConnection()}>
+            <button type="button" className={c.btn} disabled={ended} onClick={() => void actions.copyConnection()}>
               <Icon name="link" size={14} /> 复制连接
             </button>
-            <SessionMenu session={session} onRotate={rotate} onPrompt={(k) => void copyPrompt(k)} onRevoke={revoke} />
+            <SessionMenu session={session} actions={actions} goal={todos.data?.contract?.goal ?? null} />
           </div>
         </div>
         <div className={c.facts}>
@@ -317,6 +264,13 @@ export function SessionPane({ session, approvals, now, connectorName, mcpUrl, on
               </select>
             </div>
           </div>
+          {approvals.length > 0 && (
+            <button type="button" className={c.narrowApprovals} onClick={() => onApprove(approvals[0]!)}>
+              <span className={c.dot_warn} aria-hidden="true" />
+              {approvals.length} 个待审批
+              <span>审批 ›</span>
+            </button>
+          )}
           {calls.error && !calls.data ? (
             <p className={c.feedNote} role="alert">
               {failText(calls.error)}

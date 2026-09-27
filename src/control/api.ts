@@ -679,6 +679,8 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       available: session.status === 'active' && (session.expires_at === null || session.expires_at >= Date.now()),
       session: publicSession(session),
       mcp_url: mcpUrl(deps),
+      // Status only: a URL-free connector prompt also works over the OpenAI tunnel.
+      openai_tunnel: deps.openaiTunnel ? { status: deps.openaiTunnel.view().status } : null,
     });
   });
 
@@ -768,6 +770,12 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     const r = deps.remote?.pair();
     if (!r) { res.status(409).json({ error: 'remote_unavailable' }); return; }
     res.json(r);
+  });
+  app.post('/remote/requests/:id', (req, res) => {
+    const allow = (req.body as { allow?: unknown } | undefined)?.allow;
+    if (typeof allow !== 'boolean') { res.status(400).json({ error: 'invalid_body' }); return; }
+    if (!deps.remote?.decide(String(req.params.id), allow)) { res.status(404).json({ error: 'request_not_found' }); return; }
+    res.json(deps.remote.view());
   });
   app.post('/remote/devices/:id/revoke', (req, res) => {
     if (!deps.remote?.revoke(String(req.params.id))) { res.status(404).json({ error: 'device_not_found' }); return; }

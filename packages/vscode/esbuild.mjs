@@ -64,12 +64,12 @@ const daemonExternals = [
   // sandboxed-shell → pwsh → windows-env; sandboxed-shell → acl-sandbox → ffi → koffi
   '../workspace/sandboxed-shell.js',
   '../workspace/pwsh.js',
+  '../workspace/shell-codepage.js', // pwsh → shell-codepage (console code-page transport)
   '../workspace/windows-env.js',
   '../win32/acl-sandbox.js',
   '../win32/ffi.js',
   'koffi',
   // daemon-owned account storage (plan 6.11): native per-platform binaries, shipped like koffi
-  '@napi-rs/keyring',
 ];
 const daemonOptions = {
   ...common,
@@ -114,7 +114,7 @@ function writeModuleTypeMarkers() {
 // exact relative path the daemon's createRequire('../workspace/sandboxed-shell.js')
 // resolves to from dist/daemon/cli.js — dist/daemon/workspace/sandboxed-shell.js.
 function copyDaemonExternals(rootDist) {
-  const files = ['workspace/sandboxed-shell.js', 'workspace/pwsh.js', 'workspace/windows-env.js', 'win32/acl-sandbox.js', 'win32/ffi.js'];
+  const files = ['workspace/sandboxed-shell.js', 'workspace/pwsh.js', 'workspace/shell-codepage.js', 'workspace/windows-env.js', 'win32/acl-sandbox.js', 'win32/ffi.js'];
   mkdirSync('dist/daemon/workspace', { recursive: true });
   mkdirSync('dist/daemon/win32', { recursive: true });
   // Two resolution bases coexist in the bundle:
@@ -131,35 +131,8 @@ function copyDaemonExternals(rootDist) {
     copyAsset(`${rootDist}/${rel}`, `dist/${rel}`);
   }
   copyKoffiNodeModules();
-  copyKeyringNodeModules();
-}
-
-/**
- * @napi-rs/keyring resolves its native binary from a sibling
- * @napi-rs/keyring-<target> package. Ships the loader plus every target
- * package found locally or fetched by scripts/fetch-keyring-prebuilds.mjs
- * (.cache/keyring-prebuilds). A target without a binary reports account
- * storage as unavailable instead of crashing the daemon.
- */
-function copyKeyringNodeModules() {
-  const loader = realpathSync('../../node_modules/@napi-rs/keyring');
-  const dest = 'dist/daemon/node_modules/@napi-rs';
-  rmSync(dest, { recursive: true, force: true });
-  copyRealFileTree(loader, `${dest}/keyring`, isRuntimeKoffiFile);
-  const found = new Map();
-  const pnpmStore = join(loader, '..');
-  for (const dir of [pnpmStore, join(process.cwd(), '../../.cache/keyring-prebuilds')]) {
-    let names = [];
-    try { names = readdirSync(dir); } catch { names = []; }
-    for (const name of names) {
-      const m = /^(?:@napi-rs\+)?keyring-([a-z0-9-]+?)(?:@[\d.]+)?$/.exec(name);
-      if (!m || found.has(m[1])) continue;
-      const pkg = existsSync(join(dir, name, 'package.json')) ? join(dir, name) : join(dir, name, 'node_modules/@napi-rs', `keyring-${m[1]}`);
-      if (existsSync(join(pkg, 'package.json'))) found.set(m[1], pkg);
-    }
-  }
-  for (const [target, pkg] of found) copyRealFileTree(pkg, `${dest}/keyring-${target}`, isRuntimeKoffiFile);
-  console.log(`copied @napi-rs/keyring (${[...found.keys()].join(', ') || 'no native targets'})`);
+  // The OS keyring module is gone (credentials are files now); drop copies left by older builds.
+  rmSync('dist/daemon/node_modules/@napi-rs', { recursive: true, force: true });
 }
 
 /**
@@ -331,3 +304,4 @@ if (watch) {
   }
   console.log('Universal build: cloudflared is external (PATH or blackhole.cloudflaredPath).');
 }
+
