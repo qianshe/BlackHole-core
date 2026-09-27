@@ -373,7 +373,10 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     const target = path.isAbsolute(navigation.path)
       ? path.normalize(navigation.path)
       : path.resolve(workspaceRoot, navigation.path);
-    if (!isPathInside(workspaceRoot, target)) {
+    // A legacy absolute path may be spelled through a symlinked session path
+    // (macOS /var -> /private/var, symlinked project dirs). This is only a
+    // pre-filter; the real-path containment check below is the boundary.
+    if (!isPathInside(workspaceRoot, target) && !isPathInside(path.resolve(session.workspace_path), target)) {
       void window.showErrorMessage('BlackHole: 文件导航路径越过了会话工作区');
       return;
     }

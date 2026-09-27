@@ -75,8 +75,8 @@ jobs:
         run: go -C packages/desktop-launcher vet ./...
       - name: go test
         run: go -C packages/desktop-launcher test ./...
-      - name: Build daemon
-        run: pnpm build
+      - name: Build daemon and Local Web assets
+        run: pnpm build && pnpm --dir packages/web build
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
 
