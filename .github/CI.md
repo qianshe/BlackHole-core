@@ -12,7 +12,7 @@ Open **Actions → the workflow → Run workflow**, select the intended ref and 
 
 ## Coverage and results
 
-The skills matrix covers six OS/architecture combinations. Runtime checks cover Windows x64, Linux x64/ARM64, macOS Intel/ARM64, and a separate macOS 26 ARM target. Windows ARM64 has skills/protocol coverage only, not full native execution support. Exact commands, runner versions and prerequisites are defined in the workflow files.
+Runtime checks cover Windows x64, Linux x64/ARM64, macOS Intel/ARM64, and a separate macOS 26 ARM target; skill, prompt and guide-workflow tests run inside each Runtime target. Windows ARM64 is not tested in CI. Exact commands, runner versions and prerequisites are defined in the workflow files.
 
 Only an explicit list of root and community documentation files can skip the Core native matrix. Runtime instructions under `src/` and `scripts/` still trigger checks. `Core CI` aggregates the required jobs; failures, cancellations and unexpected skips must not be treated as acceptance. Sandbox and file-link prerequisites remain mandatory.
 

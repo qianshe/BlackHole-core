@@ -47,47 +47,6 @@ jobs:
               out.write('code=' + str(run).lower() + '\n')
           PY
 
-  gate-skills:
-    name: Skills (${{ matrix.platform }}-${{ matrix.arch }})
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: windows-2022, platform: win32, arch: x64 }
-          - { runner: windows-11-arm, platform: win32, arch: arm64 }
-          - { runner: ubuntu-22.04, platform: linux, arch: x64 }
-          - { runner: ubuntu-22.04-arm, platform: linux, arch: arm64 }
-          - { runner: macos-15-intel, platform: darwin, arch: x64 }
-          - { runner: macos-15, platform: darwin, arch: arm64 }
-    runs-on: ${{ matrix.runner }}
-    env:
-      BH_REQUIRE_SKILL_SYMLINKS: '1'
-      BH_SKILL_EXPECT_PLATFORM: ${{ matrix.platform }}
-      BH_SKILL_EXPECT_ARCH: ${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@v5
-        with:
-          version: 10.0.0
-          run_install: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22.20.0
-          architecture: ${{ matrix.arch }}
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Verify native test runtime
-        run: node -e "if(process.platform!==process.env.BH_SKILL_EXPECT_PLATFORM||process.arch!==process.env.BH_SKILL_EXPECT_ARCH)process.exit(1);console.log(process.platform,process.arch,process.version)"
-      - run: pnpm test:skills
-      - run: pnpm test:guide-workflows
-      - run: pnpm verify:prompts
-      - run: pnpm --dir packages/vscode typecheck
-
   runtime:
     name: Runtime (${{ matrix.name }})
     needs: changes
@@ -107,6 +66,8 @@ jobs:
     env:
       EXPECT_PLATFORM: ${{ matrix.platform }}
       EXPECT_ARCH: ${{ matrix.arch }}
+      # Skill tests run inside test:pack / test:posix; fail instead of skipping when symlinks are unavailable.
+      BH_REQUIRE_SKILL_SYMLINKS: '1'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -180,7 +141,7 @@ jobs:
   ci-result:
     name: Core CI
     if: always()
-    needs: [changes, gate-skills, runtime]
+    needs: [changes, runtime]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -188,15 +149,12 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
-          SKILLS: ${{ needs.gate-skills.result }}
           RUNTIME: ${{ needs.runtime.result }}
         run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
-            test "$SKILLS" = success
             test "$RUNTIME" = success
           else
             test "$CODE" = false
-            test "$SKILLS" = skipped
             test "$RUNTIME" = skipped
           fi
