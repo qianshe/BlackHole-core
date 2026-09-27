@@ -4,7 +4,7 @@ BlackHole Core is a public development repository. Cloud backend, production sec
 
 This page defines the repository boundary, not release acceptance. A remote CI run validates its checked-out commit; local uncommitted changes and previously built VSIX files require separate review.
 
-Existing component licenses and notices remain controlling. No repository-wide license grant has been inferred from the visibility change; the copyright holder must explicitly approve that grant. See the README license scope. See [CI policy](.github/CI.md), [contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md) for the public workflow.
+The repository is licensed under Apache-2.0 (root [LICENSE](LICENSE) and [NOTICE](NOTICE)); third-party components keep their own licenses. The hosted Cloud service is not part of this repository. See [CI policy](.github/CI.md), [contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md) for the public workflow.
 
 ## Scope
 
@@ -21,3 +21,4 @@ Cloud backend/admin/payment implementations, live deployment profiles, credentia
 The repository began with an independent `migration/initial-import` snapshot. Initial-import test counts, limitations and failures remain in this file's Git history. They describe that snapshot, not the current working tree or release candidate. Use the relevant CI run and release record for current results.
 
 Do not merge the former monorepo history or upload local migration archives into Core. Submit reviewed changes through a PR, and keep source integration, artifact publication and Cloud deployment separate.
+

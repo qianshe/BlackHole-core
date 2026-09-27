@@ -1,10 +1,12 @@
 BlackHole — Web Agent Bridge for VS Code
 Copyright 2026 qianshe and BlackHole contributors
 
-The source code under packages/vscode is licensed under the Apache License, Version 2.0, except for separately identified third-party components.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+Source: https://github.com/qianshe/BlackHole-core
 
-This license does not apply to BlackHole cloud services, payment integrations, account/subscription backends, administrator services, deployment configuration, or other server-side components outside packages/vscode. Those components are not licensed by this file.
+This package contains separately licensed third-party software. Their own license and notice files remain controlling for those components; Apache-2.0 does not replace or broaden those terms:
 
-The packaged extension may contain separately licensed third-party software and bundled runtime components. Their own license and notice files remain controlling for those components. Apache-2.0 does not replace or broaden those separate terms.
+- THIRD_PARTY_NOTICES.md: Koffi (including its per-platform native builds), semantic search code derived from fast-context-mcp, and deepseek-harness.
+- THIRD_PARTY_LICENSES.md: npm packages bundled into the extension, background service and Local Web UI, with their license texts.
 
-See `THIRD_PARTY_NOTICES.md` for the current bundled-component inventory and attribution details.
+The hosted BlackHole Cloud service (accounts, subscriptions and payment) is not part of this package. The BlackHole name and logo are not licensed under Apache-2.0.

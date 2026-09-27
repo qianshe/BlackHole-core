@@ -127,6 +127,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Bundled npm license notices are current
+        if: matrix.name == 'Linux-x64'
+        run: node scripts/third-party-licenses.mjs --check
       - name: Environment selection, contracts and release notes
         run: pnpm test:build-flavor && pnpm test:contracts && pnpm test:changelog
       - name: Handoff (includes daemon build and extension typecheck)

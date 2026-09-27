@@ -1,8 +1,3 @@
-> **Core 公开开发仓库。** Cloud 后端与部署秘密继续私有，不属于本仓库。代码公开、CI 通过不等于 Marketplace 已发布，也不等于完整安全审计已完成。请阅读[项目状态](MIGRATION-STATUS.md)、[CI 范围](.github/CI.md)、[贡献指南](CONTRIBUTING.md)、[安全报告](SECURITY.md)及[许可证范围](#许可证范围)。
->
-> [![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
-> 徽章只表示默认分支的工作流状态，不验证本机未提交代码，也不代表所有平台已验收。
-
 <div align="right">
 
 **简体中文** | [English](README.md)
@@ -12,6 +7,12 @@
 # BlackHole
 
 **以受控方式，让网页 AI 使用你的本地开发工作区。**
+
+[![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
+
+[使用指南](packages/vscode/README.md) · [贡献指南](CONTRIBUTING.md) · [CI](.github/CI.md) · [发布验收](RELEASE-VALIDATION.md) · [安全报告](SECURITY.md)
+
+本仓库公开维护 BlackHole 的本地运行时与客户端，Cloud 后端独立维护。仓库边界见[项目说明](MIGRATION-STATUS.md)，授权见[许可证](#许可证)。
 
 BlackHole 通过 MCP Streamable HTTP 将网页 AI 连接到本地 daemon。AI 可以在选定的工作区内查看文件、修改代码和调用工具，你则在 VS Code 中管理会话、权限、审批和活动记录。
 
@@ -25,7 +26,7 @@ BlackHole daemon（仅监听 loopback）
 选定的工作区、shell 和已配置的 MCP 上游
 ```
 
-[VS Code 插件](packages/vscode/README.md)是推荐的用户入口。本 README 同时介绍项目架构和源码开发流程。请阅读[许可证范围](#许可证范围)，不要默认整个仓库适用同一许可证。
+[VS Code 插件](packages/vscode/README.md)是推荐的用户入口。本 README 同时介绍项目架构和源码开发流程。
 
 ## 快速开始
 
@@ -241,8 +242,8 @@ pnpm test:contracts
 
 按版本记录的变化见[插件更新日志](packages/vscode/CHANGELOG.md)。
 
-## 许可证范围
+## 许可证
 
-`packages/vscode` 下的源码采用 **Apache-2.0**，另行标识的第三方组件除外。请阅读该目录的 [LICENSE](packages/vscode/LICENSE)、[NOTICE](packages/vscode/NOTICE) 和[第三方声明](packages/vscode/THIRD_PARTY_NOTICES.md)。
+BlackHole 采用 [Apache License 2.0](LICENSE) 许可，署名信息见 [NOTICE](NOTICE)。第三方组件沿用各自的许可证，见[第三方声明](packages/vscode/THIRD_PARTY_NOTICES.md)和[打包的 npm 依赖许可证](packages/vscode/THIRD_PARTY_LICENSES.md)。
 
-该许可证不授予 `packages/vscode` 之外组件的许可，包括 BlackHole 云服务、支付／账号／订阅后端及部署配置。不要默认整个仓库或托管服务适用同一开源许可证。打包组件仍遵循各自适用的条款。
+许可证只覆盖本仓库。托管的 BlackHole 云服务（账号、订阅和支付）不在其中；BlackHole 名称和标志不随许可证授予，派生作品请使用其他名称。

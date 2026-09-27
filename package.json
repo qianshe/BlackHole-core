@@ -1,6 +1,7 @@
 {
   "name": "blackhole",
   "version": "0.3.184",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "A persistent local MCP tool for remote AI agents and VS Code workspaces.",
@@ -17,6 +18,7 @@
     "start": "node dist/cli.js serve",
     "tunnel": "tools/cloudflared.exe tunnel run blackhole",
     "bump": "node scripts/bump-version.mjs",
+    "licenses:third-party": "node scripts/third-party-licenses.mjs",
     "package:vsix": "node scripts/package-vsix.mjs --environment production",
     "package:vsix:test": "node scripts/package-vsix.mjs --environment test",
     "package:vsix:production": "node scripts/package-vsix.mjs --environment production",

@@ -71,4 +71,5 @@ Use **[GitHub Issues](https://github.com/qianshe/BlackHole-core/issues)** for tr
 
 ## License
 
-The extension source under `packages/vscode` uses **Apache-2.0**, except separately licensed components. This does not automatically cover cloud services or components outside that directory. See [LICENSE](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/LICENSE), [NOTICE](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/NOTICE) and [third-party notices](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/THIRD_PARTY_NOTICES.md).
+BlackHole is licensed under **Apache-2.0**. See [LICENSE](https://github.com/qianshe/BlackHole-core/blob/main/LICENSE), [NOTICE](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/NOTICE), [third-party notices](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/THIRD_PARTY_NOTICES.md) and [bundled npm package licenses](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/THIRD_PARTY_LICENSES.md). The hosted BlackHole Cloud service is not covered.
+

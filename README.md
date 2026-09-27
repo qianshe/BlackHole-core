@@ -1,8 +1,3 @@
-> **Public Core development repository.** Cloud backend and deployment secrets remain private and are not part of this repository. Source visibility and CI results do not constitute a Marketplace release or a completed security audit. Read [project status](MIGRATION-STATUS.md), [CI scope](.github/CI.md), [contribution guidelines](CONTRIBUTING.md), [security reporting](SECURITY.md), and [license scope](#license-scope).
->
-> [![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
-> The badge reports the default-branch workflow only; it does not validate uncommitted local code or certify every platform.
-
 <div align="right">
 
 **English** | [简体中文](README.zh-CN.md)
@@ -12,6 +7,12 @@
 # BlackHole
 
 **A local MCP bridge that gives Web Agents controlled access to your development workspace.**
+
+[![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
+
+[Usage](packages/vscode/README.md) · [Contributing](CONTRIBUTING.md) · [CI](.github/CI.md) · [Releases](RELEASE-VALIDATION.md) · [Security](SECURITY.md)
+
+This is the public repository for BlackHole's local runtime and clients. The hosted Cloud backend is maintained separately. See [repository scope](MIGRATION-STATUS.md) and [license](#license).
 
 BlackHole connects web-based AI agents to a local daemon through MCP Streamable HTTP. Agents can inspect files, edit code and run tools in a selected workspace, while you manage sessions, permissions, approvals and activity from VS Code.
 
@@ -25,7 +26,7 @@ BlackHole daemon (loopback listener)
 Selected workspace, shell and configured MCP upstreams
 ```
 
-The [VS Code extension](packages/vscode/README.md) is the recommended user-facing entry point. This README also covers the architecture and source-development workflow. See [License scope](#license-scope) before assuming that one license covers the entire repository.
+The [VS Code extension](packages/vscode/README.md) is the recommended user-facing entry point. This README also covers the architecture and source-development workflow.
 
 ## Get started
 
@@ -241,8 +242,8 @@ Use **[GitHub Issues](https://github.com/qianshe/BlackHole-core/issues)** for tr
 
 See the [extension changelog](packages/vscode/CHANGELOG.md) for versioned updates.
 
-## License scope
+## License
 
-The source under `packages/vscode` is licensed under **Apache-2.0**, except separately identified third-party components. Read its [LICENSE](packages/vscode/LICENSE), [NOTICE](packages/vscode/NOTICE) and [third-party notices](packages/vscode/THIRD_PARTY_NOTICES.md).
+BlackHole is licensed under the [Apache License 2.0](LICENSE); attribution is in [NOTICE](NOTICE). Third-party components keep their own licenses: see the [third-party notices](packages/vscode/THIRD_PARTY_NOTICES.md) and the [bundled npm package licenses](packages/vscode/THIRD_PARTY_LICENSES.md).
 
-That license does not grant a license to components outside `packages/vscode`, including BlackHole cloud services, payment/account/subscription backends and deployment configuration. Do not assume one open-source license applies to the whole repository or hosted service. Bundled components retain their own applicable terms.
+The license covers this repository only. The hosted BlackHole Cloud service (accounts, subscriptions and payment) is not part of it, and the BlackHole name and logo are not licensed for use by derived works.

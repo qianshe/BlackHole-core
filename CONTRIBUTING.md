@@ -22,4 +22,5 @@ Keep generated VSIX/executable artifacts out of source commits. A successful bui
 
 ## Licensing and attribution
 
-Contribute only code and documentation you are entitled to submit under the applicable repository/component license. Preserve third-party copyright notices and their own licenses. Consult the root README's license scope and the component notices; do not assume that public visibility licenses the hosted Cloud service. Repository-wide licensing decisions must be approved by the copyright holder, not inferred from CI status.
+BlackHole is licensed under the [Apache License 2.0](LICENSE). Unless you state otherwise, a contribution you submit is licensed under the same terms (section 5 of the license). Submit only code and documentation you have the right to contribute, and preserve third-party copyright notices and their licenses. When you add or upgrade a runtime npm dependency, run `pnpm licenses:third-party` and commit the regenerated `packages/vscode/THIRD_PARTY_LICENSES.md`; CI fails when it is out of date.
+
