@@ -636,15 +636,15 @@ function loadSandboxedShellCtor(): typeof import('../workspace/sandboxed-shell.j
   // createRequire is the ONLY synchronous ESM import channel; the sandbox
   // module (and koffi) loads only on this win32-only call path, never at
   // module scope, so Mac/Linux never touch the FFI dependency graph.
-  // Resolution base: this FILE at runtime. Dev: src/mcp/router.ts (require
-  // ../workspace). vsix bundle: dist/daemon/cli.js with the sandbox chain
-  // shipped as real files at dist/daemon/workspace/ (esbuild external) —
-  // import.meta.url is undefined inside the CJS bundle, so the bundled form
-  // detects itself via __filename and requires the sibling files.
+  // Resolution base: this FILE at runtime. Dev: src/mcp/router.ts → src/workspace/.
+  // vsix bundle: dist/daemon/cli.js → dist/workspace/, the same files the bundle's
+  // static requires (../win32/ffi.js, ../workspace/pwsh.js) load, so the sandbox
+  // chain and koffi exist once per process. import.meta.url is undefined inside
+  // the CJS bundle, so the bundled form uses __filename as the base.
   const bundled = typeof __filename === 'string' && __filename.length > 0 && __filename.endsWith('cli.js');
   const base = bundled ? __filename : import.meta.url;
   const req = createRequire(base);
-  const mod = req(bundled ? './workspace/sandboxed-shell.js' : '../workspace/sandboxed-shell.js') as typeof import('../workspace/sandboxed-shell.js');
+  const mod = req('../workspace/sandboxed-shell.js') as typeof import('../workspace/sandboxed-shell.js');
   // First load = first win32 shell of this daemon lifetime: no live private
   // temp dirs exist yet in THIS process, so every leftover s-* dir under
   // bh-sandbox belongs to a crashed/killed previous lifetime — sweep it.

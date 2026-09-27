@@ -37,8 +37,11 @@ test('test extension and daemon build in an isolated output tree without touchin
   assert.equal(metadata.environment, 'test'); assert.notEqual(metadata.origin, 'https://blackhole.stellarbridge.dpdns.org');
   assert.equal(sha(path.join(plugin, 'dist/extension.js')), metadata.extensionSha256);
   assert.equal(sha(path.join(plugin, 'dist/daemon/cli.js')), metadata.daemonSha256);
-  for (const rel of ['dist/daemon/workspace/windows-env.js', 'dist/workspace/windows-env.js', 'dist/daemon/workspace/shell-codepage.js', 'dist/workspace/shell-codepage.js']) {
+  for (const rel of ['dist/workspace/windows-env.js', 'dist/workspace/shell-codepage.js', 'dist/workspace/sandboxed-shell.js', 'dist/win32/ffi.js', 'dist/node_modules/koffi/package.json']) {
     assert.ok(fs.existsSync(path.join(plugin, rel)), `shared Windows execution environment must ship at ${rel}`);
+  }
+  for (const rel of ['dist/daemon/workspace', 'dist/daemon/win32', 'dist/daemon/node_modules']) {
+    assert.ok(!fs.existsSync(path.join(plugin, rel)), `the Windows sandbox chain and koffi ship once; ${rel} is a duplicate`);
   }
   const supervisor = path.join(plugin, 'dist/daemon/process-supervisor.cjs');
   assert.ok(fs.existsSync(supervisor), 'POSIX supervisor must ship beside the bundled daemon');

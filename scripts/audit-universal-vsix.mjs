@@ -38,6 +38,7 @@ export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
  assert.ok(entries.includes('extension/dist/daemon/web/index.html'),'local Web page must ship');
  assert.ok(entries.some(name=>/koffi-win32-x64\/win32_x64\/koffi\.node$/.test(name)),'universal candidate must retain Windows x64 native support');
 assert.ok(!entries.some(name=>name.includes('node_modules/@napi-rs/keyring')),'the OS keyring module must not ship (credentials are user-only files)');
+ assert.ok(!entries.some(name=>/^extension\/dist\/daemon\/(node_modules|workspace|win32)\//.test(name)),'the Windows sandbox chain and koffi ship once under dist/; dist/daemon copies are duplicates');
  for(const name of ['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','THIRD_PARTY_LICENSES.md','readme.md'])assert.ok(entries.includes('extension/'+name),'missing '+name);
  let buildReport={};
  const rawBuild=texts.get('extension/dist/cloud-build.json');

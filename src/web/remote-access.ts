@@ -1,6 +1,6 @@
 // Phone access over the public channel (plan 6.13 R1–R3).
 //
-// - Off unless the `remoteAccess` setting is on, and only for an https public
+// - Always on, but only for an https public
 //   address; a request must carry Host = that address.
 // - A phone pairs once with a one-time code shown as a QR code on this computer
 //   (128-bit, 5 minutes). Scanning only files a request: someone on this

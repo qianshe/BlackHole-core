@@ -509,8 +509,7 @@ export function SettingsPanel() {
       </div>
 
       <div className="sec" id="set-remote">手机访问</div>
-      <RemoteSection enabled={!!server?.values.remoteAccess} toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)}
-        onToggle={async (on) => { try { await patchNow({ remoteAccess: on }); } catch (e) { ui.toast('BlackHole: ' + errText(e), 'bad'); } }} />
+      <RemoteSection toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)} />
 
       <div className="sec" id="set-mcp">MCP 连接</div>
       <div className="card">

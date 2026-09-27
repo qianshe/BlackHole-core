@@ -72,14 +72,17 @@ if (process.argv.includes('--fixture-daemon')) {
     const origin = `https://${PUB}`;
     const phone = (p, { method = 'GET', body, cookie: c, host = PUB, headers = {} } = {}) => req('/remote-api/v1' + p, { method, host, body, headers: { 'x-blackhole-web': '1', 'cf-connecting-ip': '203.0.113.9', ...(method === 'GET' ? {} : { origin }), ...(c ? { cookie: c } : {}), ...headers } });
 
-    // Off by default: nothing on the public address.
+    // Always on: an https public address serves the phone API with no setting, but only to paired devices.
     await settings({ channelMode: 'custom', publicBaseUrl: origin });
-    assert.equal((await phone('/session')).status, 404, 'off by default');
-    assert.equal((await web('/remote')).json.reason, 'off');
-    assert.equal((await web('/remote/pair', 'POST', {})).status, 409);
+    assert.equal((await phone('/session')).status, 401, 'on by default, pairing required');
+    assert.equal((await web('/remote')).json.available, true);
+
+    // A remoteAccess=false left by an older build does not turn it off.
+    await settings({ remoteAccess: false });
+    assert.equal((await web('/remote')).json.available, true, 'stored false is ignored');
 
     // http public address: not available.
-    await settings({ publicBaseUrl: `http://${PUB}`, remoteAccess: true });
+    await settings({ publicBaseUrl: `http://${PUB}` });
     assert.equal((await web('/remote')).json.reason, 'custom_not_https');
     assert.equal((await phone('/session')).status, 404, 'plain http is never served');
 
@@ -205,13 +208,15 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await phone('/session', { cookie: dev2, host: 'other.example.test', headers: { origin: 'https://other.example.test' } })).status, 401, 'bound to the old origin');
     assert.equal((await web('/remote')).json.devices.length, 0, 'pruned after address change');
 
-    // Turning phone access off closes everything.
+    // Writing remoteAccess=false (API only; no switch in the UI) revokes every paired phone, access stays on.
+    await settings({ remoteAccess: true });
     const code3 = (await web('/remote/pair', 'POST', {})).json.url.split('#pair=')[1];
     const other = 'https://other.example.test';
     const dev3 = await pairDevice(code3, { host: 'other.example.test', headers: { origin: other } });
     assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 200);
     await settings({ remoteAccess: false });
-    assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 404);
+    assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 401, 'devices are revoked');
+    assert.equal((await web('/remote')).json.available, true, 'phone access stays on');
     await settings({ remoteAccess: true });
     assert.equal((await phone('/session', { cookie: dev3, host: 'other.example.test' })).status, 401, 'devices do not come back');
 

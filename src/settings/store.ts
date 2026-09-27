@@ -80,7 +80,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tunnelProbeProxy: '',
   webAgents: [...DEFAULT_WEB_AGENTS],
   customWebAgents: [],
-  remoteAccess: false,
+  remoteAccess: true,
   openaiTunnelClientPath: '',
   openaiTunnelId: '',
 };

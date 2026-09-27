@@ -297,7 +297,9 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     const origin = httpsOrigin(t.url);
     return origin ? { origin, kind: t.mode === 'quick' ? 'quick' : 'fixed' } : null;
   };
-  const remoteEnabled = () => deps.settings?.get().values.remoteAccess === true;
+  // Phone access is always on (pairing still needs 允许 on this computer). A stored
+  // remoteAccess=false from older builds must not lock it off with no switch left.
+  const remoteEnabled = () => true;
   const publicChannel = (): PublicChannel | null => (remoteEnabled() ? channelInfo() : null);
   /** The enabled channel when this request is addressed to it (Host = the public address). */
   const remoteChannel = (req: Request): PublicChannel | null => {

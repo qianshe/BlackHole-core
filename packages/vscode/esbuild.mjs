@@ -69,7 +69,6 @@ const daemonExternals = [
   '../win32/acl-sandbox.js',
   '../win32/ffi.js',
   'koffi',
-  // daemon-owned account storage (plan 6.11): native per-platform binaries, shipped like koffi
 ];
 const daemonOptions = {
   ...common,
@@ -105,54 +104,45 @@ function copyAsset(src, dest) {
  *  time (MODULE_TYPELESS warning + perf overhead). */
 function writeModuleTypeMarkers() {
   const marker = JSON.stringify({ type: 'module' });
-  for (const dir of ['dist/daemon/workspace', 'dist/daemon/win32', 'dist/workspace', 'dist/win32']) {
+  for (const dir of ['dist/workspace', 'dist/win32']) {
     writeFileSync(`${dir}/package.json`, marker);
   }
 }
 
-// The external (non-bundled) win32 sandbox chain: compiled files land at the
-// exact relative path the daemon's createRequire('../workspace/sandboxed-shell.js')
-// resolves to from dist/daemon/cli.js — dist/daemon/workspace/sandboxed-shell.js.
+// The external (non-bundled) win32 sandbox chain: compiled files land where every
+// require in dist/daemon/cli.js resolves them — '../workspace/*.js' and
+// '../win32/*.js' relative to dist/daemon/, i.e. dist/workspace/ and dist/win32/.
+// One copy only: loading ffi.js twice in one process registers its koffi types twice.
 function copyDaemonExternals(rootDist) {
   const files = ['workspace/sandboxed-shell.js', 'workspace/pwsh.js', 'workspace/shell-codepage.js', 'workspace/windows-env.js', 'win32/acl-sandbox.js', 'win32/ffi.js'];
-  mkdirSync('dist/daemon/workspace', { recursive: true });
-  mkdirSync('dist/daemon/win32', { recursive: true });
-  // Two resolution bases coexist in the bundle:
-  //  - static external requires emit "../workspace/pwsh.js" (relative to the
-  //    bundle root → packages/vscode/dist/workspace/), from source files that
-  //    imported pwsh directly (tools.ts etc.)
-  //  - the dynamic loader uses "./workspace/sandboxed-shell.js" (relative to
-  //    dist/daemon/, where __filename points in the bundled form)
-  // Ship the chain at BOTH layouts so every require form resolves.
+  // Older builds also shipped a daemon-local duplicate; remove it so it never packs.
+  for (const stale of ['dist/daemon/workspace', 'dist/daemon/win32']) rmSync(stale, { recursive: true, force: true });
   mkdirSync('dist/workspace', { recursive: true });
   mkdirSync('dist/win32', { recursive: true });
   for (const rel of files) {
-    copyAsset(`${rootDist}/${rel}`, `dist/daemon/${rel}`);
     copyAsset(`${rootDist}/${rel}`, `dist/${rel}`);
   }
   copyKoffiNodeModules();
-  // The OS keyring module is gone (credentials are files now); drop copies left by older builds.
-  rmSync('dist/daemon/node_modules/@napi-rs', { recursive: true, force: true });
 }
 
 /**
  * The sandbox chain's ffi.js does `import koffi from 'koffi'` — a BARE module
  * specifier. Inside the installed extension there is no ancestor
- * node_modules, so the vsix must SHIP koffi itself, beside the daemon entry:
- * dist/daemon/node_modules/koffi (the JS loader) plus
- * dist/daemon/node_modules/@koromix/koffi-win32-x64 (the native koffi.node
+ * node_modules, so the vsix must SHIP koffi itself: dist/node_modules/koffi
+ * (the JS loader) plus dist/node_modules/@koromix/koffi-win32-x64 (the native koffi.node
  * the loader discovers via its @koromix sibling convention). pnpm installs
  * these as junctions — cpSync would try to RECREATE the link (EPERM without
  * privileges on Windows), so copyRealFileTree walks and copies REAL files.
  */
 function copyKoffiNodeModules() {
   const koffiRoot = resolveKoffiRealRoot();
-  // koffi must live beside BOTH chain layouts: dist/daemon/node_modules serves
-  // the daemon-local copies, dist/node_modules serves the outer ones
-  // (dist/win32/ffi.js reached by static external requires, e.g. the proxy job
-  // object) — inside the installed extension there is no ancestor
-  // node_modules, so every layout needs its own walk-up base.
-  for (const dest of ['dist/daemon/node_modules', 'dist/node_modules']) {
+  // ONE copy: Node resolves the bare 'koffi' by walking up from the importing file,
+  // so dist/win32/ffi.js, dist/workspace/*.js and dist/daemon/cli.js (DPAPI, code
+  // page) all reach dist/node_modules; the daemon always runs from the extension
+  // directory. dist/daemon/node_modules held a duplicate (koffi + the removed
+  // keyring) in older builds; drop it so stale copies never ship.
+  rmSync('dist/daemon/node_modules', { recursive: true, force: true });
+  for (const dest of ['dist/node_modules']) {
     rmSync(dest, { recursive: true, force: true });
     mkdirSync(dest, { recursive: true });
     copyRealFileTree(koffiRoot, `${dest}/koffi`, isRuntimeKoffiFile);
@@ -176,7 +166,7 @@ function copyKoffiNodeModules() {
       if (existsSync(buildDir)) copyRealFileTree(buildDir, `${dest}/koffi/build`, isRuntimeKoffiFile);
     }
   }
-  console.log('copied koffi into dist/daemon/node_modules and dist/node_modules');
+  console.log('copied koffi into dist/node_modules');
 }
 
 /** Extension allowlist for the shipped koffi trees: the loader chain is

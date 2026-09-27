@@ -120,7 +120,7 @@ type PanelMessage =
   | { type: 'customProbe'; url: string }
   | { type: 'rotateToken' }
   | { type: 'grantRemove'; scope: 'always' | 'session'; key: string; sessionId?: string }
-  | { type: 'remote'; action: 'toggle' | 'pair' | 'revoke'; on?: boolean; id?: string; name?: string }
+  | { type: 'remote'; action: 'pair' | 'revoke'; id?: string; name?: string }
   | { type: 'grantsClear' }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
@@ -464,15 +464,9 @@ export class ConfigPanel {
     if (!this.disposed) await this.pushRemote();
   }
 
-  private async remoteAction(m: { action: 'toggle' | 'pair' | 'revoke'; on?: boolean; id?: string; name?: string }): Promise<void> {
+  private async remoteAction(m: { action: 'pair' | 'revoke'; id?: string; name?: string }): Promise<void> {
     try {
-      if (m.action === 'toggle') {
-        if (!m.on && (this.remoteIds?.size ?? 0) > 0) {
-          const pick = await window.showWarningMessage('关闭手机访问后，已配对的手机需要重新扫码。', { modal: true }, '关闭');
-          if (pick !== '关闭') { await this.pushRemote(); return; }
-        }
-        await this.api.patchSettings({ remoteAccess: !!m.on });
-      } else if (m.action === 'pair') {
+      if (m.action === 'pair') {
         const r = await this.api.remotePair();
         const qr = qrcode(0, 'M');
         qr.addData(r.url);
@@ -1310,15 +1304,10 @@ export class ConfigPanel {
       <button id="cnNamed" class="secondary">启动持久</button>
       <button id="cnStop" class="secondary" style="display:none">停止</button>
       <button id="cnCopy" style="display:none">复制链接</button>
+      <button id="rmPair" class="secondary" disabled>手机扫码</button>
     </div>
     <div class="hint bad" id="cnerr" style="display:none"></div>
-  </div>
-  <div class="sec">手机访问</div>
-  <div class="card" id="rmCard">
-    <label class="row" style="gap:8px;align-items:center;display:flex"><input type="checkbox" id="rmOn"> 允许手机扫码访问</label>
-    <div class="hint" id="rmHint">开启后可用手机查看会话、处理审批。</div>
-    <div class="row" style="margin-top:8px"><button id="rmPair" disabled>显示二维码</button></div>
-    <ul id="rmDevices" style="list-style:none;margin:8px 0 0;padding:0"></ul>
+    <div class="hint" id="rmHint" style="margin:6px 0 0"></div>
   </div>
   <div class="buy-modal" id="rmModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="rmTitle">
     <div class="buy-dialog">
@@ -1334,18 +1323,6 @@ export class ConfigPanel {
   <div class="sec" id="mcpSec">MCP 连接</div>
   <div class="card">
     <div class="mcpurl"><span id="mcpurl">MCP 链接尚未就绪</span><div class="mcp-actions"><button id="mcpCopy">复制 MCP 链接</button><button id="mcpDesc" class="secondary">复制连接器描述</button><button id="mcpRotate" class="secondary">重置 MCP 链接</button></div></div>
-  </div>
-  <div class="sec">常用</div>
-  <div class="card">
-    <div class="fgrid">${common}</div>
-  </div>
-  <div class="sec">授权管理</div>
-  <div class="card">
-    <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
-    <div id="aglist" style="display:grid;gap:8px"></div>
-    <div class="btnrow" style="margin-top:10px">
-      <button id="agClear" class="secondary">清除全部全局授权</button>
-    </div>
   </div>
   <div class="sec">MCP Proxies</div>
   <div class="card">
@@ -1367,6 +1344,10 @@ export class ConfigPanel {
       <div class="pxmbody" id="pxModalBody"></div>
     </div>
   </div>
+  <div class="sec">常用</div>
+  <div class="card">
+    <div class="fgrid">${common}</div>
+  </div>
   <div class="sec">Web Agent 显示</div>
   <div class="card">
     <div class="hint" style="margin:0 0 10px">选择要显示的预置站点；自定义站点始终显示。</div>
@@ -1379,7 +1360,18 @@ export class ConfigPanel {
       <button id="waAdd" class="secondary">添加</button>
     </div>
   </div>
-  <details><summary>高级</summary><div class="card" style="margin-top:8px"><div class="fgrid">${advanced}</div></div></details>
+  <div class="sec">授权管理</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
+    <div id="aglist" style="display:grid;gap:8px"></div>
+    <div class="btnrow" style="margin-top:10px">
+      <button id="agClear" class="secondary">清除全部全局授权</button>
+    </div>
+  </div>
+  <details><summary>高级</summary><div class="card" style="margin-top:8px"><div class="fgrid">${advanced}</div>
+    <div class="subsec">已配对的手机</div>
+    <ul id="rmDevices" style="list-style:none;margin:0;padding:0"></ul>
+  </div></details>
   <div class="actions">
     <button id="save">保存</button>
     <button id="restart" class="secondary">重启 daemon</button>
@@ -2286,17 +2278,19 @@ export class ConfigPanel {
     $('mcpRotate').addEventListener('click', () => vs.postMessage({ type: 'rotateToken' }));
     $('agClear').addEventListener('click', () => vs.postMessage({ type: 'grantsClear' }));
     let rmTimer = null, rmDevices = [];
-    const rmReason = { off: '开启后可用手机查看会话、处理审批。', channel_offline: '请先启动上方的公网通道。', not_https: '手机访问需要 https 公网地址。', custom_not_https: '自定义地址需要使用 https。' };
+    const rmReason = { off: '手机访问暂不可用。', channel_offline: '手机扫码需要先启动公网渠道。', not_https: '手机扫码需要 https 公网地址。', custom_not_https: '手机扫码需要自定义地址使用 https。' };
     function fmtTime(s) { const d = new Date(s); return isNaN(d.getTime()) ? '—' : d.toLocaleString(); }
     function renderRemote(v, paired) {
-      const on = $('rmOn'), hint = $('rmHint'), list = $('rmDevices');
-      if (!v) { on.disabled = true; $('rmPair').disabled = true; hint.textContent = 'Daemon 未运行'; hint.className = 'hint bad'; list.replaceChildren(); return; }
-      on.disabled = false; on.checked = !!v.enabled;
+      const hint = $('rmHint'), list = $('rmDevices');
+      const empty = () => { const li = document.createElement('li'); li.className = 'hint'; li.style.margin = '0'; li.textContent = '还没有配对的手机。'; return li; };
+      if (!v) { $('rmPair').disabled = true; hint.textContent = ''; hint.style.display = 'none'; list.replaceChildren(empty()); return; }
       $('rmPair').disabled = !v.available;
-      if (v.available) { hint.textContent = v.kind === 'quick' ? '已开启。临时通道重启后需要重新扫码。' : '已开启。'; hint.className = 'hint ok'; }
-      else { hint.textContent = rmReason[v.reason] || rmReason.off; hint.className = v.enabled ? 'hint warn' : 'hint'; }
+      // Phone access is always on: say something only when scanning is blocked or needs a re-scan later.
+      const note = v.available ? (v.kind === 'quick' ? '临时渠道重启后，手机需要重新扫码。' : '') : (rmReason[v.reason] || rmReason.off);
+      hint.textContent = note; hint.className = v.available ? 'hint' : 'hint warn'; hint.style.display = note ? '' : 'none';
       rmDevices = v.devices || [];
-      list.replaceChildren(...rmDevices.map(d => {
+      if (!rmDevices.length) list.replaceChildren(empty());
+      else list.replaceChildren(...rmDevices.map(d => {
         const li = document.createElement('li');
         li.style.cssText = 'display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--vscode-panel-border)';
         const t = document.createElement('div'); t.style.flex = '1';
@@ -2331,7 +2325,6 @@ export class ConfigPanel {
       if (rmTimer) clearInterval(rmTimer);
       tick(); rmTimer = setInterval(tick, 1000);
     }
-    $('rmOn').addEventListener('change', e => vs.postMessage({ type: 'remote', action: 'toggle', on: e.target.checked }));
     $('rmPair').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
     $('rmAgain').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
     $('rmClose').addEventListener('click', closeRemoteQr);

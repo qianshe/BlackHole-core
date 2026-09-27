@@ -127,7 +127,7 @@ async function archive(file, build, mutate = () => {}) {
   const files = new Map([
     ['extension/package.json',JSON.stringify(manifest)],['extension.vsixmanifest','<PackageManifest/>'],
     ['extension/dist/cloud-build.json',JSON.stringify(info)],['extension/dist/extension.js',bundle],['extension/dist/daemon/cli.js',daemon],['extension/dist/daemon/web/index.html','<!doctype html>'],
-    ['extension/dist/daemon/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',''],
+    ['extension/dist/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',''],
     ...['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','THIRD_PARTY_LICENSES.md','readme.md'].map(n=>['extension/'+n,'fixture']),
   ]);
   mutate(files,manifest,info);
@@ -147,6 +147,7 @@ test('archive audit verifies same extension identity, flavor, endpoint and actua
     (files,manifest)=>{delete manifest.contributes.configuration.properties['blackhole.daemonEntry'];files.set('extension/package.json',JSON.stringify(manifest));},
     files=>files.set('extension/dist/extension.js','tampered bundle'),
     files=>files.set('extension/dist/daemon/cli.js','tampered daemon'),
+    files=>files.set('extension/dist/daemon/node_modules/koffi/index.js','duplicate koffi'),
     (files,manifest)=>{manifest.displayName='Wrong';files.set('extension/package.json',JSON.stringify(manifest));},
     (files,manifest)=>{manifest.blackholeBuild=resolveBuildConfig();files.set('extension/package.json',JSON.stringify(manifest));},
     files=>files.delete('extension/dist/cloud-build.json'),

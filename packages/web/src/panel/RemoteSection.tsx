@@ -1,4 +1,4 @@
-// Phone access controls on this computer (plan 6.13 R4): on/off, QR code with
+// Phone access controls on this computer (plan 6.13 R4; always on): QR code with
 // countdown, paired devices with revoke. The QR code is drawn locally as SVG.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import qrcode from 'qrcode-generator';
@@ -8,7 +8,7 @@ type Toast = (text: string, tone?: 'info' | 'warn' | 'bad') => void;
 type Confirm = (title: string, actions: string[]) => Promise<string | null>;
 
 const REASON: Record<string, string> = {
-  off: '开启后，用手机扫码即可查看会话、处理审批和新建会话。',
+  off: '手机访问暂不可用。',
   channel_offline: '先启动公网渠道，再生成二维码。',
   not_https: '公网地址需为 https。',
   custom_not_https: '自定义公网地址需为 https。',
@@ -34,11 +34,10 @@ const when = (iso: string) => {
   return `${t.getMonth() + 1}月${t.getDate()}日 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
 };
 
-export function RemoteSection({ enabled, onToggle, toast, confirm }: { enabled: boolean; onToggle: (on: boolean) => Promise<void>; toast: Toast; confirm: Confirm }) {
+export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confirm }) {
   const [view, setView] = useState<RemoteView | null>(null);
   const [pair, setPair] = useState<{ url: string; expiresAt: number; kind: string } | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [busy, setBusy] = useState(false);
   const known = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
@@ -58,14 +57,9 @@ export function RemoteSection({ enabled, onToggle, toast, confirm }: { enabled: 
       if (v.requests?.length) setPair(null);
     } catch { /* daemon restarting: keep the last view */ }
   }, [toast]);
-  useEffect(() => { void load(); const t = setInterval(() => void load(), pair ? 2000 : 5000); return () => clearInterval(t); }, [load, pair, enabled]);
+  useEffect(() => { void load(); const t = setInterval(() => void load(), pair ? 2000 : 5000); return () => clearInterval(t); }, [load, pair]);
   useEffect(() => { if (!pair) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [pair]);
 
-  const toggle = async () => {
-    if (enabled && view?.devices.length && (await confirm('关闭手机访问后，所有已配对的手机都需要重新扫码。', ['关闭'])) !== '关闭') return;
-    setBusy(true);
-    try { await onToggle(!enabled); setPair(null); await load(); } finally { setBusy(false); }
-  };
   const showQr = async () => {
     try {
       const r = await remoteAdmin.pair();
@@ -82,19 +76,18 @@ export function RemoteSection({ enabled, onToggle, toast, confirm }: { enabled: 
   };
 
   const left = pair ? Math.max(0, Math.ceil((pair.expiresAt - now) / 1000)) : 0;
-  const status = !enabled ? { cls: 'dim', text: '已关闭' } : view?.available ? { cls: 'ok', text: '已开启' + (view.kind === 'quick' ? ' · 临时渠道' : '') } : { cls: 'warn', text: '已开启 · 暂不可用' };
+  const status = view?.available ? { cls: 'ok', text: '可扫码' + (view.kind === 'quick' ? ' · 临时渠道' : '') } : { cls: 'warn', text: '暂不可用' };
   return (
     <div className="card">
       <div className="chrow" style={{ marginTop: 0 }}>
-        <button type="button" className={'pxsw' + (enabled ? ' on' : '')} role="switch" aria-checked={enabled} aria-label="允许手机访问" disabled={busy} onClick={() => void toggle()} />
-        <span>允许手机访问</span>
+        <span>手机访问</span>
         <span className={'chst ' + status.cls}>{status.text}</span>
         <span className="sp" />
-        {enabled && <button type="button" disabled={!view?.available} onClick={() => void showQr()}>显示二维码</button>}
+        <button type="button" disabled={!view?.available} onClick={() => void showQr()}>显示二维码</button>
       </div>
-      {(!enabled || !view?.available) && <div className="hint">{REASON[!enabled ? 'off' : view?.reason ?? ''] ?? ''}</div>}
-      {enabled && view?.available && view.kind === 'quick' && <div className="hint">临时渠道：渠道停止或地址变化后需要重新扫码。</div>}
-      {enabled && (
+      {view && !view.available && <div className="hint">{REASON[view.reason ?? ''] ?? REASON.off}</div>}
+      {view?.available && view.kind === 'quick' && <div className="hint">临时渠道：渠道停止或地址变化后需要重新扫码。</div>}
+      {(
         <>
           <div className="subsec">已配对设备</div>
           {!view?.devices.length ? <div className="hint" style={{ margin: 0 }}>还没有配对的手机。</div> : view.devices.map((d) => (
