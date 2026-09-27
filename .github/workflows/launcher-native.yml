@@ -3,17 +3,11 @@ name: Desktop launcher CI
 on:
   pull_request:
     branches: [main]
+    # Launcher code only; the daemon side of the bootstrap runs in Core Runtime CI (Linux-x64).
     paths:
       - 'packages/desktop-launcher/**'
       - 'packages/host-runtime/**'
       - 'packages/contracts/**'
-      - 'packages/vscode/build-config.mjs'
-      - 'src/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'tsconfig.json'
       - '.github/workflows/launcher-native.yml'
   workflow_dispatch:
     inputs:

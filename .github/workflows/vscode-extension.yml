@@ -61,7 +61,6 @@ jobs:
           - { name: Linux-arm64, runner: ubuntu-22.04-arm, platform: linux, arch: arm64 }
           - { name: macOS-Intel, runner: macos-15-intel, platform: darwin, arch: x64 }
           - { name: macOS-ARM, runner: macos-15, platform: darwin, arch: arm64 }
-          - { name: macOS-26-ARM, runner: macos-26, platform: darwin, arch: arm64 }
     runs-on: ${{ matrix.runner }}
     env:
       EXPECT_PLATFORM: ${{ matrix.platform }}
@@ -97,6 +96,11 @@ jobs:
         run: pnpm test:handoff
       - name: Local Web and account tests with isolated data
         run: pnpm test:local-web
+      - name: Cloudflared installer (no real downloads)
+        run: node --test --experimental-test-isolation=none packages/vscode/test/cloudflared-install.test.mjs
+      - name: Desktop bootstrap against an isolated daemon
+        if: matrix.name == 'Linux-x64'
+        run: pnpm test:host-runtime
       - name: Settings and daemon recovery without real downloads
         run: node --test --experimental-test-isolation=none packages/vscode/test/panel-lifecycle.test.mjs packages/vscode/test/daemon-restart.test.mjs packages/vscode/test/restart-recovery.test.mjs packages/vscode/test/daemon-manager-live.test.mjs packages/vscode/test/extension-polling.test.mjs packages/vscode/test/web-agents.test.mjs scripts/daemon-startup-race.test.mjs
       - name: Account restoration and entitlement with synthetic credentials

@@ -5,14 +5,13 @@
 | Workflow | Automatic runs | Manual options |
 | --- | --- | --- |
 | [Core Runtime CI](workflows/vscode-extension.yml) | PRs and pushes to `main` | Run the complete matrix |
-| [Cloudflared Install CI](workflows/cloudflared-install.yml) | PRs affecting the installer or its dependencies | `live_downloads=true`: verify real upstream downloads |
-| [Desktop launcher CI](workflows/launcher-native.yml) | PRs affecting the launcher, bootstrap or shared inputs | `build_artifacts=true`: build development executables after tests |
+| [Desktop launcher CI](workflows/launcher-native.yml) | PRs changing the launcher, host runtime or contracts | `build_artifacts=true`: build development executables after tests |
 
-Open **Actions → the workflow → Run workflow**, select the intended ref and enable the required options. Manual options are off by default. Installer and desktop workflows do not repeat their PR checks on the merge push.
+Open **Actions → the workflow → Run workflow**, select the intended ref and enable the required options. Manual options are off by default. The desktop workflow does not repeat its PR checks on the merge push.
 
 ## Coverage and results
 
-Runtime checks cover Windows x64, Linux x64/ARM64, macOS Intel/ARM64, and a separate macOS 26 ARM target; skill, prompt and guide-workflow tests run inside each Runtime target. Windows ARM64 is not tested in CI. Exact commands, runner versions and prerequisites are defined in the workflow files.
+Runtime checks cover Windows x64, Linux x64/ARM64 and macOS Intel/ARM64; skill, prompt, guide-workflow and cloudflared installer tests run inside each Runtime target, and the desktop bootstrap test on Linux x64. Real cloudflared downloads are checked locally with `BH_CLOUDFLARED_LIVE=1`. Windows ARM64 is not tested in CI. Exact commands, runner versions and prerequisites are defined in the workflow files.
 
 Only an explicit list of root and community documentation files can skip the Core native matrix. Runtime instructions under `src/` and `scripts/` still trigger checks. `Core CI` aggregates the required jobs; failures, cancellations and unexpected skips must not be treated as acceptance. Sandbox and file-link prerequisites remain mandatory.
 
