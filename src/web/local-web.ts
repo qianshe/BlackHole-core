@@ -2,7 +2,6 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { courierRoutes } from '../courier/mount.js';
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import type { DaemonDeps } from '../deps.js';
 import { VERSION } from '../version.js';
@@ -998,7 +997,6 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     res.json(remoteView());
   });
 
-  if (deps.courier) api.use('/courier', courierRoutes(deps.courier, (d) => deps.events.append(null, 'courier_send', { ...d, via: 'web' })));
   api.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });
@@ -1186,7 +1184,6 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     deps.events.append(created.session.id, 'remote_session_created', { device: (res.locals.device as { name: string }).name });
     res.status(201).json({ session: sessionView(created.session), session_id: created.session.credential_id, mcp_url: mcpUrl(deps) });
   });
-  if (deps.courier) remote.use('/courier', courierRoutes(deps.courier, (d) => deps.events.append(null, 'courier_send', { ...d, via: 'phone' })));
   remote.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });

@@ -22,8 +22,6 @@ import type { ProxyRuntime } from './proxy/tool.js';
 
 export interface DaemonDeps {
   daemonId?: string;
-  /** Browser Courier extension connection (sends text into bound web chats). */
-  courier?: import('./courier/hub.js').CourierHub;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
