@@ -36,9 +36,10 @@ export interface CourierResult {
   targetId?: string;
 }
 
-/** What every UI needs: is the browser extension connected, and which chats can receive. */
 export interface CourierStatus {
   connected: boolean;
+  version: string | null;
+  since: string | null;
   targets: CourierTarget[];
 }
 
@@ -168,7 +169,12 @@ export class CourierHub {
   /** Ask Courier for fresh target states (open/busy/draft change without a push); falls back to the cache. */
   async status(refresh = true): Promise<CourierStatus> {
     if (refresh && this.conn) await this.request({ type: 'targets.list' }, REFRESH_MS);
-    return { connected: this.conn !== null, targets: this.targets };
+    return {
+      connected: this.conn !== null,
+      version: this.version,
+      since: this.since ? new Date(this.since).toISOString() : null,
+      targets: this.targets,
+    };
   }
 
   async send(input: { targetId: unknown; text: unknown; activate?: unknown }): Promise<CourierResult> {
