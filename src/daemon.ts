@@ -13,6 +13,8 @@ import type { Server } from 'node:http';
 import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
+import { CourierHub } from './courier/hub.js';
+import { mountCourier } from './courier/mount.js';
 import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
 import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
@@ -336,6 +338,10 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const mcp = mountMcp(app, deps);
   // Local Web: read-only page for this machine only (ticket login from VS Code).
   // Registered before /api so its native-only bootstrap route is matched first.
+  // Courier: ping/WebSocket for the browser extension, plus its native send API.
+  const courier = new CourierHub({ log });
+  deps.courier = courier;
+  mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data));
   const control = mountControl(express.Router(), deps);
   mountLocalWeb(app, deps, undefined, control);
   app.use('/api', control);
@@ -393,6 +399,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   const stop = async (): Promise<void> => {
     clearInterval(processSweep);
+    courier.close();
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();
