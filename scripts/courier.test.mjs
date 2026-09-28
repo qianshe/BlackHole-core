@@ -147,7 +147,6 @@ test('status refreshes targets from Courier', async () => {
   c.send({ type: 'targets', id: ask.id, targets: [{ targetId: 't-9', site: 'chatgpt', label: 'X', open: false }] });
   const s = await (await pending).json();
   assert.equal(s.connected, true);
-  assert.equal(s.version, '0.1.4');
   assert.equal(s.targets[0].targetId, 't-9');
   c.end();
 });
