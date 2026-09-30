@@ -22,6 +22,8 @@ import type { ProxyRuntime } from './proxy/tool.js';
 
 export interface DaemonDeps {
   daemonId?: string;
+  /** Browser Courier extension connection (sends text into bound web chats). */
+  courier?: import('./courier/hub.js').CourierHub;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
@@ -79,6 +81,12 @@ export interface DaemonDeps {
   lastHeartbeatAt: number;
   /** Last heartbeat per client kind ('tray', or 'other' for VS Code and unmarked callers). */
   clientBeats?: Map<string, number>;
+  /**
+   * Open Local Web pages: one entry per live GET /web-api/v1/presence response.
+   * While non-empty the channel watchdog treats an operator as present (like a
+   * VS Code window). Not a tray "other": /api/clients others_active ignores it.
+   */
+  webPresence?: Set<object>;
   /** The public channel the operator started; resumed after restarts and watchdog stops. */
   channelIntent?: import('./tunnel/resume.js').ChannelIntent;
   /** Ends every paired phone; set by the Local Web mount (plan 6.13 R). */

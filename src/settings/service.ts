@@ -1,5 +1,5 @@
 import type { DaemonDeps } from '../deps.js';
-import { normalizeSetting, normalizeSettingsPatch, pendingRestartKeys, unseededKeys, SETTING_KEYS, type Settings, type SettingsRecord } from './store.js';
+import { normalizeCourierSite, normalizeSetting, normalizeSettingsPatch, pendingRestartKeys, unseededKeys, MAX_COURIER_SITES, SETTING_KEYS, type Settings, type SettingsRecord } from './store.js';
 
 /** Shared by /api/settings (extension) and /web-api/v1/settings (Local Web). */
 export function settingsView(deps: DaemonDeps, record: SettingsRecord = deps.settings!.get()) {
@@ -32,7 +32,32 @@ export function patchSettings(deps: DaemonDeps, body: unknown, source: string, r
   if (r.changed.length > 0) deps.events.append(null, 'settings_changed', { source, keys: r.changed, revision: r.record.revision });
   // Turning phone access off ends every pairing now, not on the next request.
   if (r.changed.includes('remoteAccess') && !r.record.values.remoteAccess) deps.revokeRemoteDevices?.();
+  // Courier follows its site list: a site deleted in any UI is unregistered in the browser.
+  if (r.changed.includes('courierSites')) deps.courier?.pushSites();
   return { status: 200, body: settingsView(deps, r.record) };
+}
+
+/** Courier added or updated a site (sites.put). One entry per origin; the id never changes. */
+export function putCourierSite(deps: DaemonDeps, raw: unknown): { ok: true } | { ok: false; message: string } {
+  if (!deps.settings) return { ok: false, message: 'settings_unavailable' };
+  const n = normalizeCourierSite(raw);
+  if ('error' in n) return { ok: false, message: n.error };
+  const list = deps.settings.get().values.courierSites;
+  const same = list.find((x) => x.origin === n.value.origin);
+  const site = same ? { ...n.value, id: same.id } : n.value;
+  const next = list.some((x) => x.id === site.id) ? list.map((x) => (x.id === site.id ? site : x)) : [...list, site];
+  if (next.length > MAX_COURIER_SITES) return { ok: false, message: `at most ${MAX_COURIER_SITES} courierSites` };
+  const r = patchSettings(deps, { values: { courierSites: next } }, 'courier', false);
+  return r.status === 200 ? { ok: true } : { ok: false, message: String(r.body.message ?? r.body.error) };
+}
+
+/** Courier deleted a site (sites.remove). */
+export function removeCourierSite(deps: DaemonDeps, id: unknown): { ok: true } | { ok: false; message: string } {
+  if (!deps.settings) return { ok: false, message: 'settings_unavailable' };
+  const list = deps.settings.get().values.courierSites;
+  if (typeof id !== 'string' || !list.some((x) => x.id === id)) return { ok: true };
+  const r = patchSettings(deps, { values: { courierSites: list.filter((x) => x.id !== id) } }, 'courier', false);
+  return r.status === 200 ? { ok: true } : { ok: false, message: String(r.body.message ?? r.body.error) };
 }
 
 /** Reachability check of a public base URL, same contract as the extension's settings panel. */

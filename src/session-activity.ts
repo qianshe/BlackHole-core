@@ -72,6 +72,15 @@ export class SessionActivity {
     }, remaining);
   }
 
+  /**
+   * The agent says its turn is over (a bound web chat stopped being busy): end the 60 s window now,
+   * but never while a tool call of this session is still being handled.
+   */
+  endTurn(id: string): void {
+    const entry = this.entries.get(id);
+    if (entry && entry.pending === 0) this.forget(id);
+  }
+
   forget(id: string): void {
     const entry = this.entries.get(id);
     if (!entry) return;

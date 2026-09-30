@@ -13,6 +13,11 @@ import type { Server } from 'node:http';
 import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
+import { CourierHub } from './courier/hub.js';
+import { CourierMessages } from './courier/messages.js';
+import { CourierPairs } from './courier/pairs.js';
+import { mountCourier } from './courier/mount.js';
+import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
 import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
 import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
@@ -27,6 +32,7 @@ import { maintainDb, openDb, type Storage } from './storage/db.js';
 import { EventsRepo } from './storage/events.js';
 import { MachineStateRepo } from './storage/machineState.js';
 import { applySettingsToConfig, SettingsStore } from './settings/store.js';
+import { putCourierSite, removeCourierSite } from './settings/service.js';
 import { SessionsRepo } from './storage/sessions.js';
 import { ChangeTracker } from './storage/changes.js';
 import { SessionActivity } from './session-activity.js';
@@ -69,6 +75,12 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const changes = new ChangeTracker();
   const panels = new PanelRegistry();
   const events = new EventsRepo(storage.db, cfg.eventPayloadCapBytes, () => changes.bump());
+  // Drafts: reserved in memory until the first tool call uses the credential.
+  sessions.onDraftsChanged = () => changes.bump();
+  sessions.onDraftStored = (row) => events.append(row.id, 'session_created', {
+    workspace_path: row.workspace_path, permission_mode: row.permission_mode, name: row.name,
+    expires_at: row.expires_at, writable_dirs: row.writable_dirs, from_draft: true,
+  });
   const toolCalls = new ToolCallsRepo(storage.db);
   const machineState = new MachineStateRepo(storage.db);
   // 'always' approval grants persist across daemon restarts (machine_state);
@@ -336,6 +348,52 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const mcp = mountMcp(app, deps);
   // Local Web: read-only page for this machine only (ticket login from VS Code).
   // Registered before /api so its native-only bootstrap route is matched first.
+  // Courier: ping/WebSocket for the browser extension, plus its native send API.
+  const courier = new CourierHub({
+    log,
+    messages: new CourierMessages(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-messages.json'), log),
+    pairs: new CourierPairs(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-pairs.json'), log),
+    onStarted: (id, text) => { deps.sessions.commitDraft(id, text); },
+    onIdle: (id) => deps.sessionActivity?.endTurn(id),
+    connectorPrompt: (id, task, kind = 'connector') => {
+      const s = deps.sessions.get(id);
+      if (!s) return { code: 'session_inactive', message: '这个 BlackHole 会话已结束' };
+      const target = connectionTarget({
+        tunnel: deps.tunnel.status,
+        tunnel_url: deps.tunnel.url ?? null,
+        public_base_url: deps.cfg.publicBaseUrl ?? null,
+        openai_tunnel: deps.openaiTunnel ? { status: deps.openaiTunnel.view().status } : null,
+      });
+      if (kind === 'sandbox') {
+        if (!target.sandbox) return { code: 'no_channel', message: SANDBOX_NEEDS_PUBLIC_URL };
+        return { text: renderPrompt('sandbox', mcpUrl(deps), s.credential_id, task) };
+      }
+      if (!target.connector) return { code: 'no_channel', message: '还没有在线的渠道：请先启动 Cloudflare 或 OpenAI 渠道，网页 AI 才能调用 BlackHole' };
+      return { text: renderPrompt('connector', '', s.credential_id, task, deps.settings?.get().values.connectorName || 'BlackHole') };
+    },
+    onChange: () => changes.bump(),
+    sessions: () => deps.sessions.list().map((s) => ({ id: s.id, name: s.name?.trim() || path.basename(s.workspace_path) || s.workspace_path, named: !!s.name?.trim(), status: 'draft' in s ? 'draft' : s.status })),
+    // Sites added in Courier (检测此页面): kept in the daemon-owned courierSites setting.
+    sites: {
+      list: () => deps.settings?.get().values.courierSites ?? [],
+      put: (site) => putCourierSite(deps, site),
+      remove: (id) => removeCourierSite(deps, id),
+    },
+    // Subscription: the local entitlement ticket (verified offline; renewed only when missing/expired).
+    ...(entitlement ? { access: {
+      valid: () => entitlement.valid(),
+      check: () => entitlement.access(),
+      // Cached account view (no cloud call): remainingSeconds of the last verified snapshot.
+      until: async () => { const v = await deps.account?.view(); return v && 'remainingSeconds' in v && typeof v.remainingSeconds === 'number' ? Date.now() + v.remainingSeconds * 1000 : null; },
+    } } : {}),
+  });
+  deps.courier = courier;
+  entitlement?.onChange(() => courier.pushAccess());
+  // A session deleted in any UI: Courier unbinds it; its pairing and thread are removed.
+  // The reason travels to Courier: a deleted session may also delete its bound web chat (only if the
+  // user turned that on in Courier), an archived one never does.
+  deps.sessions.onSessionEnded = (id, reason) => courier.forget(id, { reason: reason ?? 'unpaired' });
+  mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data));
   const control = mountControl(express.Router(), deps);
   mountLocalWeb(app, deps, undefined, control);
   app.use('/api', control);
@@ -393,6 +451,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   const stop = async (): Promise<void> => {
     clearInterval(processSweep);
+    courier.close();
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();
@@ -408,6 +467,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     // retiring daemon's /health after a replacement starts. Drop them now.
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
+    courier.close(); // a Courier socket still open would hold server.close() forever (upgraded sockets are not HTTP connections)
     await closed;
     events.append(null, 'daemon_stopped', {});
     deps.sessionActivity?.dispose();

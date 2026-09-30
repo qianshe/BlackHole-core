@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Prompt contract checks. No shell subprocess, live daemon or external network.
 // The HTTP check uses an isolated loopback router and synthetic fixture credentials.
-// Run after pnpm build; the VS Code template is transpiled in memory with the existing TS dependency.
+// Run after pnpm build; the canonical Courier prompt is transpiled in memory with the existing TS dependency.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -12,7 +12,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerTools } from '../dist/mcp/tools.js';
 
-const source = fs.readFileSync(new URL('../packages/vscode/src/templates.ts', import.meta.url), 'utf8');
+// Verify the daemon/Courier prompt directly; prompt-sync separately enforces VS Code parity.
+const source = fs.readFileSync(new URL('../src/courier/prompt.ts', import.meta.url), 'utf8');
 const configPanelSource = fs.readFileSync(new URL('../packages/vscode/src/configPanel.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
@@ -28,6 +29,7 @@ async function check(label, fn) {
 
 await check('connector entry goes straight to guide, not a second manual', () => {
   const text = renderPrompt('connector', url, sid, 'Review the diff');
+  assert.equal(text, ['@BlackHole', 'sessionId: ' + sid, 'Read guide with this sessionId. Comply with its instructions throughout the session.', 'Task: Review the diff'].join('\n'));
   assert.match(text, /Read guide with this sessionId\. Comply with its instructions throughout the session\./);
   assert.doesNotMatch(text, /must comply|operating rules/i);
   assert.doesNotMatch(text, /show|bh\.py|https:|approval|editor/);
@@ -52,13 +54,13 @@ await check('empty connector names and tasks get usable defaults', () => {
 });
 await check('script entry provides bh.py without mentioning unavailable tools or duplicating the raw MCP URL', () => {
   const text = renderPrompt('sandbox', url, sid, 'Review the diff');
-  assert.match(text, /bh\.py provides access to the BlackHole workspace from this sandbox\./);
-  assert.doesNotMatch(text, /\bMCP\b/i);
+  assert.match(text, /Use the downloaded bh\.py for every BlackHole tool call in this sandbox\./);
+  assert.doesNotMatch(text, /\bMCP\b|tools\/call|tools\/list|endpoint|handshake|transport/i);
   assert.doesNotMatch(text, /\bshow\b/i);
   assert.doesNotMatch(text, /\bsed\b/);
-  assert.match(text, /-o bh\.py && python3 bh\.py call guide '\{\}'/);
-  assert.ok(text.includes('sessionId: ' + sid));
-  assert.match(text, /Comply with the instructions returned by guide throughout the session\./);
+  assert.match(text, /-o bh\.py && python3 bh\.py call guide/);
+  assert.doesNotMatch(text, /^sessionId:/m);
+  assert.match(text, /Follow the guide for the task\. Do not create another BlackHole access script or call BlackHole directly; this restriction applies only to BlackHole access\./);
   assert.doesNotMatch(text, /must comply|operating rules/i);
   assert.doesNotMatch(text, /@BlackHole|MCP URL:|\/mcp\//);
 });

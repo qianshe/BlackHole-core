@@ -57,7 +57,7 @@
     "test:changelog": "node --test packages/vscode/test/changelog.test.mjs",
     "test:host-runtime": "node --test scripts/isolated-env.test.mjs && pnpm --dir packages/host-runtime test",
     "build:launcher": "pnpm --dir packages/host-runtime build && go -C packages/desktop-launcher build -trimpath -o ../../.tmp/launcher/dev/ ./cmd/blackhole",
-    "test:local-web": "pnpm build && pnpm --dir packages/web build && pnpm --dir packages/web test && node --test scripts/local-web.test.mjs scripts/account.test.mjs scripts/web-console.test.mjs scripts/web-sessions.test.mjs scripts/remote-access.test.mjs scripts/settings-store.test.mjs scripts/openai-tunnel.test.mjs scripts/secret-file.test.mjs",
+    "test:local-web": "pnpm build && pnpm --dir packages/web build && pnpm --dir packages/web test && node --test scripts/local-web.test.mjs scripts/account.test.mjs scripts/web-console.test.mjs scripts/web-sessions.test.mjs scripts/remote-access.test.mjs scripts/settings-store.test.mjs scripts/openai-tunnel.test.mjs scripts/secret-file.test.mjs scripts/courier.test.mjs",
     "test:skills": "pnpm build && node --test --experimental-test-isolation=none scripts/skill-resources.test.mjs scripts/skill-dedupe.test.mjs scripts/skill-context.test.mjs scripts/skill-safety.test.mjs packages/vscode/test/skill-settings.test.mjs",
     "semantic:check": "pnpm build && node scripts/semantic-unit.mjs",
     "verify:tunnel-reconnect": "pnpm build && node scripts/verify-tunnel-reconnect.mjs",

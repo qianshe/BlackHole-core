@@ -19,7 +19,8 @@ export const STALE_MS = 45_000;
 export function startChannelWatchdog(deps: DaemonDeps): { stop(): void } {
   let stopping = false;
   const timer = setInterval(() => {
-    const staleFor = Date.now() - deps.lastHeartbeatAt;
+    // An open Local Web page (a live /web-api/v1/presence response) counts as a window.
+    const staleFor = deps.webPresence?.size ? 0 : Date.now() - deps.lastHeartbeatAt;
     const live = deps.tunnel.status === 'starting' || deps.tunnel.status === 'online' || deps.tunnel.status === 'unverified';
     if (staleFor > STALE_MS && live) {
       deps.log(`watchdog: no extension heartbeat for ${Math.round(staleFor / 1000)}s — stopping the public channel (daemon stays local-only)`);

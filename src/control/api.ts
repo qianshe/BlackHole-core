@@ -133,6 +133,8 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       version: VERSION,
       ...(deps.startFingerprint ? { start_fingerprint: deps.startFingerprint } : {}),
       ...(deps.openaiTunnel ? { openai_tunnel_api_version: 1, openai_tunnel: deps.openaiTunnel.view() } : {}),
+      // Clients re-read settings when this moves (an edit made in another client).
+      ...(deps.settings ? { settings_revision: deps.settings.get().revision } : {}),
       ...(deps.entitlement ? { cloud_origin: deps.entitlement.cloudOrigin, entitlement_bridge_version: 2 } : {}),
       ...(deps.account ? { account_api_version: ACCOUNT_API_VERSION, account_storage: deps.account.storage } : {}),
       started_at: new Date(bootTime).toISOString(),
@@ -199,7 +201,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       // operator-denied risky commands — a security signal distinct from
       // protocol-layer rejections.
       uptime_min: Math.round((Date.now() - bootTime) / 60_000),
-      sessions_active: deps.sessions.list().filter((s) => s.status === 'active').length,
+      sessions_active: deps.sessions.list().filter((s) => s.status === 'active' && !('draft' in s)).length,
       sessions_running: deps.sessions.list().filter((s) => s.status === 'active' && deps.sessionActivity?.status(s.id) === 'running').length,
       approvals_pending: deps.confirmations.list().filter((c) => c.status === 'pending').length,
       approvals_denied: deps.confirmations.deniedSince(dayStart.getTime()),
@@ -334,7 +336,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   /** Lets the tray quit on its own while VS Code (or another client) still uses this daemon. */
   app.get('/clients', (_req, res) => {
     const other = deps.clientBeats?.get('other');
-    res.json({ others_active: other !== undefined && Date.now() - other < 30_000 });
+    res.json({
+      others_active: other !== undefined && Date.now() - other < 30_000,
+      // Informational only: an open Local Web page does not keep the daemon for a tray quit.
+      web_present: (deps.webPresence?.size ?? 0) > 0,
+    });
   });
 
   // Graceful exit for the extension's "Stop Daemon": respond first, then tear
@@ -384,6 +390,8 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     permission_mode: s.permission_mode,
     writable_dirs: s.writable_dirs ?? [],
     auto_approve: String(s.auto_approve ?? '') === '1' || s.auto_approve === true,
+    /** Reserved, not stored yet: becomes a real session on the first tool call; closing it discards it. */
+    draft: 'draft' in s && s.draft === true,
     created_at: new Date(s.created_at).toISOString(),
     last_active_at: new Date(s.last_active_at).toISOString(),
   });
@@ -476,6 +484,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     if (existing.status === 'revoked') {
       res.status(409).json({ error: 'session is already revoked' });
       return;
+    }
+    if ('draft' in existing) {
+      // Nothing was stored or run yet: revoke just forgets the reservation.
+      if (action === 'revoke') { deps.sessions.discardDraft(id); res.json({ ...publicSession(existing), status: 'revoked', draft: true }); return; }
+      if (action !== 'rotate') { res.status(409).json({ error: 'session is still a draft' }); return; }
     }
     if (action === 'rotate') {
       deps.panels?.revokeSession(id, { keepAnswering: true, reason: 'credential_rotated' });
@@ -584,6 +597,25 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     const unconfirmed = await deps.processes?.stopSession(id, 'writable_dirs_changed') ?? [];
     deps.events.append(id, 'session_writable_dirs_changed', { writable_dirs: dirs });
     if (unconfirmed.length) { res.status(503).json({ error: 'process_cleanup_unconfirmed', processIds: unconfirmed }); return; }
+    res.json(publicSession(updated as NonNullable<typeof updated>));
+  });
+
+  // Rename a session from VS Code or the Web console (empty name = back to the default title).
+  app.patch('/sessions/:id/name', (req, res) => {
+    const id = req.params.id as string;
+    const existing = deps.sessions.get(id);
+    if (!existing) {
+      res.status(404).json({ error: 'session not found' });
+      return;
+    }
+    const raw = ((req.body ?? {}) as { name?: unknown }).name;
+    if (raw !== null && typeof raw !== 'string') {
+      res.status(400).json({ error: 'name must be a string' });
+      return;
+    }
+    const updated = deps.sessions.setName(id, raw);
+    if (!('draft' in existing)) deps.events.append(id, 'session_renamed', { name: updated?.name ?? null });
+    deps.changes.bump();
     res.json(publicSession(updated as NonNullable<typeof updated>));
   });
 
