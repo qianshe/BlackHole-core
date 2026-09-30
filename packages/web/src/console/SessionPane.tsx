@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, type CallView, type ConfirmationView, type SessionView } from '../api';
 import { toolCallDisplay } from '../../../vscode/src/callDisplay';
 import { displayToolName } from '../../../vscode/src/toolNames';
+import { applyHead, applyOlder, emptyWindow, hasOlder, headRequest, messagesInWindow, rowsOf, timeOf, type CallWindow } from '../../../vscode/src/callWindow';
+import { Bubble, CHAT_CHANGED, CHAT_STREAMING, ChatDock, getJson, streamThread, usePairLink, type Message } from './ChatDock';
 import {
   callDuration,
   callHeadline,
@@ -10,8 +12,6 @@ import {
   resultDiff,
   CALL_STATUS_LABEL,
   formatFull,
-  matchCall,
-  pathCrumbs,
   percent,
   PERMISSION_LABEL,
   relativeTime,
@@ -25,8 +25,78 @@ import { ApprovalCard } from './Approval';
 import { failText, useMenu } from './common';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
+import { HandoffBar } from './HandoffBar';
 
 const PAGE = 50;
+
+/** Inspector width limits; the feed always keeps at least FEED_MIN pixels. */
+const INSPECTOR = { min: 240, max: 640, initial: 300, feedMin: 360, key: 'bh.web.inspectorWidth' } as const;
+
+function savedWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(INSPECTOR.key));
+    return v >= INSPECTOR.min && v <= INSPECTOR.max ? v : INSPECTOR.initial;
+  } catch {
+    return INSPECTOR.initial;
+  }
+}
+
+/**
+ * Draggable divider between the call feed and the session inspector
+ * (pointer drag, arrow keys, double-click to reset). The width persists per browser.
+ */
+function useInspectorResize() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(savedWidth);
+  const [dragging, setDragging] = useState(false);
+  const clamp = (w: number): number => {
+    const box = ref.current?.getBoundingClientRect().width ?? 0;
+    const max = box ? Math.max(INSPECTOR.min, Math.min(INSPECTOR.max, box - INSPECTOR.feedMin)) : INSPECTOR.max;
+    return Math.round(Math.max(INSPECTOR.min, Math.min(max, w)));
+  };
+  const commit = (w: number): void => {
+    const v = clamp(w);
+    setWidth(v);
+    try {
+      localStorage.setItem(INSPECTOR.key, String(v));
+    } catch {
+      /* storage unavailable: keep it for this page only */
+    }
+  };
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    const startX = e.clientX;
+    const startW = width;
+    let last = startW;
+    el.setPointerCapture(e.pointerId);
+    setDragging(true);
+    const move = (ev: PointerEvent): void => {
+      last = clamp(startW + (startX - ev.clientX));
+      setWidth(last);
+    };
+    const up = (): void => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      setDragging(false);
+      commit(last);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  };
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const step = e.shiftKey ? 64 : 16;
+    const next =
+      e.key === 'ArrowLeft' ? width + step : e.key === 'ArrowRight' ? width - step : e.key === 'Home' ? INSPECTOR.max : e.key === 'End' ? INSPECTOR.min : null;
+    if (next === null) return;
+    e.preventDefault();
+    commit(next);
+  };
+  return { ref, width, dragging, onPointerDown, onKeyDown, reset: () => commit(INSPECTOR.initial) };
+}
 
 interface Props {
   session: SessionView;
@@ -36,12 +106,38 @@ interface Props {
   onApprove: (x: ConfirmationView) => void;
   onApprovalsChanged: () => void;
   onChanged: () => void;
+  /** Composer inputs; the composer lives in the feed column of this pane. */
+  connectorName: string;
+  mcpUrl: string | null;
 }
 
 /** Pending approval for an awaiting row: same tool and args, else the oldest of the session. */
 function approvalFor(call: CallView, list: ConfirmationView[]): ConfirmationView | undefined {
   const same = JSON.stringify(call.args);
   return list.find((x) => x.tool === call.tool && JSON.stringify(x.args) === same) ?? list[0];
+}
+
+/** Codex-style: the state is one glyph; the words are only its accessible name. */
+const STATUS_GLYPH: Record<string, string> = { ok: '✓', run: '●', warn: '▲', bad: '✕', muted: '·' };
+
+/** Output lines shown before a call's body collapses behind "… 还有 N 行". */
+const BODY_LINES = 14;
+
+/** Long output is a tree branch under its call: preview first, the rest on demand. */
+function Clip({ text }: { text: string }) {
+  const [full, setFull] = useState(false);
+  const lines = useMemo(() => text.split('\n'), [text]);
+  const hidden = Math.max(0, lines.length - BODY_LINES);
+  const shown = full || hidden === 0 ? text : lines.slice(0, BODY_LINES).join('\n');
+  if (hidden === 0) return <pre className={c.pre}>{text}</pre>;
+  return (
+    <div className={c.clipWrap}>
+      <pre className={c.pre}>{shown}</pre>
+      <button type="button" className={c.clipMore} aria-expanded={full} onClick={() => setFull((v) => !v)}>
+        {full ? '收起' : `… 还有 ${hidden} 行`}
+      </button>
+    </div>
+  );
 }
 
 function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: boolean; fresh: boolean; onToggle: () => void; onApprove?: () => void }) {
@@ -56,17 +152,17 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
   return (
     <li className={`${c.call} ${open ? c.callOpen : ''} ${fresh ? c.fresh : ''}`}>
       <button type="button" className={c.callRow} aria-expanded={open} aria-controls={`call-${x.id}`} onClick={onToggle}>
-        <span className={c.status}>
-          <span className={c[`dot_${tone}`]} aria-hidden="true" />
-          {CALL_STATUS_LABEL[x.status] ?? x.status}
+        <span className={c.bullet} data-tone={tone} role="img" aria-label={CALL_STATUS_LABEL[x.status] ?? x.status} title={CALL_STATUS_LABEL[x.status] ?? x.status}>
+          {STATUS_GLYPH[tone] ?? '·'}
         </span>
         <span className={c.callMain} title={`${head.label} · ${head.target}`}>
           <span className={c.tool}>{head.label}</span>
           <span className={c.desc}>{head.target}</span>
-        </span>
-        <span className={c.diff} aria-label={diff ? `新增 ${diff.added} 行，删除 ${diff.removed} 行` : undefined}>
-          {diff && diff.added > 0 && <span className={c.diffAdd}>+{diff.added}</span>}
-          {diff && diff.removed > 0 && <span className={c.diffDel}>−{diff.removed}</span>}
+          {/* diff stats ride with the file they belong to, not in a far column */}
+          <span className={c.diff} aria-label={diff ? `新增 ${diff.added} 行，删除 ${diff.removed} 行` : undefined}>
+            {diff && diff.added > 0 && <span className={c.diffAdd}>+{diff.added}</span>}
+            {diff && diff.removed > 0 && <span className={c.diffDel}>−{diff.removed}</span>}
+          </span>
         </span>
         <span className={c.duration} title={formatFull(x.created_at)}>
           {onApprove ? '' : dur ?? (x.status === 'started' ? '执行中' : '')}
@@ -85,7 +181,7 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
               <span>参数</span>
               <CopyButton text={argsText} />
             </div>
-            <pre className={c.pre}>{argsText}</pre>
+            <Clip text={argsText} />
           </div>
           {body && (
             <div className={c.block}>
@@ -93,7 +189,7 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
                 <span>结果</span>
                 <CopyButton text={body} />
               </div>
-              <pre className={c.pre}>{body}</pre>
+              <Clip text={body} />
             </div>
           )}
           <div className={c.callFoot}>
@@ -128,34 +224,203 @@ function SessionMenu({ session, actions, goal }: { session: SessionView; actions
   );
 }
 
-export function SessionPane({ session, approvals, now, actions, onApprove, onApprovalsChanged, onChanged }: Props) {
+/**
+ * Chat-style timeline of one session: calls (callWindow.ts) plus its web chat messages.
+ * The head is polled; older calls load on scroll-up under the frozen anchor.
+ */
+function useTimeline(sessionId: string, ended: boolean) {
+  const [win, setWin] = useState<CallWindow<CallView>>(() => emptyWindow());
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [olderBusy, setOlderBusy] = useState(false);
+  const winRef = useRef(win);
+  winRef.current = win;
+  const olderRef = useRef(false);
 
-  const [page, setPage] = useState(1);
-  const [tool, setTool] = useState('');
-  const [status, setStatus] = useState('');
-  const [query, setQuery] = useState('');
+  useEffect(() => {
+    setWin(emptyWindow());
+    winRef.current = emptyWindow();
+    setMessages([]);
+    setLoaded(false);
+    setError(null);
+    setOlderBusy(false);
+    olderRef.current = false;
+    let alive = true;
+    const ctl = new AbortController();
+    const tick = async () => {
+      const w = winRef.current;
+      const h = headRequest(w, PAGE);
+      const [page, msgs] = await Promise.all([
+        api.calls(sessionId, 0, h.limit, ctl.signal).catch((e: unknown) => { if (alive) setError(e); return null; }),
+        getJson<{ messages: Message[] }>(`/courier/messages?sessionId=${encodeURIComponent(sessionId)}`).catch(() => null),
+      ]);
+      if (!alive) return;
+      if (page) {
+        setError(null);
+        setLoaded(true);
+        // too many new calls since the anchor: start over at the newest; a raced older load is dropped
+        setWin((cur) => (cur.anchor !== w.anchor ? cur : applyHead(h.restart ? emptyWindow<CallView>() : cur, page)));
+      }
+      if (msgs) setMessages(msgs.messages);
+    };
+    void tick();
+    const t = ended ? 0 : window.setInterval(() => { if (!document.hidden) void tick(); }, POLL_MS);
+    const onChat = () => void tick();
+    window.addEventListener(CHAT_CHANGED, onChat);
+    // Reply text streams in over the live thread; reconnects after a drop (polling keeps working meanwhile).
+    void (async () => {
+      while (alive && !ended) {
+        await streamThread(sessionId, (m) => {
+          if (!alive || (m.sessionId !== undefined && m.sessionId !== sessionId)) return;
+          setMessages((list) => {
+            const i = list.findIndex((x) => x.id === m.id);
+            if (i < 0) return [...list, m];
+            const next = list.slice();
+            next[i] = m;
+            return next;
+          });
+        }, ctl.signal).catch(() => {});
+        if (alive) await new Promise((r) => setTimeout(r, 3000));
+      }
+    })();
+    return () => { alive = false; ctl.abort(); clearInterval(t); window.removeEventListener(CHAT_CHANGED, onChat); };
+  }, [sessionId, ended]);
+
+  const loadOlder = useCallback(async (): Promise<boolean> => {
+    const w = winRef.current;
+    if (olderRef.current || !hasOlder(w)) return false;
+    olderRef.current = true;
+    setOlderBusy(true);
+    try {
+      const page = await api.calls(sessionId, w.older + 1, PAGE, undefined, w.anchor);
+      setWin((cur) => (cur.anchor === w.anchor && cur.older === w.older ? applyOlder(cur, page) : cur));
+      return true;
+    } catch {
+      return false; // keep what is loaded; the next scroll-up retries
+    } finally {
+      olderRef.current = false;
+      setOlderBusy(false);
+    }
+  }, [sessionId]);
+
+  // Share "a reply is streaming" with the composer (ChatDock), which blocks sending meanwhile.
+  const streaming = messages.some((m) => m.status === 'streaming');
+  useEffect(() => { window.dispatchEvent(new CustomEvent(CHAT_STREAMING, { detail: { sessionId, streaming } })); }, [sessionId, streaming]);
+
+  return { win, messages, loaded, error, olderBusy, loadOlder };
+}
+
+type Entry = { kind: 'call'; x: CallView; at: number } | { kind: 'msg'; m: Message; at: number };
+
+export function SessionPane({ session, approvals, now, actions, onApprove, onApprovalsChanged, onChanged, connectorName, mcpUrl }: Props) {
+  const split = useInspectorResize();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const seen = useRef<Set<string> | null>(null);
 
   useEffect(() => {
-    setPage(1);
-    setTool('');
-    setStatus('');
-    setQuery('');
     setOpen(new Set());
     seen.current = null;
   }, [session.id]);
 
   const ended = session.status === 'revoked' || session.status === 'archived';
-  const calls = usePoll((signal) => api.calls(session.id, page, PAGE, signal), `calls:${session.id}:${page}`, POLL_MS, !ended || page === 1);
+  const tl = useTimeline(session.id, ended);
   const todos = usePoll((signal) => api.todos(session.id, signal), `todos:${session.id}`, POLL_MS * 2, !ended);
 
-  const list = calls.data?.calls ?? [];
-  const total = calls.data?.total ?? session.calls_total;
-  const pages = Math.max(1, Math.ceil(total / PAGE));
-  const tools = useMemo(() => [...new Set(list.map((x) => x.tool))].sort(), [list]);
-  const shown = useMemo(() => list.filter((x) => matchCall(x, tool, status, query)), [list, tool, status, query]);
+  const list = useMemo(() => rowsOf(tl.win), [tl.win]);
+  const total = tl.loaded ? tl.win.total : session.calls_total;
+  const more = hasOlder(tl.win);
+  // Questions live in the composer's question card, not in the thread. Receive-only sessions have
+  // no card (no composer), so there the question stays in the thread as the only trace of it.
+  const pairLink = usePairLink(session.id);
+  const questionsInThread = pairLink === 'unpaired' || pairLink === 'direct';
+  // Oldest at the top, newest at the bottom; calls and chat messages interleaved.
+  const entries = useMemo<Entry[]>(() => {
+    const out: Entry[] = list.map((x) => ({ kind: 'call', x, at: timeOf(x.created_at) }));
+    for (const m of messagesInWindow(tl.win, tl.messages)) if (questionsInThread || !m.question) out.push({ kind: 'msg', m, at: m.at });
+    return out.sort((a, b) => a.at - b.at);
+  }, [list, tl.win, tl.messages, questionsInThread]);
+  // The final reply of each turn: the last agent message before your next message (calls between
+  // don't count). Only these get a copy button; the segments between tool calls do not.
+  const finalReplies = useMemo(() => {
+    const out = new Set<string>();
+    let last: string | null = null;
+    for (const e of entries) {
+      if (e.kind !== 'msg') continue;
+      if (e.m.kind === 'agent') last = e.m.id;
+      else { if (last) out.add(last); last = null; }
+    }
+    if (last) out.add(last);
+    return out;
+  }, [entries]);
+
+  // The model of the web AI is composer metadata: it stays on the composer and is
+  // keyed by site, so switching the bound chat switches the model with it.
+  const models = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const m of tl.messages) if (m.kind === 'agent' && m.model && m.site) out[m.site] = m.model;
+    return out;
+  }, [tl.messages]);
+
+  // The last unanswered question from the web agent (nothing of yours sent after it):
+  // the composer shows it as a card so one click answers it.
+  const question = useMemo(() => {
+    for (let i = tl.messages.length - 1; i >= 0; i--) {
+      const m = tl.messages[i]!;
+      if (m.kind === 'user' && m.status === 'sent') return null;
+      // Answered on the web page (Courier reports it): no card here either.
+      if (m.kind === 'agent' && m.question) return m.question.answered ? null : { id: m.id, ...m.question };
+    }
+    return null;
+  }, [tl.messages]);
+
+  // Scroll: follow new entries while at the bottom; loading older ones keeps the view in place.
+  const feedRef = useRef<HTMLElement>(null);
+  const stick = useRef(true);
+  const prevHeight = useRef<number | null>(null);
+  // 回到底部按钮：只在滚离底部时出现（滚回底部自动消失）
+  const [atBottom, setAtBottom] = useState(true);
+  useEffect(() => { stick.current = true; setAtBottom(true); }, [session.id]);
+  useLayoutEffect(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    if (prevHeight.current !== null) { el.scrollTop += el.scrollHeight - prevHeight.current; prevHeight.current = null; }
+    else if (stick.current) el.scrollTop = el.scrollHeight;
+  }, [entries]);
+  // Content keeps growing after that first layout (long messages fold after measuring, Markdown
+  // and images settle, the chat dock below changes height), which left a freshly opened session a
+  // little above the bottom. While following, stay pinned whenever the feed or its rows resize.
+  useEffect(() => {
+    const el = feedRef.current;
+    if (!el || typeof ResizeObserver !== 'function') return;
+    const pin = (): void => { if (stick.current && prevHeight.current === null) el.scrollTop = el.scrollHeight; };
+    const ro = new ResizeObserver(pin);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  }, [entries, session.id]);
+  const older = (): void => {
+    const el = feedRef.current;
+    if (!more || tl.olderBusy) return;
+    if (el) prevHeight.current = el.scrollHeight;
+    void tl.loadOlder().then((ok) => { if (!ok) prevHeight.current = null; });
+  };
+  const onFeedScroll = (): void => {
+    const el = feedRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    stick.current = near;
+    setAtBottom((v) => (v === near ? v : near));
+    if (el.scrollTop < 80) older();
+  };
+  const jumpBottom = (): void => {
+    const el = feedRef.current;
+    if (!el) return;
+    stick.current = true;
+    setAtBottom(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  };
 
   // rows that appeared since the previous poll get a short highlight
   const fresh = useMemo(() => {
@@ -184,16 +449,13 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   const board = todos.data;
   const items = board?.items ?? [];
   const done = items.filter((t) => t.status === 'completed').length;
-  const crumbs = pathCrumbs(session.workspace_path);
 
   return (
     <section className={c.sessionView} aria-label={sessionTitle(session)}>
       <header className={c.sessionHead}>
         <div className={c.sessionTop}>
           <div className={c.sessionTitle}>
-            <div className={c.eyebrow}>{crumbs.slice(0, -1).join(' / ') || '会话'}</div>
             <h1 className={c.title}>{sessionTitle(session)}</h1>
-            <div className={c.path}>{session.workspace_path}</div>
           </div>
           <div className={c.controls}>
             <span className={live.cls} aria-live="polite">
@@ -217,6 +479,10 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
           </div>
         </div>
         <div className={c.facts}>
+          <span className={c.path} title={session.workspace_path}>
+            {session.workspace_path}
+          </span>
+          <span aria-hidden="true">·</span>
           <span>
             权限 <b>{PERMISSION_LABEL[session.permission_mode] ?? session.permission_mode}</b>
           </span>
@@ -233,37 +499,11 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             调用 <b>{total}</b>
           </span>
         </div>
+        <HandoffBar session={session} connectorName={connectorName} now={now} />
       </header>
 
-      <div className={c.workspace}>
-        <section className={c.feed} aria-label="调用记录">
-          <div className={c.feedHead}>
-            <h2>调用记录</h2>
-            <span className={c.count}>
-              {shown.length === list.length ? total : `${shown.length} / ${list.length}`}
-            </span>
-            <div className={c.feedActions}>
-              <input className={c.miniSearch} type="search" name="call-filter" placeholder="筛选命令或结果" aria-label="筛选调用" value={query} onChange={(e) => setQuery(e.target.value)} />
-              <select className={c.mini} name="call-tool" aria-label="工具" value={tool} onChange={(e) => setTool(e.target.value)}>
-                <option value="">全部工具</option>
-                {tools.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-              <select className={c.mini} name="call-status" aria-label="状态" value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value="">全部状态</option>
-                {Object.entries(CALL_STATUS_LABEL)
-                  .filter(([k]) => k !== 'unknown')
-                  .map(([k, v]) => (
-                    <option key={k} value={k}>
-                      {v}
-                    </option>
-                  ))}
-              </select>
-            </div>
-          </div>
+      <div ref={split.ref} className={`${c.workspace} ${split.dragging ? c.resizing : ''}`} style={{ '--inspector-w': `${split.width}px` } as CSSProperties}>
+        <section className={c.feed} aria-label="调用记录" ref={feedRef} onScroll={onFeedScroll}>
           {approvals.length > 0 && (
             <button type="button" className={c.narrowApprovals} onClick={() => onApprove(approvals[0]!)}>
               <span className={c.dot_warn} aria-hidden="true" />
@@ -271,19 +511,35 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               <span>审批 ›</span>
             </button>
           )}
-          {calls.error && !calls.data ? (
+          {tl.error && !tl.loaded ? (
             <p className={c.feedNote} role="alert">
-              {failText(calls.error)}
+              {failText(tl.error)}
             </p>
-          ) : !calls.data ? (
+          ) : !tl.loaded ? (
             <p className={c.feedNote}>加载中…</p>
-          ) : list.length === 0 ? (
-            <p className={c.feedNote}>还没有调用。把提示词发给 AI 后，它的每次工具调用都会出现在这里。</p>
-          ) : shown.length === 0 ? (
-            <p className={c.feedNote}>没有符合筛选条件的调用。</p>
+          ) : entries.length === 0 && !more && session.draft ? (
+            <div className={c.feedNote}>
+              <p><b>新会话还没有连上网页 AI</b></p>
+              <p className={c.draftRow}>
+                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'connector')}>复制提示词 · 连接器</button>
+                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'sandbox')}>复制提示词 · 沙箱直连</button>
+              </p>
+              <p>复制提示词交给网页 AI 自行使用；或在下方输入并发送，新开网页 AI 会话并配对。都没做就离开，会话会被丢弃。</p>
+            </div>
+          ) : entries.length === 0 && !more ? (
+            <p className={c.feedNote}>{'还没有消息和工具调用。在下方输入框发送第一条消息，或把提示词发给网页 AI。'}</p>
           ) : (
             <ul className={c.calls}>
-              {shown.map((x) => {
+              <li className={c.older}>
+                {more ? (
+                  tl.olderBusy ? <span>正在加载…</span> : <button type="button" className={c.mini} onClick={older}>加载更早的记录</button>
+                ) : (
+                  <span>会话开始 · 共 {total} 次调用</span>
+                )}
+              </li>
+              {entries.map((e) => {
+                if (e.kind === 'msg') return <Bubble key={e.m.id} m={e.m} copy={finalReplies.has(e.m.id)} />;
+                const x = e.x;
                 const a = x.status === 'awaiting' ? approvalFor(x, approvals) : undefined;
                 return (
                   <CallItem
@@ -305,22 +561,38 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               })}
             </ul>
           )}
-          {pages > 1 && (
-            <nav className={c.pager} aria-label="分页">
-              <button type="button" className={c.mini} disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                较新
+          {!atBottom && (
+            <div className={c.jumpWrap}>
+              <button type="button" className={c.jump} onClick={jumpBottom} aria-label="回到底部" title="回到底部">
+                ↓
               </button>
-              <span>
-                第 {page} / {pages} 页
-              </span>
-              <button type="button" className={c.mini} disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
-                较早
-              </button>
-            </nav>
+            </div>
           )}
         </section>
 
-        <aside className={c.inspector} aria-label="会话详情">
+        {/* The composer shares the feed column: pinned under the timeline, never
+            crossing onto the session-detail inspector. */}
+        <div className={c.dockCell}>
+          <ChatDock key={session.id} session={session} connectorName={connectorName} mcpUrl={mcpUrl} models={models} question={question} />
+        </div>
+
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整会话详情宽度"
+          aria-controls="session-inspector"
+          aria-valuenow={split.width}
+          aria-valuemin={INSPECTOR.min}
+          aria-valuemax={INSPECTOR.max}
+          tabIndex={0}
+          title="拖动调整宽度，双击恢复默认"
+          className={c.splitter}
+          onPointerDown={split.onPointerDown}
+          onKeyDown={split.onKeyDown}
+          onDoubleClick={split.reset}
+        />
+
+        <aside id="session-inspector" className={c.inspector} aria-label="会话详情">
           <h2 className={c.inspectorTitle}>会话详情</h2>
           {approvals.length > 0 && (
             <div className={c.group}>

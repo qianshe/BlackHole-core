@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AccountView, ProjectView, SessionView } from '../api';
-import { groupSessions, sessionTitle, sessionTone, SESSION_STATUS_LABEL } from '../format';
+import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
 import { Icon } from '../ui';
 import { useMenu } from './common';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
@@ -35,10 +35,50 @@ interface Props {
   onAccount: (action: 'buy' | 'orders' | 'settings' | 'signout') => void;
 }
 
-function SessionItem({ x, current, pending, onSelect, actions }: { x: SessionView; current: boolean; pending: number; onSelect: () => void; actions: SessionActions }) {
-  const running = x.status === 'active' && x.activity === 'running';
-  const tone = pending ? 'warn' : sessionTone(x.status, running);
-  const state = pending ? `${pending} 待审批` : running ? '运行中' : SESSION_STATUS_LABEL[x.status] ?? x.status;
+/** Web agent state per session (Courier's last pushed list, cached: cheap to poll). */
+interface WebFlags { busy: Set<string>; asking: Set<string> }
+const NO_FLAGS: WebFlags = { busy: new Set(), asking: new Set() };
+function useWebFlags(): WebFlags {
+  const [f, setF] = useState<WebFlags>(NO_FLAGS);
+  useEffect(() => {
+    let dead = false;
+    const load = async (): Promise<void> => {
+      if (document.hidden) return;
+      try {
+        const r = await fetch('/web-api/v1/courier?cached=1', { credentials: 'same-origin', cache: 'no-store', headers: { 'x-blackhole-web': '1' } });
+        if (!r.ok) return;
+        const j = await r.json() as { targets?: Array<{ sessionId: string | null; busy: boolean | null }>; asking?: string[] };
+        const busy = new Set((j.targets ?? []).filter((t) => t.busy && t.sessionId).map((t) => t.sessionId!));
+        const asking = new Set(j.asking ?? []);
+        if (!dead) setF((o) => (same(o.busy, busy) && same(o.asking, asking) ? o : { busy, asking }));
+      } catch { /* daemon away: keep the last flags */ }
+    };
+    void load();
+    const t = setInterval(() => void load(), 3000);
+    return () => { dead = true; clearInterval(t); };
+  }, []);
+  return f;
+}
+const same = (a: Set<string>, b: Set<string>): boolean => a.size === b.size && [...a].every((x) => b.has(x));
+
+/**
+ * One status at the end of the row, most urgent first (color + text); idle shows nothing.
+ * 待审批 / 待回答 need you; 生成中 / 运行中 are working; the rest is quiet progress.
+ */
+function rowState(x: SessionView, pending: number, web: WebFlags): { text: string; tone: 'warn' | 'run' | 'muted'; title?: string } | null {
+  if (pending) return { text: `${pending} 待审批`, tone: 'warn' };
+  if (web.asking.has(x.id)) return { text: '待回答', tone: 'warn', title: '网页 AI 发来了提问' };
+  if (web.busy.has(x.id)) return { text: '生成中', tone: 'run', title: '网页 AI 正在回复' };
+  if (x.status === 'active' && x.activity === 'running') return { text: '运行中', tone: 'run', title: '正在调用工具' };
+  if (x.todos_total > 0 && x.todos_done < x.todos_total) return { text: `${x.todos_done}/${x.todos_total}`, tone: 'muted', title: 'Todo 进度' };
+  if (x.pending_handoff) return { text: 'Handoff', tone: 'muted', title: '有待接手的 Handoff' };
+  if (x.status === 'paused') return { text: SESSION_STATUS_LABEL.paused ?? '已暂停', tone: 'muted' };
+  return null;
+}
+
+function SessionItem({ x, current, pending, web, onSelect, actions }: { x: SessionView; current: boolean; pending: number; web: WebFlags; onSelect: () => void; actions: SessionActions }) {
+  const st = rowState(x, pending, web);
+  const state = st?.text ?? SESSION_STATUS_LABEL[x.status] ?? x.status;
   const m = useMenu();
   const [up, setUp] = useState(false);
   const pick = (fn: () => void) => () => {
@@ -53,9 +93,8 @@ function SessionItem({ x, current, pending, onSelect, actions }: { x: SessionVie
   return (
     <li className={c.sessionItem}>
       <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} · ${state}`}>
-        <span className={c[`dot_${tone}`]} aria-hidden="true" />
         <span className={c.rowLabel}>{sessionTitle(x)}</span>
-        {pending ? <span className={c.rowMetaWarn}>{pending} 待审批</span> : running ? <span className={c.rowMeta}>运行中</span> : null}
+        {st && <span className={st.tone === 'warn' ? c.rowMetaWarn : st.tone === 'run' ? c.rowMetaRun : c.rowMeta} title={st.title}>{st.text}</span>}
       </button>
       {/* sibling of the row button: a button inside a button is invalid */}
       <div ref={m.wrapRef} onKeyDown={m.onKeyDown}>
@@ -176,26 +215,31 @@ export function Sidebar(p: Props) {
       else n.add(id);
       return n;
     });
-  const item = (x: SessionView) => <SessionItem key={x.id} x={x} current={p.view === 'session' && p.current === x.id} pending={p.pending.get(x.id) ?? 0} onSelect={() => p.onSelect(x.id)} actions={p.actions} />;
+  const web = useWebFlags();
+  const item = (x: SessionView) => <SessionItem key={x.id} x={x} current={p.view === 'session' && p.current === x.id} pending={p.pending.get(x.id) ?? 0} web={web} onSelect={() => p.onSelect(x.id)} actions={p.actions} />;
 
   return (
     <aside className={c.sidebar} aria-label="导航">
       <div className={c.sideTop}>
-        {/* collapsed: the logo itself expands; expanded: a separate collapse button */}
+        {/* The brand icon keeps its size and place in both states. Collapsed, it is the expand
+            button (hover shows the sidebar icon in the same 32px box); expanded, the toggle sits right. */}
         {p.collapsed ? (
-          <button type="button" className={c.brandBtn} aria-label="展开侧栏" aria-expanded={false} title="展开侧栏" onClick={p.onToggle}>
-            BH
+          <button type="button" className={`${c.brand} ${c.brandBtn}`} aria-label="展开侧栏" aria-expanded={false} title="展开侧栏" onClick={p.onToggle}>
+            <span className={c.brandText}>BH</span>
+            <span className={c.brandHover}>
+              <Icon name="sidebar" />
+            </span>
           </button>
         ) : (
-          <span className={c.brand} aria-hidden="true">
-            BH
-          </span>
-        )}
-        <span className={c.brandName}>BlackHole</span>
-        {!p.collapsed && (
-          <button type="button" className={c.collapse} aria-label="收起侧栏" aria-expanded={true} title="收起侧栏" onClick={p.onToggle}>
-            <Icon name="sidebar" />
-          </button>
+          <>
+            <span className={c.brand} aria-hidden="true">
+              BH
+            </span>
+            <span className={c.brandName}>BlackHole</span>
+            <button type="button" className={c.collapse} aria-label="收起侧栏" aria-expanded title="收起侧栏" onClick={p.onToggle}>
+              <Icon name="sidebar" />
+            </button>
+          </>
         )}
       </div>
 

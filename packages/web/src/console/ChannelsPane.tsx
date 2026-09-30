@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { panel, remoteAdmin, type Health, type RemoteView, type SettingsValues } from '../api';
+import { api, panel, remoteAdmin, type Health, type RemoteView, type SettingsValues } from '../api';
 import { Icon } from '../ui';
 import { copyText, failText, useToast } from './common';
 import c from './console.module.css';
@@ -31,6 +31,27 @@ export function channelState(h: Health | null, mode: SettingsValues['channelMode
   return map[h.tunnel] ?? { tone: 'muted', text: '未启动' };
 }
 
+/**
+ * Every running channel in one line, e.g. 「持久 · gpt」, 「临时」, 「自定义」; 「未启动」 when none.
+ * Cloudflare and OpenAI run side by side, so this reads both whichever mode is selected.
+ * The VS Code settings page and sidebar use the same wording (configPanel.ts / sidebar.ts).
+ */
+export function channelSummary(h: Health | null, mode: SettingsValues['channelMode'] | undefined, customOnline?: boolean): { tone: Tone; text: string } {
+  if (!h) return { tone: 'muted', text: '未连接' };
+  const parts: Array<[Tone, string]> = [];
+  const kind = h.tunnel_mode === 'named' ? '持久' : '临时';
+  const cf: Record<string, [Tone, string]> = { online: ['ok', kind], unverified: ['warn', kind + '未验证'], starting: ['warn', 'Cloudflare 启动中…'], error: ['bad', 'Cloudflare 失败'], unavailable: ['bad', 'Cloudflare 不可用'] };
+  const oa: Record<string, [Tone, string]> = { ready: ['ok', 'gpt'], recovering: ['warn', 'gpt 恢复中'], starting: ['warn', 'gpt 启动中…'], stopping: ['warn', 'gpt 停止中…'], error: ['bad', 'gpt 失败'], unavailable: ['bad', 'gpt 不可用'] };
+  if (mode === 'custom' && (customOnline ?? !!h.public_base_url)) parts.push(['ok', '自定义']);
+  if (cf[h.tunnel]) parts.push(cf[h.tunnel]!);
+  const o = h.openai_tunnel?.status;
+  if (o && oa[o]) parts.push(oa[o]!);
+  if (!parts.length) return { tone: 'muted', text: '未启动' };
+  const tones = new Set(parts.map((p) => p[0]));
+  const tone: Tone = tones.size === 1 ? parts[0]![0] : 'warn';
+  return { tone, text: parts.map((p) => p[1]).join(' · ') };
+}
+
 const MODE_LABEL: Record<SettingsValues['channelMode'], [string, string]> = {
   cloudflare: ['Cloudflare', '通过 Cloudflare 隧道让网页版 AI 连到这台电脑'],
   openai: ['OpenAI', '通过 OpenAI 隧道连接 ChatGPT'],
@@ -53,13 +74,31 @@ export function ChannelsPane({
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const mode = values?.channelMode ?? 'cloudflare';
-  const st = channelState(health, mode);
-  // OpenAI has no URL; its row shows the saved Tunnel ID instead.
-  const url = mode === 'openai' ? null : (health?.tunnel_url ?? health?.public_base_url ?? null);
-  const reason = mode === 'openai' ? (health?.openai_tunnel?.reason ?? null) : (health?.tunnel_reason ?? null);
+  const st = channelSummary(health, mode);
   const hasNamed = !!values?.namedTunnelName && !!values?.publicBaseUrl;
   const running = health ? ['online', 'unverified', 'starting'].includes(health.tunnel) : false;
-
+  // OpenAI channel start/stop, same calls as the settings panel (daemon id + revisions guard races).
+  const oaLive = ['starting', 'ready', 'recovering'].includes(health?.openai_tunnel?.status ?? '');
+  const openaiStart = async (): Promise<unknown> => {
+    const h = await panel.health();
+    if (!h.openai_tunnel || !h.daemon_id) throw new Error('openai_tunnel_unsupported');
+    const s = await api.settings();
+    return panel.openaiStart(h.daemon_id, s.revision, h.openai_tunnel.credential_revision);
+  };
+  const openaiStop = async (): Promise<unknown> => {
+    const h = await panel.health();
+    if (!h.openai_tunnel || !h.daemon_id) throw new Error('openai_tunnel_unsupported');
+    return panel.openaiStop(h.daemon_id, h.openai_tunnel.run_id);
+  };
+  // Every channel is listed with its own state (Cloudflare and OpenAI can run together); the
+  // saved channel mode is only marked as the default one.
+  const rows = (['cloudflare', 'openai', 'custom'] as const).map((m) => {
+    // The custom address is shared with the named Cloudflare tunnel: only "online" when it is the default.
+    const rs = m === 'custom' && m !== mode ? { tone: 'muted' as Tone, text: values?.publicBaseUrl ? '已填写地址' : '未配置' } : channelState(health, m);
+    const url = m === 'openai' ? null : m === 'custom' ? (health?.public_base_url ?? values?.publicBaseUrl ?? null) : (running ? health?.tunnel_url ?? null : null);
+    const reason = m === 'openai' ? (health?.openai_tunnel?.reason ?? null) : m === 'cloudflare' ? (health?.tunnel_reason ?? null) : null;
+    return { m, rs, url, reason };
+  });
   const run = (fn: () => Promise<unknown>, done: string): void => {
     setBusy(true);
     fn().then(
@@ -70,7 +109,7 @@ export function ChannelsPane({
       (e: unknown) => toast(failText(e), 'bad'),
     ).finally(() => setBusy(false));
   };
-  const needCf = mode === 'cloudflare' && !values?.cloudflaredPath;
+  const needCf = !values?.cloudflaredPath;
 
   return (
     <section className={c.channels} aria-label="公网渠道">
@@ -89,7 +128,7 @@ export function ChannelsPane({
             状态 <b className={c[`stateText_${st.tone}`]}>{st.text}</b>
           </span>
           <span>
-            方式 <b>{MODE_LABEL[mode][0]}</b>
+            默认 <b>{MODE_LABEL[mode][0]}</b>
           </span>
           <span>
             手机访问 <b>{remote?.enabled ? `已开启 · ${remote.devices.length} 台设备` : '未开启'}</b>
@@ -97,27 +136,30 @@ export function ChannelsPane({
         </div>
 
         <ul className={c.channelList}>
-          <li className={c.channelRow}>
+          {rows.map(({ m, rs, url, reason }) => (
+          <li key={m} className={c.channelRow}>
             <div style={{ minWidth: 0 }}>
               <div className={c.channelTitle}>
-                <span className={c[`dot_${st.tone}`]} aria-hidden="true" />
-                {mode === 'cloudflare' ? (health?.tunnel_mode === 'named' ? 'Cloudflare 持久渠道' : 'Cloudflare 临时渠道') : MODE_LABEL[mode][0]}
-                <span className={c.provider}>{MODE_LABEL[mode][0]}</span>
+                <span className={c[`dot_${rs.tone}`]} aria-hidden="true" />
+                {m === 'cloudflare' ? (health?.tunnel_mode === 'named' ? 'Cloudflare 持久渠道' : 'Cloudflare 临时渠道') : MODE_LABEL[m][0]}
+                {m === mode && <span className={c.provider}>默认</span>}
               </div>
-              <div className={c.channelDesc}>{MODE_LABEL[mode][1]}</div>
+              <div className={c.channelDesc}>{MODE_LABEL[m][1]}</div>
               <div className={c.channelUrl} title={url ?? ''}>
-                {mode === 'openai'
+                {m === 'openai'
                   ? (values?.openaiTunnelId ? `Tunnel ID ${values.openaiTunnelId}` : '尚未配置 Tunnel ID')
-                  : (url ?? (needCf ? '需要先安装 cloudflared' : '启动后显示公网地址'))}
+                  : m === 'custom'
+                    ? (url ?? '尚未填写公网地址')
+                    : (url ?? (needCf ? '需要先安装 cloudflared' : '启动后显示公网地址'))}
               </div>
-              {reason && st.tone !== 'ok' && <div className={c.channelDesc} style={{ color: 'var(--bad)' }}>{reason}</div>}
+              {reason && rs.tone !== 'ok' && rs.tone !== 'muted' && <div className={c.channelDesc} style={{ color: 'var(--bad)' }}>{reason}</div>}
             </div>
             <div className={c.channelMeta}>
               <span>
-                状态 <b className={c[`stateText_${st.tone}`]}>{st.text}</b>
+                状态 <b className={c[`stateText_${rs.tone}`]}>{rs.text}</b>
               </span>
               <span>
-                地址类型 <b>{mode === 'openai' ? '无公网地址（仅连接器）' : health?.tunnel_mode === 'named' || mode === 'custom' ? '固定' : '每次启动会变化'}</b>
+                地址类型 <b>{m === 'openai' ? '无公网地址（仅连接器）' : m === 'custom' || health?.tunnel_mode === 'named' ? '固定' : '每次启动会变化'}</b>
               </span>
             </div>
             <div className={c.rowActions}>
@@ -126,7 +168,7 @@ export function ChannelsPane({
                   复制地址
                 </button>
               )}
-              {mode === 'cloudflare' && !running && (
+              {m === 'cloudflare' && !running && (
                 <>
                   <button type="button" className={c.btn} disabled={busy || needCf} onClick={() => run(() => panel.tunnelStart('quick'), '正在启动临时渠道')}>
                     启动临时
@@ -136,9 +178,17 @@ export function ChannelsPane({
                   </button>
                 </>
               )}
-              {mode === 'openai' && <span className={c.channelDesc}>在 VS Code 设置页启动/停止</span>}
-              {/* 停止只作用于 Cloudflare：OpenAI 页签下绝不能误停另一条渠道 */}
-              {mode === 'cloudflare' && running && (
+              {m === 'openai' && (oaLive || health?.openai_tunnel?.status === 'stopping' ? (
+                <button type="button" className={c.btnDanger} disabled={busy || !health?.openai_tunnel} onClick={() => run(openaiStop, 'OpenAI 渠道已停止')}>
+                  停止
+                </button>
+              ) : (
+                <button type="button" className={c.btn} disabled={busy || !health?.openai_tunnel} title={values?.openaiTunnelId ? undefined : '先在设置里填写 Tunnel ID 和 Runtime API Key'} onClick={() => run(openaiStart, '正在启动 OpenAI 渠道')}>
+                  启动
+                </button>
+              ))}
+              {/* 停止只作用于 Cloudflare 这一行，绝不能误停 OpenAI 渠道 */}
+              {m === 'cloudflare' && running && (
                 <button type="button" className={c.btnDanger} disabled={busy} onClick={() => run(() => panel.tunnelStop(), '渠道已停止')}>
                   停止
                 </button>
@@ -148,6 +198,7 @@ export function ChannelsPane({
               </button>
             </div>
           </li>
+          ))}
         </ul>
 
         {remote?.enabled && (
@@ -166,7 +217,7 @@ export function ChannelsPane({
                 </span>
               </div>
               <div className={c.rowActions}>
-                <button type="button" className={c.btn} onClick={() => onSettings('remote')}>
+                <button type="button" className={c.btn} onClick={() => onSettings('channel')}>
                   管理
                 </button>
                 {remote.devices.length > 0 && (
@@ -191,3 +242,4 @@ export function ChannelsPane({
     </section>
   );
 }
+

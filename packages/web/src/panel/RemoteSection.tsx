@@ -34,7 +34,11 @@ const when = (iso: string) => {
   return `${t.getMonth() + 1}月${t.getDate()}日 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
 };
 
-export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confirm }) {
+/**
+ * Same split as the VS Code settings page: `pair` is the scan row inside the channel card,
+ * `devices` the paired-phone list under 高级 (only `pair` announces new devices).
+ */
+export function RemoteSection({ toast, confirm, part }: { toast: Toast; confirm: Confirm; part: 'pair' | 'devices' }) {
   const [view, setView] = useState<RemoteView | null>(null);
   const [pair, setPair] = useState<{ url: string; expiresAt: number; kind: string } | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -47,7 +51,7 @@ export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confi
       const ids = new Set(v.devices.map((d) => d.id));
       if (known.current) {
         const added = v.devices.filter((d) => !known.current!.has(d.id));
-        if (added.length) {
+        if (added.length && part === 'pair') {
           toast('新设备已配对：' + added.map((d) => d.name).join('、'));
           setPair(null);
         }
@@ -56,7 +60,7 @@ export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confi
       // scanned: the 允许 / 拒绝 prompt takes over from the QR code
       if (v.requests?.length) setPair(null);
     } catch { /* daemon restarting: keep the last view */ }
-  }, [toast]);
+  }, [toast, part]);
   useEffect(() => { void load(); const t = setInterval(() => void load(), pair ? 2000 : 5000); return () => clearInterval(t); }, [load, pair]);
   useEffect(() => { if (!pair) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [pair]);
 
@@ -77,28 +81,29 @@ export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confi
 
   const left = pair ? Math.max(0, Math.ceil((pair.expiresAt - now) / 1000)) : 0;
   const status = view?.available ? { cls: 'ok', text: '可扫码' + (view.kind === 'quick' ? ' · 临时渠道' : '') } : { cls: 'warn', text: '暂不可用' };
+  if (part === 'devices') {
+    return (
+      <>
+        <div className="subsec">已配对的手机</div>
+        {!view?.devices.length ? <div className="hint" style={{ margin: 0 }}>还没有配对的手机。</div> : view.devices.map((d) => (
+          <div className="ag-row" key={d.id}>
+            <span className="nm">{d.name}</span>
+            <span className="u">配对 {when(d.created_at)} · 最近访问 {when(d.last_seen_at)}</span>
+            <button className="del" type="button" onClick={() => void revoke(d.id, d.name)}>撤销</button>
+          </div>
+        ))}
+      </>
+    );
+  }
   return (
-    <div className="card">
-      <div className="chrow" style={{ marginTop: 0 }}>
-        <span>手机访问</span>
-        <span className={'chst ' + status.cls}>{status.text}</span>
+    <>
+      <div className="chrow">
+        <span className={'chst ' + status.cls}>手机访问 · {status.text}</span>
         <span className="sp" />
-        <button type="button" disabled={!view?.available} onClick={() => void showQr()}>显示二维码</button>
+        <button type="button" className="secondary" disabled={!view?.available} onClick={() => void showQr()}>手机扫码</button>
       </div>
       {view && !view.available && <div className="hint">{REASON[view.reason ?? ''] ?? REASON.off}</div>}
       {view?.available && view.kind === 'quick' && <div className="hint">临时渠道：渠道停止或地址变化后需要重新扫码。</div>}
-      {(
-        <>
-          <div className="subsec">已配对设备</div>
-          {!view?.devices.length ? <div className="hint" style={{ margin: 0 }}>还没有配对的手机。</div> : view.devices.map((d) => (
-            <div className="ag-row" key={d.id}>
-              <span className="nm">{d.name}</span>
-              <span className="u">配对 {when(d.created_at)} · 最近访问 {when(d.last_seen_at)}</span>
-              <button className="del" type="button" onClick={() => void revoke(d.id, d.name)}>撤销</button>
-            </div>
-          ))}
-        </>
-      )}
       {pair && (
         <div className="buy-modal" role="dialog" aria-modal="true" aria-labelledby="bhpQrTitle" onClick={(e) => { if (e.target === e.currentTarget) setPair(null); }} onKeyDown={(e) => { if (e.key === 'Escape') setPair(null); }}>
           <div className="buy-dialog">
@@ -114,6 +119,6 @@ export function RemoteSection({ toast, confirm }: { toast: Toast; confirm: Confi
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

@@ -168,7 +168,8 @@ export interface ViewState {
   settings: string | null;
 }
 
-export const SETTINGS_SECTIONS = ['overview', 'account', 'channel', 'remote', 'mcp', 'common', 'grants', 'proxies', 'advanced'] as const;
+// Same order as the VS Code settings page (phone access lives in the channel card and 高级).
+export const SETTINGS_SECTIONS = ['overview', 'account', 'channel', 'mcp', 'proxies', 'common', 'grants', 'advanced'] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** View state lives in the query string (the fragment is reserved for the one-time ticket). */
@@ -303,7 +304,7 @@ export function errorText(code: string, message?: string): string {
 
 export const PERMISSION_LABEL: Record<string, string> = {
   'read-only': '只读',
-  'workspace-write': '可写工作区',
+  'workspace-write': '工作区可写',
   'danger-full-access': '完全访问',
 };
 

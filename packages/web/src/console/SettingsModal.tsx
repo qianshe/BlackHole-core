@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { SettingsPanel } from '../panel/SettingsPanel';
-import { ServiceCard } from '../AccountCard';
 import { SETTINGS_SECTIONS, type SettingsSection } from '../format';
 import { Icon } from '../ui';
 import { Modal } from './common';
@@ -10,7 +9,6 @@ const LABEL: Record<SettingsSection, string> = {
   overview: '概览',
   account: '账号与订阅',
   channel: '公网渠道',
-  remote: '手机访问',
   mcp: 'MCP 连接',
   common: '常用',
   grants: '授权管理',
@@ -32,7 +30,7 @@ export function SettingsModal({ section, onSection, onClose }: { section: string
     if (!el) return;
     if (el instanceof HTMLDetailsElement) el.open = true;
     jumping.current = true;
-    el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+    el.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant', block: 'start' }); // 'auto' would follow the CSS smooth scrolling
     setTimeout(() => (jumping.current = false), smooth ? 600 : 50);
   };
 
@@ -50,6 +48,10 @@ export function SettingsModal({ section, onSection, onClose }: { section: string
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Focus the scrolling body (after Modal's showModal focus) so arrow keys and PageDown
+  // scroll the settings, not the first nav button.
+  useEffect(() => { body.current?.focus({ preventScroll: true }); }, []);
+
   // scrollspy: the last section whose top has passed the sticky header
   const onScroll = (): void => {
     if (jumping.current || !body.current) return;
@@ -59,6 +61,9 @@ export function SettingsModal({ section, onSection, onClose }: { section: string
       const el = target(body.current, id);
       if (el && el.getBoundingClientRect().top <= top) cur = id;
     }
+    // The last sections are too short to reach the header: at the bottom, the last one is current.
+    const b = body.current;
+    if (b.scrollTop > 0 && b.scrollTop + b.clientHeight >= b.scrollHeight - 4) cur = SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1] ?? cur;
     if (cur !== active) {
       setActive(cur);
       onSection(cur);
@@ -79,7 +84,7 @@ export function SettingsModal({ section, onSection, onClose }: { section: string
           ))}
         </ul>
       </nav>
-      <div className={c.settingsContent} ref={body} onScroll={onScroll}>
+      <div className={c.settingsContent} ref={body} tabIndex={-1} onScroll={onScroll}>
         <div className={c.settingsHead}>
           <h2>{LABEL[active]}</h2>
           <button type="button" className={c.close} aria-label="关闭设置" onClick={onClose}>
@@ -88,9 +93,6 @@ export function SettingsModal({ section, onSection, onClose }: { section: string
         </div>
         <div className={c.settingsBody}>
           <SettingsPanel />
-          <div style={{ padding: '0 28px' }}>
-            <ServiceCard />
-          </div>
         </div>
       </div>
     </Modal>

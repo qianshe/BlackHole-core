@@ -4,8 +4,8 @@ import { argsPreview, baseName, callDuration, callTone, countByFilter, errorText
 
 test('console view state round-trips through the query string; unknown values fall back', () => {
   assert.deepEqual(readViewState(''), { session: null, view: 'session', settings: null });
-  const v = { session: 'abc', view: 'channels', settings: 'remote' };
-  assert.equal(writeViewState(v), '?s=abc&v=channels&set=remote');
+  const v = { session: 'abc', view: 'channels', settings: 'proxies' };
+  assert.equal(writeViewState(v), '?s=abc&v=channels&set=proxies');
   assert.deepEqual(readViewState(writeViewState(v)), v);
   assert.deepEqual(readViewState('?v=evil&set=evil'), { session: null, view: 'session', settings: null });
   assert.equal(writeViewState({ session: null, view: 'session', settings: null }), '');

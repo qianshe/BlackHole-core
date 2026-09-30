@@ -14,6 +14,10 @@ export interface SessionView {
   calls_total: number;
   todos_total: number;
   todos_done: number;
+  /** Reserved, not stored yet: the first tool call stores it; leaving it unused discards it. */
+  draft?: boolean;
+  /** Transfer context saved by the session's AI (workflow=handoff), until the next AI starts working. */
+  pending_handoff?: { id: string; created_at: string | null } | null;
 }
 
 export interface CallView {
@@ -31,6 +35,11 @@ export interface CallView {
 export interface CallsPage {
   calls: CallView[];
   total: number;
+  /** rows at or below the anchor: the pager's page count on deep pages (older daemons omit it) */
+  window_total?: number;
+  /** newest seq of the session; page 0 records it as the anchor for deeper pages */
+  max_seq?: number;
+  /** 0-based: page 0 is the newest */
   page: number;
   limit: number;
 }
@@ -83,6 +92,19 @@ export interface SettingsValues {
   remoteAccess: boolean;
   openaiTunnelClientPath: string;
   openaiTunnelId: string;
+  /** Sites added in the Courier browser extension (检测此页面); deleting one here removes it in Courier. */
+  courierSites: CourierSiteView[];
+}
+
+export interface CourierSiteView {
+  id: string;
+  name: string;
+  origin: string;
+  newChatPath: string;
+  dom: { editor: string; send: string; stop: string | null; model: null };
+  key: { prefix: string } | null;
+  detectedAt: number;
+  v: 1;
 }
 
 export interface SettingsView {
@@ -98,6 +120,7 @@ export interface NewSessionInput {
   permission_mode: PermissionMode;
   name?: string;
   auto_approve?: boolean;
+  draft?: boolean;
 }
 
 export interface CreatedSession {
@@ -150,12 +173,14 @@ export const api = {
   loginPoll: (attempt: string) => request<{ state: 'running' | 'done' | 'failed'; error?: string }>('/auth/login/' + encodeURIComponent(attempt)),
   logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
   sessions: (signal?: AbortSignal) => request<{ sessions: SessionView[]; version: string }>('/sessions', { signal }),
-  calls: (id: string, page: number, limit: number, signal?: AbortSignal) =>
-    request<CallsPage>(`/sessions/${encodeURIComponent(id)}/calls?page=${page}&limit=${limit}`, { signal }),
+  /** page is 0-based (0 = newest); anchor > 0 freezes deep pages against new writes. */
+  calls: (id: string, page: number, limit: number, signal?: AbortSignal, anchor = 0) =>
+    request<CallsPage>(`/sessions/${encodeURIComponent(id)}/calls?page=${page}&limit=${limit}${anchor > 0 ? `&anchor=${anchor}` : ''}`, { signal }),
   todos: (id: string, signal?: AbortSignal) => request<TodoBoard>(`/sessions/${encodeURIComponent(id)}/todos`, { signal }),
   createSession: (input: NewSessionInput) => request<CreatedSession>('/sessions', json('POST', input)),
   dirs: (path: string, signal?: AbortSignal) => request<DirListing>(`/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { signal }),
   projects: (signal?: AbortSignal) => request<{ projects: ProjectView[] }>('/projects', { signal }),
+  pickProjectFolder: () => request<{ path?: string; cancelled?: true; unavailable?: true }>('/projects/pick', json('POST', {})),
   addProject: (path: string, label?: string) => request<{ project: ProjectView }>('/projects', json('POST', { path, label })),
   updateProject: (id: string, patch: { label?: string; pinned?: boolean }) => request<{ project: ProjectView }>(`/projects/${encodeURIComponent(id)}`, json('PATCH', patch)),
   removeProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}`, json('DELETE', {})),
@@ -172,7 +197,10 @@ export const api = {
     request<{ confirmations: ConfirmationView[] }>(`/confirmations${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`, { signal }),
   resolveConfirmation: (id: string, action: 'approve' | 'deny', scope?: ApprovalScope) =>
     request<{ id: string; status: string | null }>(`/confirmations/${encodeURIComponent(id)}/${action}`, json('POST', action === 'approve' ? { scope: scope ?? 'once' } : {})),
+  /** Handoff snapshot (content + credential for the prompt); loopback console only. */
+  handoff: (id: string) => request<{ session: { id: string; session_id: string; status: string }; available: boolean; handoff: { id: string; content: string; created_at: number } | null; mcp_url: string; openai_tunnel?: { status: string } | null }>(`/panel/sessions/${encodeURIComponent(id)}/handoff`),
   sessionCredential: (id: string) => request<{ session_id: string; name: string | null }>(`/panel/sessions/${encodeURIComponent(id)}`),
+  renameSession: (id: string, name: string) => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/name`, json('PATCH', { name })),
   setSessionMode: (id: string, mode: PermissionMode) => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/mode`, json('PATCH', { permission_mode: mode })),
   sessionAction: (id: string, action: 'pause' | 'resume' | 'revoke' | 'rotate') => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/${action}`, json('POST', {})),
 };
@@ -215,7 +243,7 @@ export interface Health {
   public_base_url: string | null;
   /** present when the daemon has the OpenAI tunnel manager (see src/tunnel/openai-manager.ts) */
   openai_tunnel_api_version?: number;
-  openai_tunnel?: { status: string; reason: string | null; reason_code?: string | null; active_tunnel_id?: string | null; pending_restart?: boolean } | null;
+  openai_tunnel?: OpenAITunnelView | null;
   mcp_url: string;
   mcp_path: string;
   stats?: { total: number; diff_added: number; diff_removed: number } | null;
@@ -232,8 +260,24 @@ export interface RevalidateReport { servers?: { name: string; ok: boolean }[]; q
 export type CloudflaredJob =
   | { state: 'idle' }
   | { state: 'running' }
-  | { state: 'done'; path: string; installed: boolean }
+  | { state: 'done'; path: string; installed: boolean; version?: string }
   | { state: 'error'; error: string };
+/** OpenAI tunnel manager view (src/tunnel/openai-manager.ts); never contains the API key. */
+export interface OpenAITunnelView {
+  status: 'off' | 'starting' | 'ready' | 'recovering' | 'stopping' | 'error' | 'unavailable';
+  run_id: string | null;
+  active_tunnel_id: string | null;
+  /** null: the local credential store could not be read */
+  credential_configured: boolean | null;
+  credential_revision: number;
+  pending_restart: boolean;
+  reason_code: string | null;
+  reason: string | null;
+  client_version: string | null;
+  started_at: string | null;
+  ready_at: string | null;
+}
+export interface OpenAICredentialResult { credential_configured: boolean; credential_revision: number; pending_restart?: boolean }
 export type BillingSku = 'pro_day' | 'pro_week' | 'pro_month';
 export interface BillingPlan { sku: BillingSku; amountMinor: number; currency: 'CNY'; durationSeconds: number }
 export interface BillingOrder { id: string; sku: BillingSku; amountMinor: number; durationSeconds: number; status: 'payment_pending' | 'paid' | 'fulfilled' | 'expired' | 'review' | 'refunded'; environment: 'sandbox' | 'production'; createdAt: number; expiresAt: number }
@@ -262,6 +306,18 @@ export const panel = {
   proxiesRemove: (server: string) => request<{ removed: boolean }>('/panel/proxies/remove', json('POST', { server })),
   cloudflared: () => request<CloudflaredJob>('/cloudflared/install'),
   cloudflaredStart: () => request<CloudflaredJob>('/cloudflared/install', json('POST', {})),
+  // OpenAI channel: this computer only (the daemon refuses remote peers and the phone surface).
+  openai: () => request<OpenAITunnelView>('/openai-tunnel'),
+  openaiDiagnostics: () => request<Record<string, unknown>>('/openai-tunnel/diagnostics'),
+  openaiStart: (daemonId: string, settingsRevision: number, credentialRevision: number) =>
+    request<OpenAITunnelView>('/openai-tunnel/start', json('POST', { daemon_id: daemonId, settings_revision: settingsRevision, credential_revision: credentialRevision })),
+  openaiStop: (daemonId: string, runId: string | null) => request<OpenAITunnelView>('/openai-tunnel/stop', json('POST', { daemon_id: daemonId, run_id: runId })),
+  openaiSaveKey: (daemonId: string, credentialRevision: number, apiKey: string) =>
+    request<OpenAICredentialResult>('/openai-tunnel/credential', json('PUT', { daemon_id: daemonId, credential_revision: credentialRevision, api_key: apiKey })),
+  openaiClearKey: (daemonId: string, credentialRevision: number) =>
+    request<OpenAICredentialResult>('/openai-tunnel/credential', json('DELETE', { daemon_id: daemonId, credential_revision: credentialRevision })),
+  openaiInstall: () => request<CloudflaredJob>('/openai-tunnel/install'),
+  openaiInstallStart: () => request<CloudflaredJob>('/openai-tunnel/install', json('POST', {})),
   restart: () => request<{ ok: boolean }>('/daemon/restart', json('POST', { confirm: true })),
   skills: (dir: string) => request<{ cls: '' | 'ok' | 'bad'; hint: string }>(`/settings/skills?dir=${enc(dir)}`),
   accountRefresh: () => request<AccountView>('/account/refresh', json('POST', {})),
