@@ -1,10 +1,9 @@
 # Change Log
 
-## 0.3.187 — 2026-09-30
+## 0.3.188 — 2026-09-30
 
-- **BlackHole: 打开本地 Web** and the sidebar browser button now open `http://localhost:<port>` instead of `127.0.0.1`, so the console reuses the sign-in you already have on that origin instead of asking for it again.
-- New local Web console: run **BlackHole: 打开本地 Web** or click the browser button in the sidebar. It signs in with your BlackHole account, shows sessions, tool calls and Todo progress, and lets you create sessions, manage projects and change settings. Not available in VS Code Remote windows. Session creation now matches VS Code: no task field, the session is named from your first message, tool calls keep the same clamped side gutter, and unpair moved into the session actions menu. Your messages stand apart from agent output and long ones fold; code blocks have a copy button; the channels page lists every channel's status.
-- Phone access: click **手机扫码** in the Public channel section of Settings, scan the QR code, then click **允许** on the computer. The phone can view sessions, answer approvals and start sessions in existing projects. Needs an https public address.
-- New OpenAI connection channel next to Cloudflare, with its own start/stop, one-click client install on Windows (manual install on macOS/Linux), and Tunnel ID copy. Both channels can run at the same time.
-- Settings and sign-in are now kept by the BlackHole background service (sign-in and the OpenAI key are saved in your user folder, encrypted on Windows) and shared by VS Code windows and the Web console; existing settings and sign-in move over automatically on update. Sessions now use project skills together with your personal skill library (same-name project skills win). The Settings page is reordered so common actions come first, and the extension package is smaller. Fixes: garbled Chinese output and paths in command execution on Windows; ended sessions no longer linger in lists.
-
+- **新增 Courier 聊天**：侧边栏和本地 Web 控制台可以直接给已配对的网页 AI（ChatGPT、Arena）发消息、停止、刷新网页、解除配对，并实时看到回复；在 Courier 里用「检测此页面」接入的其他网站，只在新建会话时打开网页并填入提示词，由你手动发送。没装 Courier 时，仍可用「复制提示词」交给网页 AI。配套浏览器扩展 Courier 0.1.110。
+- **新建会话改为草稿**：不再询问任务内容，创建后直接进入聊天页，第一条消息即会话名；网页 AI 第一次调用工具后才真正保存，关闭草稿即丢弃。会话支持重命名。
+- **本地 Web 控制台**：重做聊天与新建会话页（你的消息与 Agent 输出分开显示，长消息折叠，代码块可一键复制），手机端新增聊天页，通道页列出各通道状态，设置页新增 OpenAI 连接通道，添加项目时可弹出系统的选择文件夹对话框。「打开本地 Web」改用 `http://localhost:<端口>`，复用已有登录状态。
+- **设置同步更稳**：VS Code 窗口与 Web 设置页之间用版本号检测冲突，别处改过设置会提示并采用最新值；设置页新增 Courier 网页站点列表（可删除），概览一行显示所有在线通道。
+- **按钮与命令调整**：侧边栏里的地球按钮现在直接打开本地 Web 控制台，原来的「Open Web Agent」选择器命令已从命令面板移除，侧边栏标题栏上重复的浏览器按钮也去掉了。
