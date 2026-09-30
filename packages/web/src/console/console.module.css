@@ -1290,9 +1290,10 @@
   margin: 12px 0 0;
   padding: 0;
 }
+/* Fixed status and action columns, so every channel row lines up whatever buttons it has. */
 .channelRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px auto;
+  grid-template-columns: minmax(0, 1fr) 230px 250px;
   gap: 22px;
   align-items: center;
   padding: 16px 2px;
@@ -1787,6 +1788,9 @@
   .channelRow {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+  .channelRow .rowActions {
+    justify-content: flex-start;
   }
 }
 

@@ -21,8 +21,10 @@ export function PairPrompt({ toast }: { toast: ToastFn }) {
       remoteAdmin.view().then(
         (v) => {
           if (!alive) return;
-          setRequests((v.requests ?? []).filter((r) => !dismissed.current.has(r.id)));
-          timer = setTimeout(load, v.enabled ? POLL_MS : POLL_MS * 4);
+          const open = (v.requests ?? []).filter((r) => !dismissed.current.has(r.id));
+          setRequests(open);
+          // quick while a phone waits for an answer, relaxed otherwise, slow while access is off
+          timer = setTimeout(load, !v.enabled ? POLL_MS * 4 : open.length ? POLL_MS : POLL_MS * 2);
         },
         () => {
           if (alive) timer = setTimeout(load, POLL_MS * 4);

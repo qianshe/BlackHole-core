@@ -12,6 +12,7 @@ import { FoldText } from '../FoldText';
 import { copyText } from '../codeCopy';
 import { Icon } from '../ui';
 import { loadMethod, startPlan, usableMethod, type SiteChoice } from '../sendMethod';
+import { refreshCourier, subscribeCourier } from './courierFeed';
 
 /** Sites added in Courier, from the last courier status (a deleted one is no longer offered). */
 let knownSites: SiteChoice[] = [];
@@ -288,8 +289,8 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
 
   // new: composer opens a ChatGPT chat; paired: sends to it; unpaired / direct: receive only.
   const [link, setLink] = useState<string>(session.draft ? 'new' : 'direct');
-  const load = useCallback(async (fresh = false) => {
-    const st = await getJson<{ connected: boolean; targets: Target[]; links?: Record<string, string>; sites?: SiteChoice[] }>(fresh ? '/courier' : '/courier?cached=1').catch(() => null);
+  type St = { connected: boolean; targets: Target[]; links?: Record<string, string>; sites?: SiteChoice[] };
+  const apply = useCallback((st: St | null) => {
     if (!alive.current) return;
     if (Array.isArray(st?.sites)) { knownSites = st.sites; for (const x of st.sites) SITE[x.id] = x.name; }
     const mine = st?.connected ? st.targets.filter((t) => t.sessionId === session.id) : [];
@@ -301,16 +302,19 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
       if (pairLinks.get(session.id) !== l) { pairLinks.set(session.id, l); window.dispatchEvent(new CustomEvent(PAIR_LINK, { detail: { sessionId: session.id } })); }
     }
   }, [session.id, session.draft]);
+  // Explicit reloads (open, after a send, pair changes) ask Courier for a fresh list; the shared
+  // poll feeds every other tick to all readers.
+  const load = useCallback(async (fresh = false) => { apply((await refreshCourier(fresh)) as St | null); }, [apply]);
 
   useEffect(() => {
     alive.current = true;
+    const off = subscribeCourier((st) => apply(st as St | null));
     void load(true);
-    // Safety net: while the composer shows "generating", every 3rd poll asks Courier for a fresh
+    // Safety net: while the composer shows "generating", every 3rd tick asks Courier for a fresh
     // list instead of the pushed one, so a busy flip Courier failed to push cannot stick.
-    let n = 0;
-    const t = setInterval(() => { if (!document.hidden) void load(busyRef.current && ++n % 3 === 0); }, POLL_MS);
-    return () => { alive.current = false; clearInterval(t); };
-  }, [load]);
+    const t = setInterval(() => { if (!document.hidden && busyRef.current) void load(true); }, POLL_MS * 3);
+    return () => { alive.current = false; off(); clearInterval(t); };
+  }, [apply, load]);
 
   useLayoutEffect(() => {
     const el = inputRef.current;
@@ -484,6 +488,7 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
             value={text}
             disabled={connected === false}
             placeholder="输入消息，可粘贴图片；Enter 发送，Shift+Enter 换行"
+            name="message"
             aria-label="发送到网页会话"
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}

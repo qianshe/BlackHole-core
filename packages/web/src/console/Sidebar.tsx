@@ -3,6 +3,7 @@ import type { AccountView, ProjectView, SessionView } from '../api';
 import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
 import { Icon } from '../ui';
 import { useMenu } from './common';
+import { subscribeCourier } from './courierFeed';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
 
@@ -41,21 +42,13 @@ const NO_FLAGS: WebFlags = { busy: new Set(), asking: new Set() };
 function useWebFlags(): WebFlags {
   const [f, setF] = useState<WebFlags>(NO_FLAGS);
   useEffect(() => {
-    let dead = false;
-    const load = async (): Promise<void> => {
-      if (document.hidden) return;
-      try {
-        const r = await fetch('/web-api/v1/courier?cached=1', { credentials: 'same-origin', cache: 'no-store', headers: { 'x-blackhole-web': '1' } });
-        if (!r.ok) return;
-        const j = await r.json() as { targets?: Array<{ sessionId: string | null; busy: boolean | null }>; asking?: string[] };
-        const busy = new Set((j.targets ?? []).filter((t) => t.busy && t.sessionId).map((t) => t.sessionId!));
-        const asking = new Set(j.asking ?? []);
-        if (!dead) setF((o) => (same(o.busy, busy) && same(o.asking, asking) ? o : { busy, asking }));
-      } catch { /* daemon away: keep the last flags */ }
-    };
-    void load();
-    const t = setInterval(() => void load(), 3000);
-    return () => { dead = true; clearInterval(t); };
+    // Shared Courier poll; daemon away (null): keep the last flags.
+    return subscribeCourier((j) => {
+      if (!j) return;
+      const busy = new Set((j.targets ?? []).filter((t) => t.busy && t.sessionId).map((t) => t.sessionId!));
+      const asking = new Set(j.asking ?? []);
+      setF((o) => (same(o.busy, busy) && same(o.asking, asking) ? o : { busy, asking }));
+    });
   }, []);
   return f;
 }

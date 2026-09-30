@@ -6,6 +6,7 @@ import { api, type ProjectView, type SessionView } from '../api';
 import { FolderPicker } from '../FolderPicker';
 import { Icon } from '../ui';
 import { draftsInUse, getJson, postJson } from './ChatDock';
+import { subscribeCourier } from './courierFeed';
 import { failText } from './common';
 import type { SessionActions } from './sessionActions';
 import s from './ChatDock.module.css';
@@ -83,15 +84,12 @@ export function NewChatPane({ initialPath, projects, sessions, actions, connecto
   }, [path, projects]);
 
   useEffect(() => {
-    let alive = true;
-    const load = (): void => void getJson<{ connected: boolean; sites?: SiteChoice[] }>('/courier?cached=1').then((st) => {
-      if (!alive) return;
+    return subscribeCourier((st) => {
+      if (!st) return setConnected(false);
       setConnected(st.connected);
-      if (Array.isArray(st.sites)) setSites((cur) => (JSON.stringify(cur) === JSON.stringify(st.sites) ? cur : st.sites!));
-    }, () => alive && setConnected(false));
-    load();
-    const t = setInterval(load, 5000);
-    return () => { alive = false; clearInterval(t); };
+      const next = st.sites as SiteChoice[] | undefined;
+      if (Array.isArray(next)) setSites((cur) => (JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
+    });
   }, []);
 
   useLayoutEffect(() => {
@@ -195,6 +193,7 @@ export function NewChatPane({ initialPath, projects, sessions, actions, connecto
             rows={3}
             value={text}
             disabled={!path.trim()}
+            name="message"
             placeholder="输入第一条消息，Enter 发送，Shift+Enter 换行"
             aria-label="第一条消息"
             autoFocus
