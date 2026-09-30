@@ -4,17 +4,20 @@
 #
 # Setup inside the remote sandbox (use the operator's complete download URL):
 #   curl -fsSL 'https://<tunnel>/bh.py?sessionid=<id>' -o bh.py
-# The downloaded copy carries the endpoint and session id. Explicit flags and
-# BH_URL/BH_SESSIONID override them: check for stale values before workspace work.
+# The downloaded copy carries the endpoint and session id; they win over the
+# BH_URL/BH_SESSIONID env vars (a stale export cannot redirect it). Only explicit
+# --url/--sessionid flags override them.
 # bh.py is the MCP client for this mode, even inside ChatGPT.
 # Read guide first, then follow it for the task.
 #
 # Usage:
-#   python3 bh.py call guide '{}'                 # common operating manual
+#   python3 bh.py call guide                     # common operating manual
 #   python3 bh.py tools                          # list the tools
+#   python3 bh.py tools editor                   # show one tool's usage schema
 #   python3 bh.py call exec '{"command":"git status"}'
-#   python3 bh.py call editor '{"path":"src/example.ts","operation":{"command":"view"}}'
-#   python3 bh.py call todo '{"command":"read"}' # the session task list (write/patch too)
+#   python3 bh.py call editor - <<'JSON'          # complex args from stdin
+#   {"path":"src/example.ts","operation":{"command":"view"}}
+#   JSON
 #   python3 bh.py ask                            # the operator prompt
 #
 # Escape-free shell commands — `sh` reads the command body from stdin, so no
@@ -53,14 +56,23 @@ import sys
 import urllib.error
 import urllib.request
 
+
+HELP = """BlackHole sandbox client
+Usage:
+  python3 bh.py call guide
+  python3 bh.py tools [tool-name]
+  python3 bh.py call <tool-name> ['<json-object>'|-]
+  python3 bh.py sh <tool-name> <command|->
+  python3 bh.py ask
+"""
 PROTO = '2025-06-18'
 _negotiated = None
 
 # Filled in by the daemon when it serves this script over /bh.py (leave empty in
 # the source file). BH_URL points at this machine's MCP endpoint; the numeric
 # session id is injected only when the script is downloaded with
-# ?sessionid=<id>. Explicit --url/--sessionid flags and the BH_URL/BH_SESSIONID
-# env vars still win over these.
+# ?sessionid=<id>. Explicit --url/--sessionid flags win over these; the
+# BH_URL/BH_SESSIONID env vars are only a fallback for a copy without them.
 _INJECTED_URL = ''
 _INJECTED_SESSIONID = ''
 
@@ -210,16 +222,32 @@ def _call_tool(url, sessionid, timeout, name, params):
         params = dict(params or {})
         params['sessionId'] = sessionid
     r = _rpc(url, 'tools/call', {'name': name, 'arguments': params}, timeout=timeout)
+    printed = False
     for c in (r or {}).get('content', []):
         if c.get('type') == 'text':
             print(c.get('text', ''))
+            printed = True
+    if not printed and isinstance(r, dict) and r.get('structuredContent') is not None:
+        print(json.dumps(r['structuredContent'], ensure_ascii=False, indent=2))
     if (r or {}).get('isError'):
         sys.exit(1)
 
 
+def _read_stdin():
+    """stdin as strict UTF-8: a bad byte stops with a message, not a traceback."""
+    try:
+        return sys.stdin.read()
+    except UnicodeDecodeError as e:
+        raise SystemExit('stdin is not valid UTF-8 (byte %d): send the JSON/command as UTF-8' % e.start)
+
+
 def main():
-    # Windows consoles default to a legacy codepage (e.g. GBK) and crash on
-    # non-encodable chars in tool output; force UTF-8 with replacement.
+    # Sandboxes pass JSON as UTF-8. Windows Python may otherwise decode stdin
+    # with a legacy codepage; keep output UTF-8 too so tool text cannot crash.
+    try:
+        sys.stdin.reconfigure(encoding='utf-8', errors='strict')
+    except Exception:
+        pass
     for s in (sys.stdout, sys.stderr):
         try:
             s.reconfigure(encoding='utf-8', errors='replace')
@@ -236,20 +264,30 @@ def main():
             sessionid, args = args[1], args[2:]
         else:
             timeout, args = float(args[1]), args[2:]
-    url = url or os.environ.get('BH_URL') or _INJECTED_URL or None
+    url = url or _INJECTED_URL or os.environ.get('BH_URL') or None
     if not url:
         raise SystemExit('set BH_URL (https://<tunnel>/mcp/<token>) or pass --url')
-    sessionid = sessionid or os.environ.get('BH_SESSIONID') or _INJECTED_SESSIONID or None
+    sessionid = sessionid or _INJECTED_SESSIONID or os.environ.get('BH_SESSIONID') or None
     timeout = timeout or float(os.environ.get('BH_TIMEOUT') or 180)
     if not args:
-        print(__doc__)
+        print(HELP)
         return
     cmd = args[0]
 
     if cmd == 'tools':
+        if len(args) > 2:
+            raise SystemExit('usage: tools [tool-name]')
         r = _rpc(url, 'tools/list', {}, timeout=timeout)
-        for t in (r or {}).get('tools', []):
-            print('%s - %s' % (t['name'], (t.get('description') or '').split('\n')[0]))
+        tools = (r or {}).get('tools', [])
+        if len(args) == 2:
+            found = next((t for t in tools if t.get('name') == args[1]), None)
+            if found is None:
+                raise SystemExit('unknown tool: %s (run tools to list available names)' % args[1])
+            usage = {k: found[k] for k in ('name', 'description', 'inputSchema') if k in found}
+            print(json.dumps(usage, ensure_ascii=False, indent=2))
+        else:
+            for t in tools:
+                print('%s - %s' % (t['name'], (t.get('description') or '').split('\n')[0]))
     elif cmd == 'ask':
         r = _rpc(url, 'prompts/get', {'name': 'blackhole_operator'}, timeout=timeout)
         for m in (r or {}).get('messages', []):
@@ -257,10 +295,13 @@ def main():
             if c.get('type') == 'text':
                 print(c.get('text', ''))
     elif cmd == 'call':
-        if len(args) < 3:
-            raise SystemExit("usage: call <tool-name> '<json-args>'")
+        if len(args) < 2 or len(args) > 3:
+            raise SystemExit("usage: call <tool-name> ['<json-args>'|-]")
+        raw = '{}' if len(args) == 2 else (_read_stdin() if args[2] == '-' else args[2])
+        if not raw.strip():
+            raise SystemExit('args JSON is empty')
         try:
-            params = json.loads(args[2])
+            params = json.loads(raw)
         except ValueError as e:
             raise SystemExit('args must be valid JSON: %s' % e)
         if not isinstance(params, dict):
@@ -276,7 +317,7 @@ def main():
                              "       sh <tool> <command...>")
         tool, rest = rest[0], rest[1:]
         if rest and rest[0] == '-':
-            command = sys.stdin.read()
+            command = _read_stdin()
         else:
             command = ' '.join(rest)
         if not command.strip():
