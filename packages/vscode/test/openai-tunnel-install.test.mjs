@@ -151,7 +151,7 @@ test('verify accepts only the runtime flavor with the required flags', async () 
 test('unsupported platforms fail closed with a manual-path hint and no download', async (t) => {
   const f = fixture(t);
   f.env.platform = 'linux';
-  await assert.rejects(initializeOpenAITunnelClient('', f.env), /暂不支持 linux-x64.*手动安装/s);
+  await assert.rejects(initializeOpenAITunnelClient('', f.env), /暂不支持 linux-x64.*https:\/\/github\.com\/openai\/tunnel-client\/releases\/tag\/v0\.0\.15 .*填写可执行文件的完整路径/s);
   assert.equal(f.downloads.length, 0);
 });
 
