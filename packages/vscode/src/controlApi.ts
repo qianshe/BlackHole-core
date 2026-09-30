@@ -59,6 +59,8 @@ export interface Health {
   cloud_origin?: string;
   /** v2.6 daemon 身份（版本-启动时刻-pid）：工具列表与它绑定，变了即作废旧数据。 */
   daemon_id?: string;
+  /** Daemon-owned settings revision; a change means another client edited them. Older daemons omit it. */
+  settings_revision?: number;
   /** v2.6 工具表面代次：reload/目录刷新/预热即自增 → 设置页自动重取工具列表。 */
   proxy_surface_gen?: number | null;
   /** v2.6 MCP 主机连接代次：每次握手（重连）自增 → 设置页自动重新获取工具列表。 */
@@ -134,6 +136,8 @@ export interface SessionInfo {
   /** Older daemons omit activity; never infer it from channel connectivity. */
   activity?: 'idle' | 'running';
   permission_mode: PermissionMode;
+  /** Reserved, not stored yet: the first tool call stores it, closing it discards it (older daemons omit it). */
+  draft?: boolean;
   created_at: string;
   last_active_at: string;
 }
@@ -378,6 +382,45 @@ export interface RemoteView {
   requests?: { id: string; name: string; created_at: string; expires_at: string }[];
 }
 
+/** A web chat bound in the Courier browser extension (GET /api/courier). */
+export interface CourierTargetView {
+  targetId: string;
+  site: string;
+  label: string;
+  conversationKey: string | null;
+  open: boolean;
+  ready: boolean | null;
+  busy: boolean | null;
+  draft: boolean | null;
+  model: string | null;
+  /** Title of an open Arena rating card, null when none. */
+  card?: string | null;
+  sessionId: string | null;
+}
+/** A site Courier can open a new chat on: builtins (arena, chatgpt) first, then sites added in Courier. */
+export interface CourierSiteChoice { id: string; name: string; custom: boolean }
+/** How a session reaches its web chat (see the daemon's CourierPairs). */
+export type SessionLink = 'new' | 'paired' | 'unpaired' | 'direct';
+export interface CourierSendResult { ok: boolean; code?: string; message: string; sent: boolean; targetId?: string }
+/** Result of asking the bound chat to press its own stop control (POST /courier/stop). */
+export interface CourierStopResult { ok: boolean; code?: string; message: string }
+
+/** One entry of a session's Chat thread (GET /api/courier/messages). */
+export interface CourierMessageView {
+  id: string;
+  kind: 'user' | 'agent';
+  text: string;
+  at: number;
+  status: 'sent' | 'unconfirmed' | 'failed' | 'reply' | 'streaming';
+  site: string | null;
+  targetId: string | null;
+  code?: string;
+  message?: string;
+  model?: string;
+  /** The web agent asked a question with options: answer with an option label, 跳过 or free text. */
+  question?: { title: string; options: string[]; skip: boolean; input: boolean; answered?: boolean; answer?: string };
+}
+
 export class ControlApi {
   constructor(private readonly cfg: () => ExtConfig) {}
 
@@ -385,8 +428,9 @@ export class ControlApi {
     return this.req('GET', '/settings', undefined, 4000);
   }
 
-  patchSettings(values: Record<string, unknown>): Promise<DaemonSettings> {
-    return this.req('PATCH', '/settings', { values }, 4000);
+  /** `revision` makes the write conditional (409 revision_conflict when the daemon moved on). */
+  patchSettings(values: Record<string, unknown>, revision?: number): Promise<DaemonSettings> {
+    return this.req('PATCH', '/settings', revision === undefined ? { values } : { values, revision }, 4000);
   }
 
   remoteView(): Promise<RemoteView> {
@@ -460,8 +504,90 @@ export class ControlApi {
     return this.req('POST','/entitlement/'+action,body);
   }
 
+  /** `links`: per live session — new (composer opens a ChatGPT chat), paired, unpaired / direct (receive only). */
+  courierStatus(cached = false): Promise<{ connected: boolean; targets: CourierTargetView[]; links?: Record<string, SessionLink>; sites?: CourierSiteChoice[] }> {
+    return this.req('GET', cached ? '/courier?cached=1' : '/courier', undefined, 6000);
+  }
+
+  /** Waits for the page to confirm (the daemon gives up after 45 s). */
+  courierSend(body: { targetId: string; sessionId: string; text: string }): Promise<CourierSendResult> {
+    return this.req('POST', '/courier/send', body, 50_000);
+  }
+
+  /** Asks the bound chat to press its own stop control (the page does the clicking; 12 s daemon cap). */
+  courierStop(body: { targetId: string; sessionId: string }): Promise<CourierStopResult> {
+    return this.req('POST', '/courier/stop', body, 20_000);
+  }
+
+  /** Answers the paired chat's open rating card with the auto-rate rule (15 s daemon cap). */
+  courierCard(body: { sessionId: string; targetId?: string }): Promise<CourierStopResult> {
+    return this.req('POST', '/courier/card', body, 25_000);
+  }
+
+  /** Force-reloads the paired chat (a closed one is reopened; 40 s daemon cap). */
+  courierReload(sessionId: string): Promise<CourierStopResult> {
+    return this.req('POST', '/courier/reload', { sessionId }, 50_000);
+  }
+
+  /** Chat thread of one session: sent messages and web agent replies. */
+  /** One sent image as a data: URL (the sidebar webview has no network); null when gone. */
+  async courierImage(messageId: string, n: number): Promise<string | null> {
+    const res = await fetch(`${apiBase(this.cfg().port)}/courier/images/${encodeURIComponent(messageId)}/${n}`, { signal: AbortSignal.timeout(8000) });
+    const mime = res.headers.get('content-type') ?? '';
+    if (!res.ok || !/^image\/(png|jpeg|gif|webp)$/.test(mime)) return null;
+    return `data:${mime};base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}`;
+  }
+
+  courierMessages(sessionId: string): Promise<{ messages: CourierMessageView[] }> {
+    return this.req('GET', `/courier/messages?sessionId=${encodeURIComponent(sessionId)}`, undefined, 6000);
+  }
+
+  /**
+   * Live thread updates of one session (server-sent events): every added or updated message,
+   * including reply text while it streams. Resolves when the daemon ends the stream.
+   */
+  async courierStream(sessionId: string, onMessage: (m: CourierMessageView) => void, signal: AbortSignal): Promise<void> {
+    const res = await fetch(`${apiBase(this.cfg().port)}/courier/stream?sessionId=${encodeURIComponent(sessionId)}`, { signal, headers: { accept: 'text/event-stream' } });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buf += dec.decode(value, { stream: true });
+      for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+        const data = buf.slice(0, i).split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+        buf = buf.slice(i + 2);
+        if (!data) continue;
+        try { onMessage(JSON.parse(data) as CourierMessageView); } catch { /* malformed event: skip */ }
+      }
+    }
+  }
+
+  /** First message of a session without a web chat: Courier opens one, binds it and sends. */
+  /** template 'connector': `text` is the typed message; the daemon wraps it in the connector prompt. */
+  courierStart(body: { sessionId: string; text: string; site?: string; display?: string; template?: 'connector' | 'sandbox' }): Promise<CourierSendResult> {
+    return this.req('POST', '/courier/start', body, 100_000);
+  }
+
+  /** Cut a session's pairing with its web chat; the session stays and only receives afterwards. */
+  courierUnpair(sessionId: string): Promise<{ ok: boolean; message: string }> {
+    return this.req('POST', '/courier/unpair', { sessionId }, 10_000);
+  }
+
+  private readonly healthWatchers = new Set<(h: Health) => void>();
+  /** Observe every health answer (status bar, sidebar and daemon polls share one request). */
+  onHealth(fn: (h: Health) => void): { dispose(): void } {
+    this.healthWatchers.add(fn);
+    return { dispose: () => { this.healthWatchers.delete(fn); } };
+  }
+
   health(timeoutMs = 8_000, port = this.cfg().port): Promise<Health> {
-    return this.req('GET', '/health', undefined, timeoutMs, port);
+    return this.req<Health>('GET', '/health', undefined, timeoutMs, port).then((h) => {
+      for (const fn of this.healthWatchers) { try { fn(h); } catch { /* observers never break health */ } }
+      return h;
+    });
   }
 
   listSessions(): Promise<{ sessions: SessionInfo[] }> {
@@ -472,12 +598,18 @@ export class ControlApi {
     return this.req('POST', '/sessions/reorder', { ids });
   }
 
-  createSession(workspacePath: string, name?: string): Promise<CreatedSession> {
+  createSession(workspacePath: string, name?: string, draft = false): Promise<CreatedSession> {
     return this.req('POST', '/sessions', {
       workspace_path: workspacePath,
       permission_mode: 'workspace-write',
       ...(name && name.trim() ? { name: name.trim() } : {}),
+      ...(draft ? { draft: true } : {}),
     });
+  }
+
+  /** Rename a session; an empty name goes back to the default title. */
+  renameSession(id: string, name: string): Promise<SessionInfo> {
+    return this.req('PATCH', `/sessions/${encodeURIComponent(id)}/name`, { name });
   }
 
   getSession(id: string): Promise<SessionInfo> {

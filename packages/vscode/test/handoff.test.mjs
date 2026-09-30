@@ -25,7 +25,7 @@ test('both handoff copy modes reuse the existing template with fresh credentials
     assert.ok(actual.endsWith('Handoff context:\n' + current.handoff.content));
     assert.doesNotMatch(actual, /^Task:/m);
     assert.ok(!actual.includes('old task name'));
-    if (kind === 'sandbox') { assert.doesNotMatch(actual, /\bsed\b|\bMCP\b/); assert.match(actual, /bh.py provides access/); }
+    if (kind === 'sandbox') { assert.doesNotMatch(actual, /\bsed\b|\bMCP\b/); assert.match(actual, /Use the downloaded bh.py for every BlackHole tool call/); }
   }
   current = { ...current, session: { ...current.session, session_id: '000000000000000000000000000000000000456' }, mcp_url: 'https://new.example.invalid/path/mcp/new-token' };
   const rotated = await prepareHandoffPrompt(api, 'session-a', 'handoff-a', 'sandbox', 'BlackHole');

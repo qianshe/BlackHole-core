@@ -49,7 +49,7 @@ test('Cloud API environment is not a user-editable product setting', () => {
 test('tool cards omit the initial badge without shrinking the hit area or losing content', () => {
   const source = read('../src/sidebar.ts');
   assert.doesNotMatch(source, /tool-g/);
-  assert.match(source, /\.call-hd\s*\{[^}]*min-height:\s*36px/);
+  assert.match(source, /\.call-hd\s*\{[^}]*min-height:\s*22px/); // compact one-line tool rows in the chat timeline
   for (const cls of ['tool','sum','badge','meta','cx','body']) assert.ok(source.includes('class="'+cls+'"'));
 });
 test('card creation has no removed-icon dereference and retains literal tool text', () => {

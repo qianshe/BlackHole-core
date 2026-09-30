@@ -34,21 +34,6 @@ async function pickFolder(): Promise<string | undefined> {
   return pick ? real(pick.fsPath) : undefined;
 }
 
-/**
- * Optional task text: doubles as the session's display name and is inserted
- * into the copied prompt templates. Empty keeps the default behavior.
- */
-async function askTask(): Promise<string | undefined> {
-  const task = await window.showInputBox({
-    title: '任务内容（可选）',
-    prompt: '一句话描述要交给远程 AI 的任务；留空则稍后在提示词里手动填写',
-    placeHolder: '例：修复 src/api.ts 里登录接口的空指针并补一个测试',
-    ignoreFocusOut: false,
-  });
-  // undefined = cancelled the whole creation; '' = no task (default behavior)
-  return task;
-}
-
 const DAEMON_NOT_READY = 'BlackHole: daemon 正在启动或配置交接中，尚未确认就绪。请稍后重试；如持续失败，请查看输出面板。';
 
 /**
@@ -84,22 +69,28 @@ async function requireChannelReady(api: ControlApi, daemon: DaemonManager): Prom
   return false;
 }
 
-export async function createSession(api: ControlApi, daemon: DaemonManager, after: () => void): Promise<void> {
+/**
+ * New session = a draft: the daemon only reserves id + credential. It is stored once the web AI
+ * makes its first tool call; closing the draft in the sidebar discards it. `after` opens it.
+ */
+export async function createSession(api: ControlApi, daemon: DaemonManager, after: (created?: SessionInfo) => void): Promise<void> {
   const folder = await pickFolder();
   if (!folder) return;
-  const task = await askTask();
-  if (task === undefined) return;
   if (!(await daemon.ensureRunning())) return;
   if (!(await requireChannelReady(api, daemon))) return;
 
   let created;
   try {
-    created = await api.createSession(folder, task);
+    created = await api.createSession(folder, undefined, true);
   } catch (e) {
     void window.showErrorMessage(`BlackHole: 创建会话失败 — ${msg(e)}`);
     return;
   }
-  after();
+  after(created);
+  if (created.draft) {
+    window.setStatusBarMessage(`BlackHole: 新会话（${sessionLabel(created)}）：复制提示词，或在输入框发送新开网页 AI 会话`, 5000);
+    return;
+  }
   // 纯反馈走状态栏：几秒自动消失，不再堆常驻通知
   window.setStatusBarMessage(
     `BlackHole: 会话已创建（${sessionLabel(created)}）— 右键或点 ⋯ 复制提示词`,
@@ -184,7 +175,7 @@ export async function copySessionUrl(api: ControlApi, node: SessionInfo): Promis
  * the daemon each time — nothing lives in extension memory, so a rotated
  * session automatically serves its fresh id on the next copy.
  */
-export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind): Promise<void> {
+export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind, task?: string): Promise<void> {
   const [h, s] = await Promise.all([
     api.health().catch(() => undefined),
     api.getSession(node.id).catch(() => undefined),
@@ -205,7 +196,7 @@ export async function copyTemplateSession(api: ControlApi, node: SessionInfo, ki
     return;
   }
   // The connector prompt is URL-free: it only needs some channel to be up.
-  await env.clipboard.writeText(renderPrompt(kind, url, sessionId, node.name, connectorName));
+  await env.clipboard.writeText(renderPrompt(kind, url, sessionId, task ?? node.name, connectorName));
   if (!target.connector) {
     void window.showWarningMessage('BlackHole: 连接器提示词已复制，但当前没有可用的连接渠道——请先在设置页启动 Cloudflare 或 OpenAI 渠道（点击右下角状态图标进入），网页 AI 才能调用。');
     return;

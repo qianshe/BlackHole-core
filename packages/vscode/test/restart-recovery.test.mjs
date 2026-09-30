@@ -407,7 +407,8 @@ test('Create Session keeps a verified daemon and user-started public channel wor
   assert.equal(h.manager.currentState, 'running');
   assert.equal(action.created.length, 1);
   assert.equal(action.created[0][0], '/fixture/workspace');
-  assert.equal(action.created[0][1], 'fixture task');
+  assert.equal(action.created[0][1], undefined);
+  assert.deepEqual(action.inputs, []);
   assert.equal(action.after, 1);
   assert.deepEqual(action.warnings, []);
 });
@@ -449,19 +450,7 @@ test('poll between legacy attach and upgrade keeps starting, never a false error
   assert.deepEqual(ready, ['new-owner']);
 });
 
-test('Create Session input allows focus-out cancellation without daemon or write side effects', async t => {
-  const h = host(); t.after(() => h.manager.dispose());
-  let starts = 0;
-  h.manager.ensureRunning = async () => { starts++; return true; };
-  const action = sessionActionFor(h, 'ignored', {cancelTask:true});
-  await action.run();
-  assert.equal(action.inputs[0].ignoreFocusOut, false);
-  assert.ok(action.inputs[0].title);
-  assert.equal(starts, 0); assert.deepEqual(action.created, []);
-  assert.equal(action.after, 0); assert.deepEqual(action.statuses, []);
-});
-
-test('Create Session folder selection is titled and cancellation ends before task input', async t => {
+test('Create Session folder selection is titled and cancellation creates nothing', async t => {
   const h = host(); t.after(() => h.manager.dispose());
   let starts = 0; h.manager.ensureRunning = async () => { starts++; return true; };
   const action = sessionActionFor(h, 'ignored', {cancelFolder:true, folders:[
@@ -471,15 +460,6 @@ test('Create Session folder selection is titled and cancellation ends before tas
   assert.ok(action.picks[0].options.title);
   assert.deepEqual(action.inputs, []); assert.deepEqual(action.created, []);
   assert.equal(starts, 0); assert.equal(action.after, 0);
-});
-
-test('Create Session accepts an explicitly empty task, unlike cancellation', async t => {
-  const h = host(); t.after(() => h.manager.dispose());
-  h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
-    public_base_url:'https://current.example.org', tunnel:'off'});
-  const action = sessionActionFor(h, ''); await action.run();
-  assert.equal(action.created.length, 1); assert.equal(action.created[0][1], '');
-  assert.equal(action.after, 1);
 });
 
 test('unreadable listener remains bounded and cannot authorize shutdown or spawn', async t => {

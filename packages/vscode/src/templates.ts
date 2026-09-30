@@ -77,10 +77,9 @@ export function renderPrompt(
     ].join('\n');
   }
   return [
-    'bh.py provides access to the BlackHole workspace from this sandbox.',
-    `sessionId: ${sessionId}`,
-    `Bootstrap once: curl -fsSL ${shellQuote(scriptUrl(mcpUrl, sessionId))} -o bh.py && python3 bh.py call guide '{}'`,
-    'Comply with the instructions returned by guide throughout the session.',
+    'Use the downloaded bh.py for every BlackHole tool call in this sandbox.',
+    `Bootstrap once: curl -fsSL ${shellQuote(scriptUrl(mcpUrl, sessionId))} -o bh.py && python3 bh.py call guide`,
+    'Follow the guide for the task. Do not create another BlackHole access script or call BlackHole directly; this restriction applies only to BlackHole access.',
     body,
   ].join('\n');
 }

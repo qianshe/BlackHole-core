@@ -251,12 +251,6 @@
         "category": "BlackHole"
       },
       {
-        "command": "blackhole.openWebAgent",
-        "title": "Open Web Agent",
-        "category": "BlackHole",
-        "icon": "$(globe)"
-      },
-      {
         "command": "blackhole.openLocalWeb",
         "title": "打开本地 Web",
         "category": "BlackHole",
@@ -316,15 +310,7 @@
         }
       ]
     },
-    "menus": {
-      "view/title": [
-        {
-          "command": "blackhole.openLocalWeb",
-          "when": "view == blackhole.sidebar",
-          "group": "navigation"
-        }
-      ]
-    }
+    "menus": {}
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

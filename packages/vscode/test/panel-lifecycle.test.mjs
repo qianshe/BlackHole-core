@@ -531,6 +531,42 @@ test('OpenAI runtime controls: key goes to the daemon only, start is bound to sa
   assert.equal(h.restarts,0,'OpenAI controls never restart the daemon');
 });
 
+test('OpenAI start: a Tunnel ID changed in Web settings is never overwritten by the stale VS Code copy', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const OLD='tunnel_'+'a'.repeat(32),NEW='tunnel_'+'b'.repeat(32),CLIENT='C:\\bin\\tunnel-client-runtime.exe',EDIT='D:\\rt\\tunnel-client-runtime.exe';
+  const calls=[];const view={status:'off',run_id:null,credential_configured:true,credential_revision:4,pending_restart:false,reason_code:null,reason:null};
+  const daemonSettings={revision:9,values:{openaiTunnelId:NEW,openaiTunnelClientPath:CLIENT}};
+  h.health.openai_tunnel_api_version=1;h.health.openai_tunnel=view;
+  Object.assign(h.api,{
+    openaiTunnel:async()=>view,
+    settings:async()=>daemonSettings,
+    patchSettings:async(values,rev)=>{calls.push(['patch',values,rev]);return daemonSettings;},
+    openaiTunnelStart:async(...a)=>{calls.push(['start',...a]);return {...view};},
+  });
+  // What this window last pulled from the daemon, before Web settings saved NEW.
+  const baseline={openaiTunnelId:OLD,openaiTunnelClientPath:CLIENT};
+  h.instance.settingsSync={
+    flush:async()=>{calls.push(['flush']);},
+    baseline:()=>baseline,
+    sync:async()=>{calls.push(['sync']);Object.assign(baseline,daemonSettings.values);Object.assign(h.settings,daemonSettings.values);},
+  };
+  h.settings.openaiTunnelId=OLD;h.settings.openaiTunnelClientPath=CLIENT;
+  const result=()=>h.panels[0].messages.findLast(m=>m.type==='openaiTunnelResult');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:OLD,clientPath:CLIENT});
+  assert.equal(result().ok,false);assert.match(result().message,/别处/);
+  assert.deepEqual(calls.map(c=>c[0]),['flush','sync'],'stale copy: no patch, no start');
+  assert.equal(h.settings.openaiTunnelId,NEW,'the daemon value is taken into VS Code');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:CLIENT});
+  assert.equal(result().ok,true);
+  assert.deepEqual(calls.at(-1),['start','fixture',9,4],'confirmed value starts on the daemon revision');
+  assert.ok(!calls.some(c=>c[0]==='patch'));
+  // A real edit made in this window (differs from the baseline) is still written, bound to the revision checked.
+  h.settings.openaiTunnelClientPath=EDIT;
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:EDIT});
+  const patch=calls.find(c=>c[0]==='patch');
+  assert.deepEqual([patch[0],{...patch[1]},patch[2]],['patch',{openaiTunnelClientPath:EDIT},9]);
+});
+
 test('OpenAI connection card: saved Tunnel ID shown and copied offline, fixed onboarding links only', async t => {
   const h=harness();t.after(()=>h.panels[0]?.close());const opened=[],TID='tunnel_0123456789abcdef0123456789abcdef';
   h.vscode.env.openExternal=async u=>{opened.push(u);return true;};h.vscode.Uri={parse:s=>({href:s})};

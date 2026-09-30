@@ -13,7 +13,7 @@ function loadTs(url, mocks = {}) {
   const source = fs.readFileSync(url, 'utf8');
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   const module = { exports: {} };
-  vm.runInNewContext(js, { module, exports: module.exports, console, require: (name) => name in handoffModules ? handoffModules[name] : name === './config' ? { getConfig: () => ({}) } : name === './toolNames' ? toolNames : name in mocks ? mocks[name] : require(name), setTimeout, clearTimeout, setInterval, clearInterval });
+  vm.runInNewContext(js, { module, exports: module.exports, console, AbortController, require: (name) => name in handoffModules ? handoffModules[name] : name === './config' ? { getConfig: () => ({}) } : name === './toolNames' ? toolNames : name in mocks ? mocks[name] : require(name), setTimeout, clearTimeout, setInterval, clearInterval });
   return module.exports;
 }
 const navigation = loadTs(new URL('../src/editorNavigation.ts', import.meta.url));

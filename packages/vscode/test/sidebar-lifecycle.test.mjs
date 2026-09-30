@@ -15,7 +15,7 @@ function setup(){
  const source=fs.readFileSync(new URL('../src/sidebar.ts',import.meta.url),'utf8');
  const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const module={exports:{}};
- vm.runInNewContext(js,{module,exports:module.exports,console,require:n=>n in handoffModules?handoffModules[n]:n==='./config'?{getConfig:()=>({})}:n==='./toolNames'?toolNames:n==='vscode'?vscode:n==='./icons'?{sidebarIcons:()=>'{}'}:n==='./callFormat'?{}:n==='./editorNavigation'?{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}:require(n)});
+ vm.runInNewContext(js,{module,exports:module.exports,console,AbortController,setTimeout,clearTimeout,require:n=>n in handoffModules?handoffModules[n]:n==='./config'?{getConfig:()=>({})}:n==='./toolNames'?toolNames:n==='vscode'?vscode:n==='./icons'?{sidebarIcons:()=>'{}'}:n==='./callFormat'?{}:n==='./editorNavigation'?{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}:require(n)});
  const api={changes:async()=>({epoch:1}),listSessions:async()=>({sessions:[]}),health:async()=>({tunnel:'offline'}),confirmations:async()=>({confirmations:[]})};
  const provider=new module.exports.SidebarProvider(api,{currentState:'running',onDidChangeState:subscribe},{onTick:subscribeTick},{});
  const panel=()=>{

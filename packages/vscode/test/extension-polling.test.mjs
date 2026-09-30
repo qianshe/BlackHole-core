@@ -45,18 +45,18 @@ function setup(initialOk) {
   './controlApi':{ControlApi:Api},'./daemonManager':{DaemonManager:Daemon},
   './statusbar':{StatusBarController:class extends Unused {constructor(_daemon,_api,_poller,ready){super();onDaemonReady=ready;}}},'./approvals':{ApprovalsWatcher:Unused},
   './processTerminals':{ProcessTerminalController:class {start(){}show(){}stopSelected(){}stopAndCloseSelected(){}dispose(){}}},
-  './cloudAccount':{registerCloudAccount:()=>{commands.set('blackhole.accountSnapshot',()=>{accountSnapshots++});return disposable()}},'./sessionActions':{},'./configPanel':{},'./webAgents':{},'./localWeb':{},'./settingsSync':{SettingsSync:class {async sync(){}dispose(){}}},
+  './cloudAccount':{registerCloudAccount:()=>{commands.set('blackhole.accountSnapshot',()=>{accountSnapshots++});return disposable()}},'./sessionActions':{},'./courierChat':{chatSend:async()=>({ok:false,message:'',sent:false})},'./configPanel':{},'./webAgents':{},'./localWeb':{},'./settingsSync':{SettingsSync:class {async sync(){}dispose(){}}},
   './icons':{sidebarIcons:()=>''},'./callFormat':{},
   './editorNavigation':{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}};
  const modules=new Map();
  function load(name) {
   if(Object.hasOwn(mocks,name))return mocks[name];
-  if(!['./extension','./sidebar','./poller','./toolNames','./handoffCopy','./handoffView','./templates'].includes(name))return require(name);
+  if(!['./extension','./sidebar','./poller','./toolNames','./handoffCopy','./handoffView','./templates','./callWindow','./markdown'].includes(name))return require(name);
   if(modules.has(name))return modules.get(name).exports;
   const source=fs.readFileSync(new URL(`../src/${name.slice(2)}.ts`,import.meta.url),'utf8');
   const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const module={exports:{}};modules.set(name,module);
-  vm.runInNewContext(js,{module,exports:module.exports,console,require:load,
+  vm.runInNewContext(js,{module,exports:module.exports,console,AbortController,require:load,
    setInterval:timer,clearInterval:value=>timers.delete(value),setTimeout:timer,clearTimeout:value=>timers.delete(value)});
   return module.exports;
  }

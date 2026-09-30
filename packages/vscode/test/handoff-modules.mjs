@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url), ts = require('typescript');
-const allowed = new Set(['./handoffCopy', './handoffView', './templates']);
+const allowed = new Set(['./handoffCopy', './handoffView', './templates', './callWindow', './markdown']);
 const cache = new Map();
 function load(name) {
   if (!allowed.has(name)) return require(name);

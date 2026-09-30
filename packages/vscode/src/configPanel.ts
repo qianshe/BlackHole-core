@@ -13,6 +13,7 @@ import { initializeCloudflared } from './cloudflaredInstall';
 import { initializeOpenAITunnelClient } from './openaiTunnelInstall';
 import qrcode from 'qrcode-generator';
 import type { RemoteView } from './controlApi';
+import type { SettingsSync } from './settingsSync';
 
 /** Configuration preview only. The daemon's session-scoped skill catalog owns
  * validity, precedence and diagnostics; this count is never a usable-skill count. */
@@ -92,6 +93,8 @@ const OPENAI_ERRORS: Record<string, string> = {
   empty_api_key: '请先输入 Runtime API Key。',
   invalid_api_key: 'Runtime API Key 格式不正确（8–1024 个可见字符，不能含空格）。',
   settings_changed: '设置刚刚发生变化；请重试。',
+  settings_changed_elsewhere: 'Tunnel ID 或 tunnel-client 路径刚在别处（如 Web 设置页）修改，已显示最新值；请确认后再启动。',
+  revision_conflict: '设置刚刚发生变化；请重试。',
   settings_unavailable: 'daemon 设置暂不可用；请稍后重试。',
   credential_changed: '密钥刚刚在别处被修改；请重试。',
   already_running: 'OpenAI 渠道正以不同的配置运行；请先停止再启动。',
@@ -122,6 +125,7 @@ type PanelMessage =
   | { type: 'grantRemove'; scope: 'always' | 'session'; key: string; sessionId?: string }
   | { type: 'remote'; action: 'pair' | 'revoke'; id?: string; name?: string }
   | { type: 'grantsClear' }
+  | { type: 'courierSiteRemove'; id: string }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
   | { type: 'copyTunnelId' }
@@ -141,13 +145,13 @@ type PanelMessage =
 export class ConfigPanel {
   private static panel: ConfigPanel | undefined;
 
-  static open(api: ControlApi, daemon: DaemonManager, poller: Poller): void {
+  static open(api: ControlApi, daemon: DaemonManager, poller: Poller, settingsSync?: SettingsSync): void {
     if (ConfigPanel.panel) {
       ConfigPanel.panel.reveal();
       void ConfigPanel.panel.refresh().catch(error => console.error('BlackHole: settings refresh failed', error));
       return;
     }
-    ConfigPanel.panel = new ConfigPanel(api, daemon, poller);
+    ConfigPanel.panel = new ConfigPanel(api, daemon, poller, settingsSync);
   }
 
   private webview: WebviewPanel;
@@ -183,6 +187,8 @@ export class ConfigPanel {
     private readonly api: ControlApi,
     private readonly daemon: DaemonManager,
     poller: Poller,
+    /** Knows which side changed a setting; absent in older wiring (then VS Code values win, as before). */
+    private readonly settingsSync?: SettingsSync,
   ) {
     this.webview = window.createWebviewPanel('blackholeSettings', 'BlackHole 设置', ViewColumn.One, {
       enableScripts: true,
@@ -274,6 +280,7 @@ export class ConfigPanel {
     else if (m.type === 'grantRemove') await this.grantRemove(m.scope, m.key, m.sessionId);
     else if (m.type === 'remote') await this.remoteAction(m);
     else if (m.type === 'grantsClear') await this.grantsClear();
+    else if (m.type === 'courierSiteRemove' && typeof m.id === 'string') await this.courierSiteRemove(m.id);
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
     else if (m.type === 'copyTunnelId') await this.copyTunnelId();
@@ -325,6 +332,7 @@ export class ConfigPanel {
     // Viewing settings must not start upstreams or download packages.
     await this.pushProxies();
     await this.pushGrants();
+    await this.pushCourierSites();
     await this.pushRemote();
   }
 
@@ -339,7 +347,7 @@ export class ConfigPanel {
     const overview = await this.overview();
     if (this.disposed) return;
     await this.post({ type: 'status', overview });
-    if (++this.remoteTick % 3 === 0) void this.pushRemote();
+    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); }
     if (!this.semanticSynced && overview.daemon === 'running' && overview.version) void this.postSemantic();
     const next = readAnchors(overview);
     const action = decideSyncAction(this.anchors, next);
@@ -485,6 +493,45 @@ export class ConfigPanel {
     }
     if (m.action !== 'pair' && m.id) this.remoteIds?.delete(m.id);
     await this.pushRemote();
+  }
+
+  /** Sites added in the Courier browser extension (daemon setting courierSites): list only, deleted here. */
+  private async pushCourierSites(): Promise<void> {
+    try {
+      const s = await this.api.settings();
+      const raw = Array.isArray(s.values.courierSites) ? (s.values.courierSites as Record<string, unknown>[]) : [];
+      const sites = raw.map((x) => ({ id: String(x.id ?? ''), name: String(x.name ?? ''), origin: String(x.origin ?? ''), stop: !!(x.dom as { stop?: unknown } | undefined)?.stop }));
+      await this.post({ type: 'courierSites', sites });
+    } catch {
+      /* daemon down (or older, without courierSites) — the list keeps its last snapshot */
+    }
+  }
+
+  /** Delete one Courier site; the daemon pushes the new list and Courier unbinds it, stops injecting and drops the permission. */
+  private async courierSiteRemove(id: string): Promise<void> {
+    try {
+      const listed = await this.api.settings();
+      const site = (Array.isArray(listed.values.courierSites) ? (listed.values.courierSites as { id?: unknown; name?: unknown; origin?: unknown }[]) : []).find((x) => x.id === id);
+      if (!site) { await this.pushCourierSites(); return; }
+      const pick = await window.showWarningMessage(`BlackHole：删除 Courier 网页站点「${String(site.name)}」？浏览器里的 Courier 会解除它的绑定、停止接管 ${String(site.origin)} 并收回访问权限。`, { modal: true }, '删除');
+      if (pick !== '删除' || this.disposed) return;
+      // Conditional write on a fresh read; one retry covers a revision bump from another client.
+      for (let attempt = 0; ; attempt++) {
+        const s = await this.api.settings();
+        const all = Array.isArray(s.values.courierSites) ? (s.values.courierSites as { id?: unknown }[]) : [];
+        if (!all.some((x) => x.id === id)) break;
+        try {
+          await this.api.patchSettings({ courierSites: all.filter((x) => x.id !== id) }, s.revision);
+          break;
+        } catch (e) {
+          if (attempt > 0) throw e;
+        }
+      }
+      await this.pushCourierSites();
+      void window.showInformationMessage(`BlackHole：已删除「${String(site.name)}」。`);
+    } catch (e) {
+      void window.showErrorMessage(`BlackHole: 删除 Courier 网页站点失败 — ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private async pushGrants(): Promise<void> {
@@ -681,6 +728,8 @@ export class ConfigPanel {
 
   /** The daemon must hold exactly the saved fields this window shows (plan §5.2.1). */
   private async syncOpenaiSettings(formTunnelId?: string, formClientPath?: string): Promise<number> {
+    // Edits saved in this window are pushed first, so what remains different was changed on the daemon.
+    await this.settingsSync?.flush();
     const c = workspace.getConfiguration('blackhole');
     const local: Record<string, string> = {
       openaiTunnelId: (c.get<string>('openaiTunnelId') ?? '').trim(),
@@ -689,8 +738,19 @@ export class ConfigPanel {
     if ((formTunnelId !== undefined && formTunnelId.trim() !== local.openaiTunnelId)
       || (formClientPath !== undefined && formClientPath.trim() !== local.openaiTunnelClientPath)) throw new Error('unsaved_settings');
     let s = await this.api.settings();
-    const diff = Object.fromEntries(Object.entries(local).filter(([k, v]) => (typeof s.values[k] === 'string' ? String(s.values[k]).trim() : '') !== v));
-    if (Object.keys(diff).length) s = await this.api.patchSettings(diff);
+    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+    const diff = Object.fromEntries(Object.entries(local).filter(([k, v]) => text(s.values[k]) !== v));
+    if (!Object.keys(diff).length) return s.revision;
+    // This window still shows the value it last saw from the daemon: the daemon moved on
+    // (Web settings, another window). Take the daemon's value and let the operator confirm;
+    // never write the stale copy back or start with it.
+    const base = this.settingsSync?.baseline();
+    if (base && Object.keys(diff).some((k) => text(base[k]) === local[k])) {
+      await this.settingsSync?.sync();
+      await this.refresh();
+      throw new Error('settings_changed_elsewhere');
+    }
+    s = await this.api.patchSettings(diff, s.revision);
     return s.revision;
   }
 
@@ -1095,6 +1155,8 @@ export class ConfigPanel {
   .f input:focus { outline: 1px solid var(--vscode-focusBorder); }
   .f select { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
   .f select:focus { outline: 1px solid var(--vscode-focusBorder); }
+  select:not([multiple]) { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 9px) 55%; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 26px; cursor: pointer; }
+  select option { background-color: var(--vscode-dropdown-background, var(--vscode-input-background)); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); }
   .f textarea { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; resize: vertical; }
   .f textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
   .f.fwide { grid-column: 1 / -1; }
@@ -1131,6 +1193,7 @@ export class ConfigPanel {
   .ag-row .mono-g { font-family: var(--vscode-editor-font-family); font-size: 10px; font-weight: 700; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); flex-shrink: 0; }
   .ag-row .nm { font-weight: 600; }
   .ag-row .u { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); word-break: break-all; }
+  .wa-host { font-size: 11px; color: var(--vscode-descriptionForeground); }
   .wa-tag { font-size: 10px; padding: 1px 6px; border-radius: 5px; color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
   .ag-row .del { margin-left: auto; font-family: inherit; font-size: 11px; color: var(--vscode-descriptionForeground); background: transparent; border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; }
   .ag-row .del:hover { color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
@@ -1157,7 +1220,11 @@ export class ConfigPanel {
   .pxbtns { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .pxbtns button { box-sizing: border-box; height: 24px; padding: 2px 10px; font-size: 11px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; }
   .pxbtns .pxsw { width: 30px; height: 16px; padding: 0; align-self: center; }
+  .pxbtns .pxe, .pxmhd .pxe { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); border: 1px solid transparent; }
+  .pxbtns .pxe:hover:not(:disabled), .pxmhd .pxe:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, var(--vscode-foreground)); }
   .pxe.danger { color: var(--vscode-errorForeground); }
+  .pxbtns .pxe.danger { background: transparent; border-color: color-mix(in srgb, var(--vscode-errorForeground) 40%, transparent); }
+  .pxbtns .pxe.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); }
   .pxpanel:empty { display: none; }
   .pxpanel { margin-top: 8px; border-top: 1px dashed var(--vscode-panel-border); padding-top: 8px; }
   .pxsw { position: relative; width: 30px; height: 16px; border: none; border-radius: 999px; padding: 0; cursor: pointer; background: color-mix(in srgb, var(--vscode-descriptionForeground) 45%, transparent); flex-shrink: 0; }
@@ -1360,6 +1427,11 @@ export class ConfigPanel {
       <button id="waAdd" class="secondary">添加</button>
     </div>
   </div>
+  <div class="sec">Courier 网页站点</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">在浏览器 Courier 里用「检测此页面」接入的网页 AI，新会话可以选它们。删除后 Courier 会解除它的绑定、停止接管该网站并收回访问权限。</div>
+    <div id="cslist" style="display:grid;gap:8px"></div>
+  </div>
   <div class="sec">授权管理</div>
   <div class="card">
     <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
@@ -1481,7 +1553,16 @@ export class ConfigPanel {
       const t = o.tunnel;
       const cmap = { online: ['ok', o.tunnel_mode === 'named' ? '持久在线' : '临时在线'], unverified: ['warn', '未验证'], starting: ['warn', '启动中…'], error: ['bad', '启动失败'], unavailable: ['bad', '不可用'], unreachable: ['', '未连接'] };
       const customMap = { idle: ['', '待检测'], probing: ['warn', '检测中…'], online: ['ok', '自定义在线'], error: ['bad', '自定义不可达'] };
-      const cm = channelMode === 'custom' ? (customMap[customProbe.state] || customMap.idle) : channelMode === 'openai' ? ((o.openai_tunnel && oaLabels[o.openai_tunnel.status]) || ['', '未启动']) : (cmap[t] || ['', '未启动']);
+      // Overview: every running channel in one line (持久 · gpt), not just the selected mode; same wording as Web channelSummary.
+      const kind = o.tunnel_mode === 'named' ? '持久' : '临时';
+      const cfSum = { online: ['ok', kind], unverified: ['warn', kind + '未验证'], starting: ['warn', 'Cloudflare 启动中…'], error: ['bad', 'Cloudflare 失败'], unavailable: ['bad', 'Cloudflare 不可用'] };
+      const gpSum = { ready: ['ok', 'gpt'], recovering: ['warn', 'gpt 恢复中'], starting: ['warn', 'gpt 启动中…'], stopping: ['warn', 'gpt 停止中…'], error: ['bad', 'gpt 失败'], unavailable: ['bad', 'gpt 不可用'] };
+      const parts = [];
+      if (channelMode === 'custom' && customProbe.state === 'online') parts.push(['ok', '自定义']);
+      if (cfSum[t]) parts.push(cfSum[t]);
+      if (o.openai_tunnel && gpSum[o.openai_tunnel.status]) parts.push(gpSum[o.openai_tunnel.status]);
+      const cm = t === 'unreachable' ? cmap.unreachable : !parts.length ? ['', '未启动'] : [parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn', parts.map((p) => p[1]).join(' · ')];
+      void customMap;
       $('ckCd').className = 'd ' + cm[0];
       $('ckCv').textContent = cm[1];
       renderActivity(o.stats, o.activity_days);
@@ -1751,6 +1832,7 @@ export class ConfigPanel {
       }
       else if (m.type === 'semantic') renderSemantic(m.info ?? null);
       else if (m.type === 'grants') renderGrants(m.grants ?? { always: [], sessions: [] });
+      else if (m.type === 'courierSites') renderCourierSites(Array.isArray(m.sites) ? m.sites : []);
       else if (m.type === 'proxies') { renderProxies(m.info); if (pxModalFor && pxData[pxModalFor]) renderPxTools(pxData[pxModalFor]); }
       else if (m.type === 'proxiesReport') renderProxiesReport(m.report);
       else if (m.type === 'proxiesEditResult') renderProxiesEditResult(m);
@@ -1765,6 +1847,18 @@ export class ConfigPanel {
     });
     // 授权按实际生效 scope 展示：全局（持久）+ 会话（进程内）。
     // pattern/path 键保持可读化；单条删除后对应操作恢复询问。
+    // Courier 网页站点：浏览器 Courier「检测此页面」接入的网站；删除后 Courier 解除绑定并收回权限。
+    function renderCourierSites(sites) {
+      const list = $('cslist');
+      if (!list) return;
+      if (!sites.length) {
+        list.innerHTML = '<div class="hint" style="margin:0">还没有接入的网站。在浏览器里打开网页 AI 的聊天页，点工具栏 Courier 的「检测此页面」即可接入（最多 20 个）。</div>';
+        return;
+      }
+      list.innerHTML = sites.map((x) => '<div class="ag-row"><span class="nm" style="flex:1">' + esc(String(x.name)) + ' <span class="wa-host">' + esc(String(x.origin).replace('https://', '')) + '</span>'
+        + '</span><button class="del" data-id="' + esc(String(x.id)) + '" title="删除这个网站">删除</button></div>').join('');
+      for (const el of list.querySelectorAll('.del')) el.addEventListener('click', () => vs.postMessage({ type: 'courierSiteRemove', id: el.dataset.id }));
+    }
     function renderGrants(info) {
       const list = $('aglist');
       const always = Array.isArray(info && info.always) ? info.always : [];
