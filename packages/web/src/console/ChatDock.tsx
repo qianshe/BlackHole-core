@@ -197,7 +197,7 @@ export function Bubble({ m, copy = false }: { m: Message; copy?: boolean }) {
   const site = SITE[m.site ?? ''] ?? '网页会话';
   if (m.kind === 'agent') {
     return (
-      <li className={`${s.msg} ${s.agent} ${m.status === 'streaming' ? s.streaming : ''}`}>
+      <li data-feed-key={m.id} className={`${s.msg} ${s.agent} ${m.status === 'streaming' ? s.streaming : ''}`}>
         <div className={s.msgHead}>
           <span className={s.who}>{site}</span>
           <span className={s.when}>{hhmm(m.at)}</span>
@@ -210,7 +210,7 @@ export function Bubble({ m, copy = false }: { m: Message; copy?: boolean }) {
   // A sent message with a note: the prompt was only filled into a user-added site (the user sends it).
   const st = m.status === 'sent' ? (m.message ? ['warn', m.message] : null) : m.status === 'unconfirmed' ? ['warn', '未确认是否送达'] : ['bad', `未发送${m.message ? `：${m.message}` : ''}`];
   return (
-    <li className={`${s.msg} ${s.user}`} title={hhmm(m.at)}>
+    <li data-feed-key={m.id} className={`${s.msg} ${s.user}`} title={hhmm(m.at)}>
       {m.images ? <SentImages id={m.id} count={m.images} /> : null}
       <FoldText className={s.body} text={m.text} />
       {st && <span className={`${s.st} ${s[st[0]!]}`}>{st[1]}</span>}

@@ -10,6 +10,7 @@ import { renderMarkdown } from '../../../vscode/src/markdown';
 import { Markdown } from '../Markdown';
 import { call, RemoteError } from './call';
 import { FeedHttpError, useSessionFeed, type FeedState } from '../feed/useSessionFeed';
+import { anchorShift, captureAnchor, type ScrollAnchor } from '../feed/scrollAnchor';
 import { loadMethod, saveMethod, sendMethods, siteLabel, startPlan, usableMethod, type SendMethod, type SiteChoice } from '../sendMethod';
 
 // The phone never holds the session credential, so it cannot copy a prompt: Courier methods only.
@@ -113,27 +114,54 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
   // Follow new entries while the page is at the bottom; scrolling to the top loads older ones
   // (/history) and keeps the view where it was.
   const atBottom = useRef(true);
-  const prevHeight = useRef<number | null>(null);
+  // 离开底部后显示「回到底部」按钮，滚回底部自动消失
+  const [away, setAway] = useState(false);
+  // 翻页后保持视图不动：翻页前记下视口里第一个条目和它离吸顶标题的距离（锚点），数据到了把同一个条目挨回原位。
+  // 比「记高度补差值」稳：不依赖高度什么时候变、重复执行不叠加、浏览器自己的滚动锚定和晚到的折叠都不会算错。
+  const headRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLUListElement>(null);
+  const anchor = useRef<ScrollAnchor | null>(null);
+  const headBottom = (): number => headRef.current?.getBoundingClientRect().bottom ?? 0;
+  const keepAnchor = (): void => {
+    const a = anchor.current, root = threadRef.current;
+    if (!a || !root) return;
+    const shift = anchorShift(root, a, headBottom());
+    if (shift) window.scrollBy(0, shift);
+  };
+  // 在途守卫：惯性滚动会连发 scroll 事件，第一次调用发出请求后组件还没重渲染，snap.loadingOlder 还是旧值；
+  // 第二次调用不能再来一次（否则会覆盖锚点或清掉第一次的补偿）。
+  const olderBusy = useRef(false);
   const older = (): void => {
-    if (!snap.hasOlder || snap.loadingOlder) return;
-    prevHeight.current = document.body.scrollHeight;
-    void loadOlder().then((ok) => { if (!ok) prevHeight.current = null; });
+    if (olderBusy.current || !snap.hasOlder || snap.loadingOlder) return;
+    olderBusy.current = true;
+    anchor.current = threadRef.current ? captureAnchor(threadRef.current, headBottom()) : null;
+    void loadOlder().finally(() => {
+      // 渲染提交之后再最后对一次位置，然后放开
+      requestAnimationFrame(() => { keepAnchor(); anchor.current = null; olderBusy.current = false; });
+    });
   };
   const olderRef = useRef(older);
   olderRef.current = older;
   useEffect(() => {
     const on = (): void => {
-      atBottom.current = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+      const near = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+      atBottom.current = near;
+      setAway((v) => (v === !near ? v : !near));
       if (window.scrollY < 80) olderRef.current();
     };
     window.addEventListener('scroll', on, { passive: true });
-    return () => window.removeEventListener('scroll', on);
+    // 浏览器自己的滚动锚定（Android Chrome）会和上面的手动对位叠加成忽有忽无的偏差：本页关掉它
+    const root = document.documentElement;
+    const prevAnchoring = root.style.overflowAnchor;
+    root.style.overflowAnchor = 'none';
+    return () => { window.removeEventListener('scroll', on); root.style.overflowAnchor = prevAnchoring; };
   }, []);
-  useLayoutEffect(() => {
-    if (prevHeight.current === null) return;
-    window.scrollBy(0, document.body.scrollHeight - prevHeight.current);
-    prevHeight.current = null;
-  }, [entries]);
+  useLayoutEffect(keepAnchor, [entries]);
+  const jumpBottom = (): void => {
+    atBottom.current = true;
+    setAway(false);
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  };
   const last = entries.length ? entries[entries.length - 1]! : null;
   const lastSig = last ? (last.k === 'msg' ? last.m.id + (last.m.text ?? '').length : last.c.id + last.c.status) : '';
   useLayoutEffect(() => { if (atBottom.current) window.scrollTo(0, document.body.scrollHeight); }, [lastSig]);
@@ -217,7 +245,7 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
 
   return (
     <div className={s.chatPage}>
-      <div className={s.chatHead}>
+      <div ref={headRef} className={s.chatHead}>
         <button type="button" className={s.back} onClick={onBack} aria-label="返回">‹ 返回</button>
         <span className={s.chatTitle}>{title}</span>
         <button type="button" className={s.more} aria-haspopup="menu" aria-expanded={menu} aria-label="更多" onClick={() => setMenu((x) => !x)}>⋯</button>
@@ -251,17 +279,17 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
             <div className={s.emptyText}>{paired || link === 'new' ? '在下方输入消息，网页 AI 的回复和工具调用会显示在这里。' : '网页 AI 调用 BlackHole 后，回复和工具调用会显示在这里。'}</div>
           </div>
         )}
-        <ul className={s.thread}>
+        <ul ref={threadRef} className={s.thread}>
           {entries.map((e) => e.k === 'msg' ? (
             e.m.kind === 'user' ? (
-              <li key={e.m.id} className={s.msgUser}>
+              <li key={e.m.id} data-feed-key={e.m.id} className={s.msgUser}>
                 {e.m.images ? <span className={s.imgNote}>[图片 ×{e.m.images}]</span> : null}
                 <FoldText className={s.msgText} text={e.m.text ?? ''} />
                 {e.m.status === 'sent' && e.m.message && <span className={s.warn}>{e.m.message}</span>}
                 {e.m.status !== 'sent' && <span className={e.m.status === 'unconfirmed' ? s.warn : s.bad}>{e.m.status === 'unconfirmed' ? '未确认是否送达' : `未发送${e.m.message ? '：' + e.m.message : ''}`}</span>}
               </li>
             ) : (
-              <li key={e.m.id} className={s.msgAgent}>
+              <li key={e.m.id} data-feed-key={e.m.id} className={s.msgAgent}>
                 <div className={s.msgHead}>{siteLabel(e.m.site, sites)} · {hhmm(e.m.at)}</div>
                 <Markdown className={s.md} html={renderMarkdown(e.m.text ?? '')} />
               </li>
@@ -272,6 +300,7 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
         </ul>
       </main>
       <footer className={s.dock}>
+        {away && <button type="button" className={s.jump} onClick={jumpBottom} aria-label="回到底部" title="回到底部">↓</button>}
         {question && paired && (
           <div className={s.qcard} role="group" aria-label={question.title}>
             <div className={s.qTitle}>{question.title}</div>
@@ -309,7 +338,7 @@ function CallLine({ c, open, onToggle }: { c: CallView; open: boolean; onToggle:
   const dur = callDuration(c);
   const label = CALL_STATUS_LABEL[c.status] ?? c.status;
   return (
-    <li className={s.callLine}>
+    <li data-feed-key={c.id} className={s.callLine}>
       <button type="button" className={s.callBtn} aria-expanded={open} onClick={onToggle}>
         <span className={`${s.glyph} ${s[tone] ?? ''}`} role="img" aria-label={label} title={label}>{STATUS_GLYPH[tone] ?? '\u00B7'}</span>
         <span className={s.tool}>{head.label}</span>

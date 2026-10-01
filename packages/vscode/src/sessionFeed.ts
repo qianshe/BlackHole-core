@@ -219,6 +219,7 @@ export class SessionFeed<C extends FeedCallRow = FeedCallRow, M extends FeedMess
   private unsubscribe: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
   private cached: FeedSnapshot<C, M, S> | null = null;
+  private lastSnap: FeedSnapshot<C, M, S> | null = null;
   private historyCtrl: AbortController | null = null;
 
   constructor(config: FeedConfig<C, M>) {
@@ -239,19 +240,26 @@ export class SessionFeed<C extends FeedCallRow = FeedCallRow, M extends FeedMess
 
   snapshot(): FeedSnapshot<C, M, S> {
     if (this.cached) return this.cached;
-    const entries = this.entries();
+    const fresh = this.entries();
+    // 只是 loadingOlder、error 这类状态变了、条目没变时复用上一份的数组：UI 用 entries 的引用变化判断「内容真的变了」
+    // （翻页后保持滚动位置、跟随到底部），翻页过程中的「正在加载」翻转不能触发它。
+    const prev = this.lastSnap;
+    const same = prev !== null && prev.entries.length === fresh.length
+      && prev.entries.every((e, i) => e.key === fresh[i]!.key && e.call === fresh[i]!.call && e.message === fresh[i]!.message);
+    const entries = same ? prev.entries : fresh;
     this.cached = {
       loaded: this.loaded,
       error: this.error,
       entries,
-      calls: entries.flatMap((e) => (e.call ? [e.call] : [])),
-      messages: entries.flatMap((e) => (e.message ? [e.message] : [])),
+      calls: same ? prev.calls : entries.flatMap((e) => (e.call ? [e.call] : [])),
+      messages: same ? prev.messages : entries.flatMap((e) => (e.message ? [e.message] : [])),
       state: this.state,
       hasOlder: this.hasOlder,
       loadingOlder: this.loadingOlder,
       olderError: this.olderError,
       stopped: this.halted,
     };
+    this.lastSnap = this.cached;
     return this.cached;
   }
 

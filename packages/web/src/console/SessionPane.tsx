@@ -3,6 +3,7 @@ import { api, type CallView, type ConfirmationView, type SessionView } from '../
 import { toolCallDisplay } from '../../../vscode/src/callDisplay';
 import { displayToolName } from '../../../vscode/src/toolNames';
 import { useSessionFeed, WEB_FEED_LIMIT, type FeedState } from '../feed/useSessionFeed';
+import { anchorShift, captureAnchor, type ScrollAnchor } from '../feed/scrollAnchor';
 import { Bubble, ChatDock, usePairLink, type Message } from './ChatDock';
 import {
   callDuration,
@@ -148,7 +149,7 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
   const tone = callTone(x.status);
   const dur = callDuration(x);
   return (
-    <li className={`${c.call} ${open ? c.callOpen : ''} ${fresh ? c.fresh : ''}`}>
+    <li data-feed-key={x.id} className={`${c.call} ${open ? c.callOpen : ''} ${fresh ? c.fresh : ''}`}>
       <button type="button" className={c.callRow} aria-expanded={open} aria-controls={`call-${x.id}`} onClick={onToggle}>
         <span className={c.bullet} data-tone={tone} role="img" aria-label={CALL_STATUS_LABEL[x.status] ?? x.status} title={CALL_STATUS_LABEL[x.status] ?? x.status}>
           {STATUS_GLYPH[tone] ?? '·'}
@@ -301,14 +302,24 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   // Scroll: follow new entries while at the bottom; loading older ones keeps the view in place.
   const feedRef = useRef<HTMLElement>(null);
   const stick = useRef(true);
-  const prevHeight = useRef<number | null>(null);
+  // 翻页后保持视图不动：翻页前记下视口里第一个条目和它离容器顶部的距离（锚点），数据到了把同一个条目挨回原位
+  // （见 feed/scrollAnchor.ts）。不再记高度补差值：那样依赖高度什么时候变，重复触发或浏览器滚动锚定会算错。
+  const anchor = useRef<ScrollAnchor | null>(null);
+  const olderBusy = useRef(false);
   // 回到底部按钮：只在滚离底部时出现（滚回底部自动消失）
   const [atBottom, setAtBottom] = useState(true);
   useEffect(() => { stick.current = true; setAtBottom(true); }, [session.id]);
+  /** 把锚点条目挨回翻页前的位置（重复执行结果相同，所以每次渲染提交后、请求结束后都可以执行）。 */
+  const keepAnchor = (): void => {
+    const el = feedRef.current, a = anchor.current;
+    if (!el || !a) return;
+    const shift = anchorShift(el, a, el.getBoundingClientRect().top);
+    if (shift) el.scrollTop += shift;
+  };
   useLayoutEffect(() => {
     const el = feedRef.current;
     if (!el) return;
-    if (prevHeight.current !== null) { el.scrollTop += el.scrollHeight - prevHeight.current; prevHeight.current = null; }
+    if (anchor.current) keepAnchor();
     else if (stick.current) el.scrollTop = el.scrollHeight;
   }, [entries]);
   // Content keeps growing after that first layout (long messages fold after measuring, Markdown
@@ -317,17 +328,22 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   useEffect(() => {
     const el = feedRef.current;
     if (!el || typeof ResizeObserver !== 'function') return;
-    const pin = (): void => { if (stick.current && prevHeight.current === null) el.scrollTop = el.scrollHeight; };
+    const pin = (): void => { if (stick.current && anchor.current === null) el.scrollTop = el.scrollHeight; };
     const ro = new ResizeObserver(pin);
     ro.observe(el);
     for (const child of Array.from(el.children)) ro.observe(child);
     return () => ro.disconnect();
   }, [entries, session.id]);
+  // 在途守卫：scroll 事件连发时组件还没重渲染，tl.olderBusy 是旧值；第二次调用不能再来一次（否则会覆盖锚点）。
   const older = (): void => {
     const el = feedRef.current;
-    if (!more || tl.olderBusy) return;
-    if (el) prevHeight.current = el.scrollHeight;
-    void tl.loadOlder().then((ok) => { if (!ok) prevHeight.current = null; });
+    if (!el || olderBusy.current || !more || tl.olderBusy) return;
+    olderBusy.current = true;
+    anchor.current = captureAnchor(el, el.getBoundingClientRect().top);
+    void tl.loadOlder().finally(() => {
+      // 渲染提交之后再最后对一次位置，然后放开
+      requestAnimationFrame(() => { keepAnchor(); anchor.current = null; olderBusy.current = false; });
+    });
   };
   const onFeedScroll = (): void => {
     const el = feedRef.current;

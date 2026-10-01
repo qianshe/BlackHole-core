@@ -408,6 +408,30 @@ test('stop 后立刻 start：旧循环不会和新循环同时跑（同一时刻
   h.feed.stop();
 });
 
+test('翻页过程中「正在加载」的翻转不换 entries/calls/messages 引用（UI 靠引用变化判断内容真的变了，否则保持滚动位置会被提前消耗，数据到了视图就跳到顶部）；数据到了才换', async () => {
+  const h = harness();
+  h.server.push(ok(resp({ full: true, offset: 5, older: 'x', calls: [call('c1', 100)], messages: [msg('m1', 150)] })));
+  h.feed.start();
+  await settle();
+  const before = h.snap();
+  assert.equal(before.loadingOlder, false);
+  const pending = h.feed.loadOlder();
+  await settle();
+  const loading = h.snap();
+  assert.equal(loading.loadingOlder, true);
+  assert.notEqual(loading, before, '快照本身变了');
+  assert.equal(loading.entries, before.entries, '条目没变：同一个数组');
+  assert.equal(loading.calls, before.calls);
+  assert.equal(loading.messages, before.messages);
+  h.server.push(page([call('c0', 50)], [], null));
+  assert.equal(await pending, true);
+  const after = h.snap();
+  assert.equal(after.loadingOlder, false);
+  assert.notEqual(after.entries, before.entries, '数据到了才换');
+  assert.deepEqual(after.calls.map((c) => c.id), ['c0', 'c1']);
+  h.feed.stop();
+});
+
 // ---------- 负载模拟（R18、R30） ----------
 
 /** 像真实服务端：按当前 rev 合并增量；没有新东西就挂起，直到有更新。 */

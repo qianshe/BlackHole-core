@@ -1912,3 +1912,6 @@
   top: 36px;
   width: 200px;
 }
+
+/* The feed keeps its own scroll position after older entries load (see feed/scrollAnchor.ts); the browser's scroll anchoring would stack on top of it. */
+.feed { overflow-anchor: none; }

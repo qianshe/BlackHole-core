@@ -142,3 +142,7 @@ button.bannerWarn { width: 100%; text-align: left; border: 1px solid var(--line)
 /* Session page: load older entries (tap, or scroll to the top). */
 .older { display: block; width: 100%; min-height: 34px; margin: 0 0 6px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; }
 .older:disabled { opacity: .7; }
+
+/* Session page: floating back-to-bottom button, anchored above the sticky dock. */
+.jump { position: absolute; right: 12px; top: -46px; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--card); color: var(--fg); font: inherit; font-size: 16px; line-height: 1; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+.jump:active { background: color-mix(in srgb, var(--fg) 8%, var(--card)); }
