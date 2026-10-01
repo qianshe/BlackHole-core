@@ -75,16 +75,3 @@ export function hasOlder<T extends WindowRow>(w: CallWindow<T>): boolean {
 export function rowsOf<T extends WindowRow>(w: CallWindow<T>): T[] {
   return [...w.rows.values()].sort((a, b) => seqOf(a) - seqOf(b));
 }
-
-export const timeOf = (t: number | string | null): number => (typeof t === 'number' ? t : t ? Date.parse(t) || 0 : 0);
-
-/**
- * Chat messages belonging to the loaded part of the timeline: all of them once the
- * oldest call is loaded, otherwise those at or after the oldest loaded call.
- */
-export function messagesInWindow<T extends WindowRow, M extends { at: number }>(w: CallWindow<T>, messages: M[]): M[] {
-  if (!hasOlder(w)) return messages;
-  let oldest = Infinity;
-  for (const r of w.rows.values()) oldest = Math.min(oldest, timeOf(r.created_at));
-  return oldest === Infinity ? messages : messages.filter((m) => m.at >= oldest);
-}

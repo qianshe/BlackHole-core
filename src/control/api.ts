@@ -25,6 +25,7 @@ import { createWorkspaceSession, normalizeWritableDirs, type CreateSessionInput 
 import { migrateSettings, patchSettings, settingsView } from '../settings/service.js';
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
 import { mountOpenAITunnel } from './openai-tunnel-routes.js';
+import { mountFeedRoutes } from '../feed/routes.js';
 
 /**
  * 设置页「查看工具列表」拉取用的专用 session 键（v2.6）。与 verifyServer 的
@@ -697,6 +698,10 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     const nextAfter = calls.reduce((m, c) => Math.max(m, c.seq), after);
     res.json({ calls, next_after: nextAfter });
   });
+
+  // 会话时间线：feed（增量 + 长轮询）与 history（往上翻页），与 Web/手机共用一份处理函数（src/feed/）。
+  // 调用原样输出行（含 navigation_json），和上面的 /calls 一致。
+  mountFeedRoutes(app, deps, { mapCall: (c) => c });
 
   // A single synchronous snapshot for preview/copy: no stale credential or URL
   // from a webview message, and reading it never consumes the pending document.

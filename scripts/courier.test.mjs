@@ -9,9 +9,19 @@ import { CourierMessages } from '../dist/courier/messages.js';
 import { COURIER_EXTENSION_ORIGIN, mountCourier } from '../dist/courier/mount.js';
 import { acceptKey } from '../dist/courier/ws.js';
 import { CourierPairs } from '../dist/courier/pairs.js';
+import { ensureCourierMessagesTable } from '../dist/storage/db.js';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// 回复线程在 SQLite 里（原来的 `new CourierMessages(null)` 内存模式由 `:memory:` 库取代，建表 DDL 与 daemon 迁移共用一份）。
+function memoryDb() {
+  const db = new DatabaseSync(':memory:');
+  ensureCourierMessagesTable(db);
+  return db;
+}
+const memoryMessages = () => new CourierMessages(memoryDb());
 
 test('pairing: new → paired → unpaired survives a restart; stored sessions without a pair are direct', () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bh-pairs-')), 'courier-pairs.json');
@@ -35,7 +45,8 @@ test('pairing: new → paired → unpaired survives a restart; stored sessions w
 test('a deleted session: forget drops its pairing and thread for good', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-forget-'));
   const pairs = new CourierPairs(path.join(dir, 'courier-pairs.json'));
-  const messages = new CourierMessages(path.join(dir, 'courier-messages.json'));
+  const db = memoryDb();
+  const messages = new CourierMessages(db);
   const list = [{ id: 'a', name: 'A', status: 'active' }, { id: 'b', name: 'B', status: 'active' }];
   let changes = 0;
   const h = new CourierHub({ sessions: () => list, pairs, messages, onChange: () => { changes++; } });
@@ -48,9 +59,8 @@ test('a deleted session: forget drops its pairing and thread for good', () => {
   assert.equal(changes, 1);
   assert.equal(pairs.get('a'), undefined);
   assert.deepEqual(h.messages('a'), []);
-  messages.flush();
   assert.equal(new CourierPairs(path.join(dir, 'courier-pairs.json')).get('a'), undefined);
-  assert.equal(new CourierMessages(path.join(dir, 'courier-messages.json')).list('a').length, 0);
+  assert.equal(new CourierMessages(db).list('a').length, 0, 'a store opened on the same database (a restart) sees the thread gone');
   assert.equal(pairs.get('b').state, 'paired');
   assert.equal(messages.list('b').length, 1);
   h.forget('a');
@@ -75,7 +85,7 @@ test('a closed hub refuses a reconnecting Courier (a retiring daemon must not ke
 test('a bound chat that stops being busy ends the session activity at once (onIdle)', () => {
   const idle = [];
   const list = [{ id: 's-x', name: 'X', status: 'active' }];
-  const h = new CourierHub({ sessions: () => list, pairs: new CourierPairs(null), messages: new CourierMessages(null), onIdle: (id) => idle.push(id) });
+  const h = new CourierHub({ sessions: () => list, pairs: new CourierPairs(null), messages: memoryMessages(), onIdle: (id) => idle.push(id) });
   h.attach({ on: (ev, fn) => { if (ev === 'message') h.__deliver = fn; }, send: () => true, close: () => {} });
   h.__deliver(JSON.stringify({ type: 'hello', client: 'blackhole-courier', protocol: 1, version: 't' }));
   const t = (busy) => h.__deliver(JSON.stringify({ type: 'targets', targets: [{ targetId: 't-x', site: 'arena', label: 'X', conversationKey: 'c-x', sessionId: 's-x', open: true, busy }] }));
@@ -92,7 +102,7 @@ test('a bound chat that stops being busy ends the session activity at once (onId
 
 test('a session deleted while Courier was away is cleared with its reason on reconnect', () => {
   const list = [{ id: 's-del', name: 'D', status: 'revoked' }, { id: 's-arc', name: 'A', status: 'archived' }];
-  const h = new CourierHub({ sessions: () => list, pairs: new CourierPairs(null), messages: new CourierMessages(null) });
+  const h = new CourierHub({ sessions: () => list, pairs: new CourierPairs(null), messages: memoryMessages() });
   const sent = [];
   h.attach({ on: (ev, fn) => { if (ev === 'message') h.__deliver = fn; }, send: (t) => { sent.push(JSON.parse(t)); return true; }, close: () => {} });
   h.__deliver(JSON.stringify({ type: 'hello', client: 'blackhole-courier', protocol: 1, version: 't' }));
@@ -106,7 +116,7 @@ test('a session deleted while Courier was away is cleared with its reason on rec
 });
 
 test('a reply racing a deletion does not bring the thread back', () => {
-  const messages = new CourierMessages(null);
+  const messages = memoryMessages();
   const pairs = new CourierPairs(null);
   const list = [{ id: 's-x', name: 'X', status: 'active' }];
   const h = new CourierHub({ sessions: () => list, pairs, messages });
@@ -150,7 +160,7 @@ test('the end reason reaches Courier: revoked vs archived vs a cut pairing', () 
 
 const audits = [];
 const SESSIONS = [{ id: 's-1', name: 'Fix login', status: 'active' }, { id: 's-2', name: 'Other', status: 'active' }, { id: 's-old', name: 'Gone', status: 'revoked' }];
-const log = new CourierMessages(null);
+const log = memoryMessages();
 const hub = new CourierHub({ sendTimeoutMs: 400, startTimeoutMs: 400, sessions: () => SESSIONS, messages: log, connectorPrompt: (id, task, kind = 'connector') => ({ text: `[${kind}:${id}] ${task}` }) });
 const app = express();
 const server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
@@ -506,7 +516,7 @@ test('send API: native loopback only, validated input, offline state', async () 
 });
 
 test('a question answered on the web page updates its message (answered, answer)', () => {
-  const store = new CourierMessages(null);
+  const store = memoryMessages();
   const base = { sessionId: 's-q', kind: 'agent', text: '❓ 选颜色\n1. 红\n2. 蓝', site: 'arena', targetId: 't-q', conversationKey: 'c-q', segment: 'question-1', status: 'reply' };
   const q = { title: '选颜色', options: ['红', '蓝'], skip: true, input: false };
   store.upsertSegment({ ...base, question: q });
@@ -675,7 +685,7 @@ test('subscription gate: denied stops sending and new pairings, keeps existing o
 });
 
 test('a ChatGPT reply seen again after a page reload stays one record (page message id)', () => {
-  const store = new CourierMessages(null);
+  const store = memoryMessages();
   const sid = '123456789012345678901234567890123456789';
   const base = { sessionId: sid, kind: 'agent', site: 'chatgpt', targetId: 't-1', conversationKey: 'c1', status: 'reply' };
   // stored before message ids were sent: matched once by text, then by id

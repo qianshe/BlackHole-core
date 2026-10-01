@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { courierRoutes } from '../courier/mount.js';
+import { mountFeedRoutes } from '../feed/routes.js';
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import type { DaemonDeps } from '../deps.js';
 import { VERSION } from '../version.js';
@@ -623,6 +624,22 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     res.json(sessionView(s));
+  });
+
+  // 会话时间线：feed（增量 + 长轮询）与 history（往上翻页）。Web 控制台与手机共用（remote.use(data)），
+  // VS Code 的 control API 挂的是同一份处理函数；见 src/feed/。
+  mountFeedRoutes(data, deps, {
+    mapCall: (c) => ({
+      id: c.id,
+      seq: c.seq,
+      tool: c.tool,
+      status: c.status,
+      args: projectArgs(c.args_json),
+      result_summary: c.result_summary,
+      approval_scope: c.approval_scope,
+      created_at: iso(c.created_at),
+      updated_at: iso(c.updated_at),
+    }),
   });
 
   data.get('/sessions/:id/calls', (req, res) => {

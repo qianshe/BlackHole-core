@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, type CallView, type ConfirmationView, type SessionView } from '../api';
 import { toolCallDisplay } from '../../../vscode/src/callDisplay';
 import { displayToolName } from '../../../vscode/src/toolNames';
-import { applyHead, applyOlder, emptyWindow, hasOlder, headRequest, messagesInWindow, rowsOf, timeOf, type CallWindow } from '../../../vscode/src/callWindow';
-import { Bubble, CHAT_CHANGED, CHAT_STREAMING, ChatDock, getJson, streamThread, usePairLink, type Message } from './ChatDock';
+import { useSessionFeed, WEB_FEED_LIMIT, type FeedState } from '../feed/useSessionFeed';
+import { Bubble, ChatDock, usePairLink, type Message } from './ChatDock';
 import {
   callDuration,
   callHeadline,
@@ -26,8 +26,6 @@ import { failText, useMenu } from './common';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
 import { HandoffBar } from './HandoffBar';
-
-const PAGE = 50;
 
 /** Inspector width limits; the feed always keeps at least FEED_MIN pixels. */
 const INSPECTOR = { min: 240, max: 640, initial: 300, feedMin: 360, key: 'bh.web.inspectorWidth' } as const;
@@ -225,90 +223,12 @@ function SessionMenu({ session, actions, goal }: { session: SessionView; actions
 }
 
 /**
- * Chat-style timeline of one session: calls (callWindow.ts) plus its web chat messages.
- * The head is polled; older calls load on scroll-up under the frozen anchor.
+ * 一个会话的聊天式时间线：调用与网页聊天消息都来自会话 feed（长轮询，见 vscode/src/sessionFeed.ts）。
+ * 头部由 feed 维护，往上翻的更早内容走 /history；输入框（ChatDock）共用同一条 feed。
  */
 function useTimeline(sessionId: string, ended: boolean) {
-  const [win, setWin] = useState<CallWindow<CallView>>(() => emptyWindow());
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-  const [olderBusy, setOlderBusy] = useState(false);
-  const winRef = useRef(win);
-  winRef.current = win;
-  const olderRef = useRef(false);
-
-  useEffect(() => {
-    setWin(emptyWindow());
-    winRef.current = emptyWindow();
-    setMessages([]);
-    setLoaded(false);
-    setError(null);
-    setOlderBusy(false);
-    olderRef.current = false;
-    let alive = true;
-    const ctl = new AbortController();
-    const tick = async () => {
-      const w = winRef.current;
-      const h = headRequest(w, PAGE);
-      const [page, msgs] = await Promise.all([
-        api.calls(sessionId, 0, h.limit, ctl.signal).catch((e: unknown) => { if (alive) setError(e); return null; }),
-        getJson<{ messages: Message[] }>(`/courier/messages?sessionId=${encodeURIComponent(sessionId)}`).catch(() => null),
-      ]);
-      if (!alive) return;
-      if (page) {
-        setError(null);
-        setLoaded(true);
-        // too many new calls since the anchor: start over at the newest; a raced older load is dropped
-        setWin((cur) => (cur.anchor !== w.anchor ? cur : applyHead(h.restart ? emptyWindow<CallView>() : cur, page)));
-      }
-      if (msgs) setMessages(msgs.messages);
-    };
-    void tick();
-    const t = ended ? 0 : window.setInterval(() => { if (!document.hidden) void tick(); }, POLL_MS);
-    const onChat = () => void tick();
-    window.addEventListener(CHAT_CHANGED, onChat);
-    // Reply text streams in over the live thread; reconnects after a drop (polling keeps working meanwhile).
-    void (async () => {
-      while (alive && !ended) {
-        await streamThread(sessionId, (m) => {
-          if (!alive || (m.sessionId !== undefined && m.sessionId !== sessionId)) return;
-          setMessages((list) => {
-            const i = list.findIndex((x) => x.id === m.id);
-            if (i < 0) return [...list, m];
-            const next = list.slice();
-            next[i] = m;
-            return next;
-          });
-        }, ctl.signal).catch(() => {});
-        if (alive) await new Promise((r) => setTimeout(r, 3000));
-      }
-    })();
-    return () => { alive = false; ctl.abort(); clearInterval(t); window.removeEventListener(CHAT_CHANGED, onChat); };
-  }, [sessionId, ended]);
-
-  const loadOlder = useCallback(async (): Promise<boolean> => {
-    const w = winRef.current;
-    if (olderRef.current || !hasOlder(w)) return false;
-    olderRef.current = true;
-    setOlderBusy(true);
-    try {
-      const page = await api.calls(sessionId, w.older + 1, PAGE, undefined, w.anchor);
-      setWin((cur) => (cur.anchor === w.anchor && cur.older === w.older ? applyOlder(cur, page) : cur));
-      return true;
-    } catch {
-      return false; // keep what is loaded; the next scroll-up retries
-    } finally {
-      olderRef.current = false;
-      setOlderBusy(false);
-    }
-  }, [sessionId]);
-
-  // Share "a reply is streaming" with the composer (ChatDock), which blocks sending meanwhile.
-  const streaming = messages.some((m) => m.status === 'streaming');
-  useEffect(() => { window.dispatchEvent(new CustomEvent(CHAT_STREAMING, { detail: { sessionId, streaming } })); }, [sessionId, streaming]);
-
-  return { win, messages, loaded, error, olderBusy, loadOlder };
+  const { snap, loadOlder } = useSessionFeed<CallView, Message, FeedState>({ scope: 'web', sessionId, limit: WEB_FEED_LIMIT, once: ended });
+  return { entries: snap.entries, calls: snap.calls, messages: snap.messages, loaded: snap.loaded, error: snap.error, hasOlder: snap.hasOlder, olderBusy: snap.loadingOlder, loadOlder };
 }
 
 type Entry = { kind: 'call'; x: CallView; at: number } | { kind: 'msg'; m: Message; at: number };
@@ -328,19 +248,22 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   const tl = useTimeline(session.id, ended);
   const todos = usePoll((signal) => api.todos(session.id, signal), `todos:${session.id}`, POLL_MS * 2, !ended);
 
-  const list = useMemo(() => rowsOf(tl.win), [tl.win]);
-  const total = tl.loaded ? tl.win.total : session.calls_total;
-  const more = hasOlder(tl.win);
+  const list = tl.calls;
+  const total = session.calls_total;
+  const more = tl.hasOlder;
   // Questions live in the composer's question card, not in the thread. Receive-only sessions have
   // no card (no composer), so there the question stays in the thread as the only trace of it.
   const pairLink = usePairLink(session.id);
   const questionsInThread = pairLink === 'unpaired' || pairLink === 'direct';
-  // Oldest at the top, newest at the bottom; calls and chat messages interleaved.
+  // 最旧的在上、最新的在下，调用和聊天消息交错；feed 已按时间线键排好序，这里不再排。
   const entries = useMemo<Entry[]>(() => {
-    const out: Entry[] = list.map((x) => ({ kind: 'call', x, at: timeOf(x.created_at) }));
-    for (const m of messagesInWindow(tl.win, tl.messages)) if (questionsInThread || !m.question) out.push({ kind: 'msg', m, at: m.at });
-    return out.sort((a, b) => a.at - b.at);
-  }, [list, tl.win, tl.messages, questionsInThread]);
+    const out: Entry[] = [];
+    for (const e of tl.entries) {
+      if (e.call) out.push({ kind: 'call', x: e.call, at: e.t });
+      else if (e.message && (questionsInThread || !e.message.question)) out.push({ kind: 'msg', m: e.message, at: e.t });
+    }
+    return out;
+  }, [tl.entries, questionsInThread]);
   // The final reply of each turn: the last agent message before your next message (calls between
   // don't count). Only these get a copy button; the segments between tool calls do not.
   const finalReplies = useMemo(() => {

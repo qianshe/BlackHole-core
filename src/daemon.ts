@@ -14,7 +14,8 @@ import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
 import { CourierHub } from './courier/hub.js';
-import { CourierMessages } from './courier/messages.js';
+import { CourierMessages, purgeCourierMessagesOlderThan } from './courier/messages.js';
+import { importCourierMessagesJson } from './courier/messagesImport.js';
 import { CourierPairs } from './courier/pairs.js';
 import { mountCourier } from './courier/mount.js';
 import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
@@ -39,6 +40,7 @@ import { SessionActivity } from './session-activity.js';
 import { TodosRepo } from './storage/todos.js';
 import { HandoffsRepo } from './storage/handoffs.js';
 import { ToolCallsRepo } from './storage/toolCalls.js';
+import { FeedLog } from './storage/feedLog.js';
 import { TunnelManager } from './tunnel/manager.js';
 import { startChannelWatchdog } from './tunnel/watchdog.js';
 import { detectExecutionEnvironment } from './execution.js';
@@ -70,6 +72,11 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const storage = openDb(cfg.dbPath);
   startupStorage = storage;
 
+  // 回复线程从旧 JSON 一次性导入 SQLite，必须先于 FeedLog 取种子（session-feed 计划 §11 的启动顺序）。
+  importCourierMessagesJson(storage.db, path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-messages.json'), log);
+  // 全会话共用的变更号。必须先于 markStaleStartedAsUnknown（它要给每个被中断的调用取 rev）。
+  const feed = FeedLog.open(storage.db);
+
   const sessions = new SessionsRepo(storage.db);
   // 变更门控：任何会话级写入（事件/任务清单）→ epoch +1，扩展据此拉取
   const changes = new ChangeTracker();
@@ -77,11 +84,13 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const events = new EventsRepo(storage.db, cfg.eventPayloadCapBytes, () => changes.bump());
   // Drafts: reserved in memory until the first tool call uses the credential.
   sessions.onDraftsChanged = () => changes.bump();
+  // 名称/状态变化 → feed 重建会话 state（state provider 在 hub 建好后设置，之前的通知是空操作）
+  sessions.onStateChange = (id) => { feed.touchState(id); };
   sessions.onDraftStored = (row) => events.append(row.id, 'session_created', {
     workspace_path: row.workspace_path, permission_mode: row.permission_mode, name: row.name,
     expires_at: row.expires_at, writable_dirs: row.writable_dirs, from_draft: true,
   });
-  const toolCalls = new ToolCallsRepo(storage.db);
+  const toolCalls = new ToolCallsRepo(storage.db, feed);
   const machineState = new MachineStateRepo(storage.db);
   // 'always' approval grants persist across daemon restarts (machine_state);
   // session grants stay in memory by design
@@ -115,6 +124,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   let purgedConf = 0;
   let purgedEvents = 0;
   let purgedTodos = 0;
+  let purgedReplies = 0;
   for (const s of sessions.list()) {
     if (s.status === 'revoked' || s.status === 'archived') {
       purgedCalls += toolCalls.purgeSession(s.id);
@@ -129,8 +139,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   purgedEvents += events.purgeSessionScopedOlderThan(cutoff);
   purgedEvents += events.purgeMachineProtocolCountersOlderThan(cutoff);
   purgedTodos += todos.purgeOlderThan(cutoff);
-  if (purgedCalls + purgedConf + purgedEvents + purgedTodos > 0) {
-    log(`storage: retention purge — ${purgedCalls} tool call(s), ${purgedConf} confirmation(s), ${purgedEvents} event(s), ${purgedTodos} todo board(s)`);
+  purgedReplies += purgeCourierMessagesOlderThan(storage.db, cutoff);
+  if (purgedCalls + purgedConf + purgedEvents + purgedTodos + purgedReplies > 0) {
+    log(`storage: retention purge — ${purgedCalls} tool call(s), ${purgedConf} confirmation(s), ${purgedEvents} event(s), ${purgedTodos} todo board(s), ${purgedReplies} chat message(s)`);
   }
   const maintenance = maintainDb(storage.db, cfg.dbPath);
   if (maintenance.reclaimed) log(`storage: reclaimed database space (${Math.round(maintenance.freeRatio * 100)}% free pages)`);
@@ -351,7 +362,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // Courier: ping/WebSocket for the browser extension, plus its native send API.
   const courier = new CourierHub({
     log,
-    messages: new CourierMessages(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-messages.json'), log),
+    messages: new CourierMessages(storage.db, feed),
     pairs: new CourierPairs(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-pairs.json'), log),
     onStarted: (id, text) => { deps.sessions.commitDraft(id, text); },
     onIdle: (id) => deps.sessionActivity?.endTurn(id),
@@ -372,6 +383,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
       return { text: renderPrompt('connector', '', s.credential_id, task, deps.settings?.get().values.connectorName || 'BlackHole') };
     },
     onChange: () => changes.bump(),
+    onStateChange: (id) => { feed.touchState(id); },
     sessions: () => deps.sessions.list().map((s) => ({ id: s.id, name: s.name?.trim() || path.basename(s.workspace_path) || s.workspace_path, named: !!s.name?.trim(), status: 'draft' in s ? 'draft' : s.status })),
     // Sites added in Courier (检测此页面): kept in the daemon-owned courierSites setting.
     sites: {
@@ -388,11 +400,31 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     } } : {}),
   });
   deps.courier = courier;
+  deps.feed = feed;
+  // feed 的会话 state 快照：名称/状态来自会话表，配对与聊天目标来自 hub。草稿的 status 按 hub 的会话列表同样写成 'draft'。
+  feed.setStateProvider((id) => {
+    const s = deps.sessions.get(id);
+    if (!s) return null;
+    const t = courier.targetOf(id);
+    return {
+      name: s.name ?? null,
+      status: 'draft' in s ? 'draft' : s.status,
+      link: courier.link(id),
+      // Courier 是否在线：网页的输入框靠它区分「Courier 没连上」和「配对的网页不在 Courier 里」
+      connected: courier.connected,
+      target: t ? { targetId: t.targetId, site: t.site, label: t.label, busy: t.busy, ready: t.ready, open: t.open, draft: t.draft, model: t.model, card: t.card } : null,
+    };
+  });
   entitlement?.onChange(() => courier.pushAccess());
   // A session deleted in any UI: Courier unbinds it; its pairing and thread are removed.
   // The reason travels to Courier: a deleted session may also delete its bound web chat (only if the
   // user turned that on in Courier), an archived one never does.
-  deps.sessions.onSessionEnded = (id, reason) => courier.forget(id, { reason: reason ?? 'unpaired' });
+  deps.sessions.onSessionEnded = (id, reason) => {
+    courier.forget(id, { reason: reason ?? 'unpaired' });
+    // 只有草稿被丢弃才是「会话行消失」：唤醒等待者并让它们返回 404。revoked/archived 的行还在，
+    // 状态变化由 SessionsRepo.onStateChange 下发（session-feed 计划 §4.3）。
+    if (reason === 'discarded') feed.close(id);
+  };
   mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data));
   const control = mountControl(express.Router(), deps);
   mountLocalWeb(app, deps, undefined, control);
@@ -452,6 +484,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const stop = async (): Promise<void> => {
     clearInterval(processSweep);
     courier.close();
+    feed.shutdown(); // 放走所有挂起的长轮询请求，server.close() 才能完成
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();

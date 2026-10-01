@@ -51,7 +51,7 @@ function setup(initialOk) {
  const modules=new Map();
  function load(name) {
   if(Object.hasOwn(mocks,name))return mocks[name];
-  if(!['./extension','./sidebar','./poller','./toolNames','./handoffCopy','./handoffView','./templates','./callWindow','./markdown'].includes(name))return require(name);
+  if(!['./extension','./sidebar','./poller','./toolNames','./handoffCopy','./handoffView','./templates','./callWindow','./sessionFeed','./markdown'].includes(name))return require(name);
   if(modules.has(name))return modules.get(name).exports;
   const source=fs.readFileSync(new URL(`../src/${name.slice(2)}.ts`,import.meta.url),'utf8');
   const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;

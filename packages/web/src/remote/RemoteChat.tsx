@@ -7,7 +7,9 @@ import { CALL_STATUS_LABEL, callDuration, callHeadline, callTone, formatFull, re
 import { toolCallDisplay } from '../../../vscode/src/callDisplay';
 import { displayToolName } from '../../../vscode/src/toolNames';
 import { renderMarkdown } from '../../../vscode/src/markdown';
+import { Markdown } from '../Markdown';
 import { call, RemoteError } from './call';
+import { FeedHttpError, useSessionFeed, type FeedState } from '../feed/useSessionFeed';
 import { loadMethod, saveMethod, sendMethods, siteLabel, startPlan, usableMethod, type SendMethod, type SiteChoice } from '../sendMethod';
 
 // The phone never holds the session credential, so it cannot copy a prompt: Courier methods only.
@@ -18,12 +20,13 @@ import { FoldText } from '../FoldText';
 
 interface Question { title: string; options: string[]; skip: boolean; input: boolean; answered?: boolean }
 interface Msg { id: string; kind: 'user' | 'agent'; text: string; at: number; status: string; site?: string; model?: string; message?: string; question?: Question; images?: number }
-interface Target { targetId: string; sessionId: string | null; site: string; label: string; open?: boolean; ready?: boolean; busy?: boolean; card?: string | null }
-interface Courier { connected: boolean; targets: Target[]; links?: Record<string, string>; sites?: SiteChoice[] }
+interface Courier { connected: boolean; sites?: SiteChoice[] }
 interface Result { ok: boolean; sent?: boolean; message?: string }
 interface Project { id: string; label: string; path: string }
 
-const POLL = 2500;
+/** 手机 feed 首屏条数与往上翻的每页条数（计划 §3：手机 20）。 */
+const PHONE_FEED_LIMIT = 20;
+
 const hhmm = (t: number): string => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const failText = (e: unknown): string => (e instanceof RemoteError ? e.detail || e.code : '连不上电脑，请重试');
 
@@ -55,47 +58,35 @@ function Composer({ busy, disabled, placeholder, onSend, generating = false, onS
   );
 }
 
-export function SessionChat({ session, onBack, lost }: { session: SessionView; onBack: () => void; lost: (e: unknown) => void }) {
+export function SessionChat({ session, onBack, onApprovals, lost }: { session: SessionView; onBack: () => void; onApprovals: () => void; lost: (e: unknown) => void }) {
   const id = session.id;
-  const [calls, setCalls] = useState<CallView[]>([]);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [courier, setCourier] = useState<Courier | null>(null);
+  const [sites, setSites] = useState<SiteChoice[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ cls: string; text: string } | null>(null);
   const [menu, setMenu] = useState(false);
-  const [loaded, setLoaded] = useState(false);
 
-  // Same safety net as the Web composer: while the bound chat reads busy, every 3rd poll asks for a
-  // fresh list instead of the one Courier last pushed.
-  const busyRef = useRef(false);
-  const pollN = useRef(0);
-  const load = useMemo(() => async (): Promise<void> => {
-    const fresh = busyRef.current && ++pollN.current % 3 === 0;
-    try {
-      const [c, m, st] = await Promise.all([
-        call<{ calls: CallView[] }>(`/sessions/${encodeURIComponent(id)}/calls?limit=50`),
-        call<{ messages: Msg[] }>(`/courier/messages?sessionId=${encodeURIComponent(id)}`).catch(() => ({ messages: [] as Msg[] })),
-        call<Courier>(fresh ? '/courier' : '/courier?cached=1').catch(() => null),
-      ]);
-      setCalls(Array.isArray(c.calls) ? c.calls : []);
-      setMsgs(Array.isArray(m.messages) ? m.messages : []);
-      if (st) setCourier(st);
-      setLoaded(true);
-    } catch (e) { lost(e); }
-  }, [id, lost]);
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => { if (!document.hidden) void load(); }, POLL);
-    return () => clearInterval(t);
-  }, [load]);
+  // 时间线、状态（名称、配对、绑定的网页聊天、busy）都来自会话 feed：服务端按渠道决定等待与间隔，
+  // 手机不再自己轮询 /courier。401/403/404 交给上层的 lost()。
+  const { snap, loadOlder, kick } = useSessionFeed<CallView, Msg, FeedState>({
+    scope: 'remote',
+    sessionId: id,
+    limit: PHONE_FEED_LIMIT,
+    onFatal: (e) => lost(e instanceof FeedHttpError ? new RemoteError(e.status, e.code) : e),
+  });
+  const loaded = snap.loaded;
+  const msgs = snap.messages;
+  const st = snap.state;
+  // 站点名字（在 Courier 里添加的站点）只在 /courier 里，进入会话页时读一次。
+  useEffect(() => { void call<Courier>('/courier?cached=1').then((c) => setSites(Array.isArray(c.sites) ? c.sites : []), () => undefined); }, []);
 
-  const targets = (courier?.targets ?? []).filter((t) => t.sessionId === id);
-  const link = courier?.links?.[id] ?? (session.draft ? 'new' : targets.length ? 'paired' : 'direct');
+  const target = st?.target ?? null;
+  const link = st?.link ?? (session.draft ? 'new' : 'direct');
   const paired = link === 'paired';
-  const target = targets[0] ?? null;
-  busyRef.current = !!target?.busy;
   const generating = !!target?.busy || msgs.some((m) => m.status === 'streaming');
+  // 待审批的调用：手机在会话页时不再轮询审批列表，用 feed 里的 awaiting 调用提示，点了跳到审批页
+  const awaiting = useMemo(() => snap.calls.filter((c) => c.status === 'awaiting').length, [snap.calls]);
+  const title = sessionTitle({ ...session, name: st ? st.name : session.name });
 
   // The last unanswered question (nothing of yours sent after it) becomes the card above the composer.
   const question = useMemo(() => {
@@ -108,20 +99,41 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
   }, [msgs]);
 
   type Entry = { k: 'call'; at: number; c: CallView } | { k: 'msg'; at: number; m: Msg };
+  // feed 已按时间线键排好序（调用在同一时刻的回复之前），这里不再排。
   const entries = useMemo<Entry[]>(() => {
-    const out: Entry[] = calls.map((c) => ({ k: 'call', at: Date.parse(c.created_at ?? '') || 0, c }));
-    // Questions live in the card while the session can answer; receive-only keeps them in the thread.
-    for (const m of msgs) if (!paired || !m.question) out.push({ k: 'msg', at: m.at, m });
-    return out.sort((a, b) => a.at - b.at);
-  }, [calls, msgs, paired]);
+    const out: Entry[] = [];
+    for (const e of snap.entries) {
+      if (e.call) out.push({ k: 'call', at: e.t, c: e.call });
+      // Questions live in the card while the session can answer; receive-only keeps them in the thread.
+      else if (e.message && (!paired || !e.message.question)) out.push({ k: 'msg', at: e.t, m: e.message });
+    }
+    return out;
+  }, [snap.entries, paired]);
 
-  // Follow new entries while the page is at the bottom.
+  // Follow new entries while the page is at the bottom; scrolling to the top loads older ones
+  // (/history) and keeps the view where it was.
   const atBottom = useRef(true);
+  const prevHeight = useRef<number | null>(null);
+  const older = (): void => {
+    if (!snap.hasOlder || snap.loadingOlder) return;
+    prevHeight.current = document.body.scrollHeight;
+    void loadOlder().then((ok) => { if (!ok) prevHeight.current = null; });
+  };
+  const olderRef = useRef(older);
+  olderRef.current = older;
   useEffect(() => {
-    const on = (): void => { atBottom.current = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80; };
+    const on = (): void => {
+      atBottom.current = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+      if (window.scrollY < 80) olderRef.current();
+    };
     window.addEventListener('scroll', on, { passive: true });
     return () => window.removeEventListener('scroll', on);
   }, []);
+  useLayoutEffect(() => {
+    if (prevHeight.current === null) return;
+    window.scrollBy(0, document.body.scrollHeight - prevHeight.current);
+    prevHeight.current = null;
+  }, [entries]);
   const last = entries.length ? entries[entries.length - 1]! : null;
   const lastSig = last ? (last.k === 'msg' ? last.m.id + (last.m.text ?? '').length : last.c.id + last.c.status) : '';
   useLayoutEffect(() => { if (atBottom.current) window.scrollTo(0, document.body.scrollHeight); }, [lastSig]);
@@ -136,7 +148,7 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
     } catch (e) {
       setNote({ cls: 'bad', text: failText(e) });
     } finally {
-      void load();
+      kick();
     }
   };
 
@@ -154,7 +166,7 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
       return false;
     } finally {
       setBusy(false);
-      void load();
+      kick();
     }
   };
 
@@ -171,7 +183,7 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
     try {
       const r = await call<Result>('/courier/card', { targetId: target.targetId, sessionId: id });
       setNote({ cls: r.ok ? 'ok' : 'warn', text: r.message || (r.ok ? '评价卡已处理' : '处理失败') });
-    } catch (e) { setNote({ cls: 'bad', text: failText(e) }); } finally { void load(); }
+    } catch (e) { setNote({ cls: 'bad', text: failText(e) }); } finally { kick(); }
   };
   const reloadPage = async (): Promise<void> => {
     setMenu(false);
@@ -179,7 +191,7 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
     try {
       const r = await call<Result>('/courier/reload', { sessionId: id });
       setNote(r.ok ? { cls: 'ok', text: r.message || '已刷新' } : { cls: 'bad', text: r.message || '刷新失败' });
-    } catch (e) { setNote({ cls: 'bad', text: failText(e) }); } finally { void load(); }
+    } catch (e) { setNote({ cls: 'bad', text: failText(e) }); } finally { kick(); }
   };
   const unpair = async (): Promise<void> => {
     setMenu(false);
@@ -187,7 +199,7 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
     try {
       const r = await call<Result>('/courier/unpair', { sessionId: id });
       setNote(r.ok ? { cls: 'ok', text: '已解除配对，之后只接收' } : { cls: 'bad', text: r.message || '解除失败' });
-      void load();
+      kick();
     } catch (e) { setNote({ cls: 'bad', text: failText(e) }); }
   };
 
@@ -201,13 +213,13 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
 
   const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
     : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'
-    : target ? `${siteLabel(target.site, courier?.sites)}${generating ? ' · 正在生成' : ''}` : '配对的网页会话不在浏览器 Courier 里';
+    : target ? `${siteLabel(target.site, sites)}${generating ? ' · 正在生成' : ''}` : '配对的网页会话不在浏览器 Courier 里';
 
   return (
     <div className={s.chatPage}>
       <div className={s.chatHead}>
         <button type="button" className={s.back} onClick={onBack} aria-label="返回">‹ 返回</button>
-        <span className={s.chatTitle}>{sessionTitle(session)}</span>
+        <span className={s.chatTitle}>{title}</span>
         <button type="button" className={s.more} aria-haspopup="menu" aria-expanded={menu} aria-label="更多" onClick={() => setMenu((x) => !x)}>⋯</button>
         {menu && (
           <div className={s.menu} role="menu">
@@ -220,6 +232,14 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
         )}
       </div>
       <main className={s.chatBody}>
+        {awaiting > 0 && (
+          <button type="button" className={s.bannerWarn} onClick={onApprovals}>{awaiting} 个待审批 · 去处理</button>
+        )}
+        {snap.hasOlder && (
+          <button type="button" className={s.older} disabled={snap.loadingOlder} onClick={older}>
+            {snap.loadingOlder ? '正在加载…' : snap.olderError ? '加载失败，点此重试' : '加载更早的记录'}
+          </button>
+        )}
         {!loaded && (
           <div className={s.skeleton} aria-busy="true" aria-label="正在加载">
             <span /><span /><span />
@@ -242,8 +262,8 @@ export function SessionChat({ session, onBack, lost }: { session: SessionView; o
               </li>
             ) : (
               <li key={e.m.id} className={s.msgAgent}>
-                <div className={s.msgHead}>{siteLabel(e.m.site, courier?.sites)} · {hhmm(e.m.at)}</div>
-                <div className={s.md} dangerouslySetInnerHTML={{ __html: renderMarkdown(e.m.text ?? '') }} />
+                <div className={s.msgHead}>{siteLabel(e.m.site, sites)} · {hhmm(e.m.at)}</div>
+                <Markdown className={s.md} html={renderMarkdown(e.m.text ?? '')} />
               </li>
             )
           ) : (

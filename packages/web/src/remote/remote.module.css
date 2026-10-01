@@ -138,3 +138,7 @@ button.bannerWarn { width: 100%; text-align: left; border: 1px solid var(--line)
 
 /* Images sent from the local Web: only a note here (no download on the phone). */
 .imgNote { display: block; margin-bottom: 2px; font-size: var(--fs-xs); color: var(--text-3); }
+
+/* Session page: load older entries (tap, or scroll to the top). */
+.older { display: block; width: 100%; min-height: 34px; margin: 0 0 6px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; }
+.older:disabled { opacity: .7; }

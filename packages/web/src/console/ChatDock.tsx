@@ -3,16 +3,18 @@
 // session's first message opens a ChatGPT chat and carries the connector prompt; cut or prompt-direct
 // sessions only receive (no input).
 // Self-contained: talks to /web-api/v1/courier directly and gets the CSRF token from /auth/session.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as PasteEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as PasteEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { SessionView } from '../api';
 import { renderMarkdown } from '../../../vscode/src/markdown';
 import s from './ChatDock.module.css';
 import { FoldText } from '../FoldText';
+import { Markdown } from '../Markdown';
 import { copyText } from '../codeCopy';
 import { Icon } from '../ui';
 import { loadMethod, startPlan, usableMethod, type SiteChoice } from '../sendMethod';
-import { refreshCourier, subscribeCourier } from './courierFeed';
+import { subscribeCourier } from './courierFeed';
+import { useSessionFeed, WEB_FEED_LIMIT, type FeedState, type FeedTarget } from '../feed/useSessionFeed';
 
 /** Sites added in Courier, from the last courier status (a deleted one is no longer offered). */
 let knownSites: SiteChoice[] = [];
@@ -20,19 +22,8 @@ let knownSites: SiteChoice[] = [];
 const draftPlan = () => startPlan(usableMethod(loadMethod(), knownSites)) ?? startPlan('chatgpt')!;
 const siteName = (site: string): string => SITE[site] ?? site;
 
-interface Target {
-  targetId: string;
-  site: string;
-  label: string;
-  conversationKey: string | null;
-  open: boolean;
-  ready: boolean | null;
-  busy: boolean | null;
-  draft: boolean | null;
-  /** Title of an open Arena rating card, null when none. */
-  card?: string | null;
-  sessionId: string | null;
-}
+/** 会话绑定的网页聊天（来自 feed 的 state）：一个会话只显示第一个绑定目标。 */
+type Target = FeedTarget;
 /** The question card the web agent forwards: a title plus 1-12 options. */
 export interface Question {
   title: string;
@@ -63,10 +54,7 @@ const BASE = '/web-api/v1';
 /** Site id → name; the sites added in Courier are filled in from the courier status. */
 const SITE: Record<string, string> = { arena: 'Arena', chatgpt: 'ChatGPT' };
 const HEAD = { 'x-blackhole-web': '1' };
-const POLL_MS = 3000;
 
-/** Fired after a send so the session timeline refreshes at once. */
-export const CHAT_CHANGED = 'bh-chat-changed';
 /** Drafts that already went to a web chat: leaving their page must not discard them. */
 export const draftsInUse = new Set<string>();
 /** Last known pairing state per session (new / paired / unpaired / direct), fed by ChatDock. */
@@ -100,36 +88,10 @@ export function usePairLink(sessionId: string): string | undefined {
   }, [sessionId]);
   return link;
 }
-/** Fired by the session timeline: { sessionId, streaming } while a reply streams in. */
-export const CHAT_STREAMING = 'bh-chat-streaming';
-
 export async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path, { credentials: 'same-origin', cache: 'no-store', headers: HEAD });
   if (!r.ok) throw new Error(`http_${r.status}`);
   return (await r.json()) as T;
-}
-
-/**
- * Live thread updates of one session (server-sent events over fetch, so the client header is
- * sent): every added or updated message, including reply text while it streams.
- */
-export async function streamThread(sessionId: string, onMessage: (m: Message) => void, signal: AbortSignal): Promise<void> {
-  const r = await fetch(`${BASE}/courier/stream?sessionId=${encodeURIComponent(sessionId)}`, { credentials: 'same-origin', cache: 'no-store', headers: { ...HEAD, accept: 'text/event-stream' }, signal });
-  if (!r.ok || !r.body) throw new Error(`http_${r.status}`);
-  const reader = r.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buf += dec.decode(value, { stream: true });
-    for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
-      const data = buf.slice(0, i).split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
-      buf = buf.slice(i + 2);
-      if (!data) continue;
-      try { onMessage(JSON.parse(data) as Message); } catch { /* malformed event: skip */ }
-    }
-  }
 }
 
 export async function postJson(path: string, body: unknown): Promise<Result> {
@@ -176,7 +138,7 @@ function state(t: Target): [string, string] {
 const hhmm = (t: number): string => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 /** Where the message goes: Arena, ChatGPT, or whatever site the extension binds. */
 const sourceOf = (t: Target): string => SITE[t.site] ?? t.site;
-const targetName = (t: Target): string => `${sourceOf(t)} · ${t.label || t.conversationKey || '新会话'}`;
+const targetName = (t: Target): string => `${sourceOf(t)} · ${t.label || '新会话'}`;
 
 /**
  * One chat message in the session timeline: yours as a light block on the right, the agent's
@@ -240,7 +202,7 @@ export function Bubble({ m, copy = false }: { m: Message; copy?: boolean }) {
           <span className={s.who}>{site}</span>
           <span className={s.when}>{hhmm(m.at)}</span>
         </div>
-        <div className={s.md} dangerouslySetInnerHTML={{ __html: html }} />
+        <Markdown className={s.md} html={html} />
         {copy && m.status !== 'streaming' && <div className={s.msgActs}><MsgCopy text={m.text} /></div>}
       </li>
     );
@@ -262,24 +224,20 @@ export function Bubble({ m, copy = false }: { m: Message; copy?: boolean }) {
  * is composer metadata, so it is shown on the composer and never in the thread.
  */
 export function ChatDock({ session, connectorName, mcpUrl, models, question }: { session: SessionView; connectorName: string; mcpUrl: string | null; models: Record<string, string>; question: (Question & { id: string }) | null }) {
-  const [connected, setConnected] = useState<boolean | null>(null);
-  const [targets, setTargets] = useState<Target[]>([]);
-  const [pick, setPick] = useState('');
+  const ended = session.status === 'revoked' || session.status === 'archived';
+  // 状态、绑定的网页聊天、回复是否在流式输出都来自会话 feed，和时间线（SessionPane）共用同一条长轮询。
+  const { snap, kick } = useSessionFeed<{ id: string; created_at: unknown }, Message, FeedState>({ scope: 'web', sessionId: session.id, limit: WEB_FEED_LIMIT, once: ended });
+  const st = snap.state;
+  const connected: boolean | null = st ? st.connected : null;
+  const target: Target | null = st?.target ?? null;
+  const streaming = snap.messages.some((m) => m.status === 'streaming');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ cls: string; text: string } | null>(null);
   // Send state rides the head pill (可发送 → 发送中 → 已发送): nothing about a send
   // belongs on a line under the input.
   const [flash, setFlash] = useState<{ cls: string; text: string } | null>(null);
-  const alive = useRef(true);
-  const busyRef = useRef(false);
-  const [streaming, setStreaming] = useState(false);
   const [stopping, setStopping] = useState(false);
-  useEffect(() => {
-    const on = (e: Event) => { const d = (e as CustomEvent<{ sessionId: string; streaming: boolean }>).detail; if (d?.sessionId === session.id) setStreaming(d.streaming); };
-    window.addEventListener(CHAT_STREAMING, on);
-    return () => window.removeEventListener(CHAT_STREAMING, on);
-  }, [session.id]);
   useEffect(() => {
     if (!flash) return;
     const t = setTimeout(() => setFlash(null), 1800);
@@ -288,33 +246,21 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // new: composer opens a ChatGPT chat; paired: sends to it; unpaired / direct: receive only.
-  const [link, setLink] = useState<string>(session.draft ? 'new' : 'direct');
-  type St = { connected: boolean; targets: Target[]; links?: Record<string, string>; sites?: SiteChoice[] };
-  const apply = useCallback((st: St | null) => {
-    if (!alive.current) return;
-    if (Array.isArray(st?.sites)) { knownSites = st.sites; for (const x of st.sites) SITE[x.id] = x.name; }
-    const mine = st?.connected ? st.targets.filter((t) => t.sessionId === session.id) : [];
-    setConnected(st ? st.connected : false);
-    setTargets(mine);
-    if (st) {
-      const l = st.links?.[session.id] ?? (session.draft ? 'new' : mine.length ? 'paired' : 'direct');
-      setLink(l);
-      if (pairLinks.get(session.id) !== l) { pairLinks.set(session.id, l); window.dispatchEvent(new CustomEvent(PAIR_LINK, { detail: { sessionId: session.id } })); }
-    }
-  }, [session.id, session.draft]);
-  // Explicit reloads (open, after a send, pair changes) ask Courier for a fresh list; the shared
-  // poll feeds every other tick to all readers.
-  const load = useCallback(async (fresh = false) => { apply((await refreshCourier(fresh)) as St | null); }, [apply]);
-
+  const link = st?.link ?? (session.draft ? 'new' : 'direct');
+  const feedLink = st?.link;
+  // 给会话菜单（解除配对等）用的配对状态按 feed 的 state 更新
   useEffect(() => {
-    alive.current = true;
-    const off = subscribeCourier((st) => apply(st as St | null));
-    void load(true);
-    // Safety net: while the composer shows "generating", every 3rd tick asks Courier for a fresh
-    // list instead of the pushed one, so a busy flip Courier failed to push cannot stick.
-    const t = setInterval(() => { if (!document.hidden && busyRef.current) void load(true); }, POLL_MS * 3);
-    return () => { alive.current = false; off(); clearInterval(t); };
-  }, [apply, load]);
+    if (!feedLink || pairLinks.get(session.id) === feedLink) return;
+    pairLinks.set(session.id, feedLink);
+    window.dispatchEvent(new CustomEvent(PAIR_LINK, { detail: { sessionId: session.id } }));
+  }, [session.id, feedLink]);
+  // 站点列表（在 Courier 里添加的）只在 /courier 状态里：和侧边栏共用那条 3 秒轮询，这里不再另起请求。
+  useEffect(() => subscribeCourier((cs) => {
+    const sites = (cs as { sites?: SiteChoice[] } | null)?.sites;
+    if (!Array.isArray(sites)) return;
+    knownSites = sites;
+    for (const x of sites) SITE[x.id] = x.name;
+  }), []);
 
   useLayoutEffect(() => {
     const el = inputRef.current;
@@ -323,10 +269,8 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
     el.style.height = `${Math.min(200, el.scrollHeight + 2)}px`;
   }, [text]);
 
-  const target = targets.find((t) => t.targetId === pick) ?? targets[0] ?? null;
   // The web AI is still answering: no new message until it is done.
   const generating = streaming || !!target?.busy;
-  busyRef.current = !!target?.busy;
 
   /** Asks the bound chat to press its own stop control (the daemon relays it to Courier). */
   const stopGenerating = async (): Promise<void> => {
@@ -341,7 +285,7 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
       setNote({ cls: 'bad', text: '连不上 BlackHole' });
     } finally {
       setStopping(false);
-      void load(true);
+      kick();
     }
   };
 
@@ -392,17 +336,16 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
       setNote({ cls: 'bad', text: e instanceof Error && e.message.startsWith('图片') ? e.message : '连不上 BlackHole' });
     } finally {
       setBusy(false);
-      void load(true);
-      window.dispatchEvent(new Event(CHAT_CHANGED));
+      kick();
     }
   };
 
   // 解除配对 lives in the session menu (away from the send button): reload when it happens.
   useEffect(() => {
-    const on = (e: Event): void => { if ((e as CustomEvent<{ sessionId: string }>).detail?.sessionId === session.id) void load(true); };
+    const on = (e: Event): void => { if ((e as CustomEvent<{ sessionId: string }>).detail?.sessionId === session.id) kick(); };
     window.addEventListener(PAIR_CUT, on);
     return () => window.removeEventListener(PAIR_CUT, on);
-  }, [session.id, load]);
+  }, [session.id, kick]);
   const receiveOnly = link === 'unpaired' || link === 'direct';
   /** 处理评价卡: the auto-rate rule applied to the open Arena rating card. */
   const rateCard = async (): Promise<void> => {
@@ -418,8 +361,6 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
   // 发送中 is a send state, not a channel state: it outranks 可发送 while a send is in flight.
   const pill: [string, string] | null = busy ? ['warn', '发送中'] : flash ? [flash.cls, flash.text] : label ? [cls, label] : null;
   const model = (target && models[target.site]) || null;
-  // Same site twice: two Arena chats can only be told apart by their titles.
-  const uniqueSources = new Set(targets.map((t) => t.site)).size === targets.length;
   const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
     : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'
     : connected === false ? '浏览器里的 Courier 未连接，打开浏览器后会自动连上'
@@ -455,11 +396,7 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
           </div>
         )}
         <div className={s.head}>
-          {head ? <span className={s.hint}>{head}</span> : targets.length > 1 ? (
-            <select className={s.select} value={target!.targetId} onChange={(e) => setPick(e.target.value)} aria-label="选择网页会话">
-              {targets.map((t) => <option key={t.targetId} value={t.targetId}>{uniqueSources ? sourceOf(t) : targetName(t)}</option>)}
-            </select>
-          ) : (
+          {head ? <span className={s.hint}>{head}</span> : (
             /* 会话标题在每条回复里重复，这里只留来源 */
             <span className={s.name} title={targetName(target!)}>{sourceOf(target!)}</span>
           )}

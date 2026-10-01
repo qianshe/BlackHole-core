@@ -166,10 +166,19 @@ function Ready({ me, lost }: { me: Me; lost: (e: unknown) => void }) {
       setPending((Array.isArray(b.confirmations) ? b.confirmations : []).filter((c) => c.status === 'pending'));
     } catch (e) { lost(e); }
   }, [lost]);
-  useEffect(() => { void refresh(); const t = setInterval(() => void refresh(), 3000); return () => clearInterval(t); }, [refresh]);
+  // Hidden tabs stop polling: every request counts against the phone's shared rate limit.
+  const current = open ? sessions.find((x) => x.id === open) ?? null : null;
+  // 会话页已显示时不轮询列表和审批（会话页有自己的 feed），返回列表或跳到审批页时立即刷新一次；
+  // 刚新建的会话还不在列表里（current 为空）时照常轮询，直到它出现。
+  const inSession = current !== null;
+  useEffect(() => {
+    if (inSession) return;
+    void refresh();
+    const t = setInterval(() => { if (!document.hidden) void refresh(); }, 3000);
+    return () => clearInterval(t);
+  }, [refresh, inSession]);
 
   const days = me.remaining_seconds === null ? null : me.remaining_seconds / 86400;
-  const current = open ? sessions.find((x) => x.id === open) ?? null : null;
   // Drafts (a new chat whose first message has not gone out) are not listed.
   const listed = sessions.filter((x) => !x.draft);
   return (
@@ -185,7 +194,7 @@ function Ready({ me, lost }: { me: Me; lost: (e: unknown) => void }) {
       {days !== null && days <= 0 && <div className={s.bannerBad} role="alert">订阅已到期，AI 工具调用已暂停。请在电脑上续费。</div>}
       {!current && days !== null && days > 0 && days <= 3 && <div className={s.bannerWarn} role="status">订阅将在 {Math.ceil(days)} 天内到期，请在电脑上续费。</div>}
       {current ? (
-        <Guard key={current.id} onReset={() => setOpen(null)}><SessionChat session={current} onBack={() => setOpen(null)} lost={lost} /></Guard>
+        <Guard key={current.id} onReset={() => setOpen(null)}><SessionChat session={current} onBack={() => setOpen(null)} onApprovals={() => { setOpen(null); setTab('approvals'); }} lost={lost} /></Guard>
       ) : (
         <>
           <main className={s.body}>

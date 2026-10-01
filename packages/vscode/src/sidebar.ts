@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { commands, env, Position, Range, Selection, TextEditorRevealType, Uri, window, workspace, WebviewView, type Disposable, type WebviewViewProvider } from 'vscode';
 import { argumentDetails, commandSummary, pendingConfirmationFor, resultBody, resultDiff } from './callFormat';
@@ -7,9 +7,20 @@ import { isWorkspaceFileTool, displayToolName } from './toolNames';
 import { sidebarIcons } from './icons';
 import { getConfig } from './config';
 import { prepareHandoffPrompt } from './handoffCopy';
-import { renderMarkdown } from './markdown';
-import { applyHead, applyOlder, emptyWindow, hasOlder, headRequest, messagesInWindow, rowsOf, type CallWindow } from './callWindow';
+import { mermaidConfig, renderMarkdown } from './markdown';
+import { abortableSleep, SessionFeed, type FeedEnv, type FeedSnapshot } from './sessionFeed';
 import { handoffMarkup, handoffScript, handoffStyles } from './handoffView';
+
+/** The Web build's single-file mermaid (name carries a content hash); '' when absent (diagrams stay code). */
+let mermaidAssetPath: string | undefined;
+function mermaidAsset(): string {
+  if (mermaidAssetPath !== undefined) return mermaidAssetPath;
+  const dir = path.join(__dirname, 'daemon', 'web', 'assets');
+  let name: string | undefined;
+  try { name = readdirSync(dir).find((f) => /^mermaid-[0-9a-f]+\.min\.js$/.test(f)); } catch { /* no Web build */ }
+  mermaidAssetPath = name ? path.join(dir, name) : '';
+  return mermaidAssetPath;
+}
 import type { CallRow, ControlApi, CourierMessageView, CourierSendResult, CourierSiteChoice, CourierStopResult, CourierTargetView, PendingHandoff, PermissionMode, SessionAction, SessionInfo, SessionLink, TodoItem, TunnelState } from './controlApi';
 import type { DaemonManager } from './daemonManager';
 import type { Poller } from './poller';
@@ -54,8 +65,33 @@ interface ViewMessage {
   site?: string;
 }
 
-/** Calls per load in the detail timeline (newest at the bottom, older loaded on scroll-up). */
-const CALL_PAGE_SIZE = 20;
+/** 详情页时间线的 feed 首屏条数与每次往上翻的条数（调用 + 回复，最新的在下面）。 */
+const FEED_LIMIT = 50;
+
+/** 会话 feed 里的 state（与守护进程 daemon.ts 的 state provider 一致）。 */
+interface FeedState {
+  name: string | null;
+  status: string;
+  link: SessionLink;
+  connected: boolean;
+  target: { targetId: string; site: string; label: string; open: boolean; ready: boolean | null; busy: boolean | null; draft: boolean | null } | null;
+}
+type SidebarFeed = SessionFeed<CallRow, CourierMessageView, FeedState>;
+type SidebarFeedSnapshot = FeedSnapshot<CallRow, CourierMessageView, FeedState>;
+interface FeedSlot { id: string; feed: SidebarFeed; off: () => void; last: SidebarFeedSnapshot }
+type FeedEvent = Parameters<Parameters<FeedEnv['subscribe']>[0]>[0];
+type CourierPane = { connected: boolean; targets: Pick<CourierTargetView, 'targetId' | 'site' | 'label' | 'conversationKey' | 'open' | 'ready' | 'busy' | 'draft'>[]; messages: CourierMessageView[]; link: SessionLink; sites?: CourierSiteChoice[] };
+
+/** feed 的长轮询会挂起最多 wait 秒，请求超时按 (wait+10) 秒（默认 8 秒会把它掰断）。 */
+const feedTimeoutMs = (path: string): number => (Number(/[?&]wait=(\d+)/.exec(path)?.[1] ?? 0) + 10) * 1000;
+
+/** 调用与状态没变（元素引用都相同），只有回复消息有变化：流式输出时走轻量消息，不重绘整页调用。 */
+function onlyMessagesChanged(a: SidebarFeedSnapshot, b: SidebarFeedSnapshot): boolean {
+  if (a.state !== b.state || a.hasOlder !== b.hasOlder || a.loadingOlder !== b.loadingOlder || a.loaded !== b.loaded) return false;
+  if (a.calls.length !== b.calls.length || a.calls.some((c, i) => c !== b.calls[i])) return false;
+  const ids = new Set(b.messages.map((m) => m.id));
+  return a.messages.every((m) => ids.has(m.id));
+}
 
 /** Agent replies go to the webview as rendered Markdown (escaped; see markdown.ts), cached per text. */
 const mdCache = new Map<string, { text: string; html: string }>();
@@ -106,12 +142,12 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
 
   private mode: 'sessions' | 'calls' = 'sessions';
   private selectedId = '';
-  /** Detail timeline: loaded calls (see callWindow.ts); pageCalls = the same rows oldest first. */
-  private win: CallWindow<CallRow> = emptyWindow();
+  /** 选中会话的 feed（长轮询，见 sessionFeed.ts）：时间线、回复（含流式输出）、状态都来自它，进入详情页时开、离开时关。 */
+  private feed: FeedSlot | null = null;
+  /** 详情页已加载的调用（最旧的在前）：随 feed 快照更新，打开文件等操作按它查记录。 */
   private pageCalls: CallRow[] = [];
-  private olderBusy = false;
-  /** Live thread of the open session (reply text streams in); restarted by refresh when it drops. */
-  private chatStream: { id: string; ctl: AbortController } | null = null;
+  /** feed 所需的页面可见/隐藏事件（侧栏隐藏时不挂着长轮询）。 */
+  private readonly feedEvents = new Set<(event: FeedEvent) => void>();
   /** refresh 串行化：上一轮未结束时只标记重跑，快速翻页不会乱序覆盖。 */
   private refreshBusy = false;
   private refreshAgain = false;
@@ -124,7 +160,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   /** Chat page: Courier connection, web chats bound to the selected session, and its thread. */
   /** Session list: each session's web-chat link (paired sessions get 刷新网页 / 解除配对 in their menu). */
   private links: Record<string, SessionLink> = {};
-  private courier: { connected: boolean; targets: Pick<CourierTargetView, 'targetId' | 'site' | 'label' | 'conversationKey' | 'open' | 'ready' | 'busy' | 'draft'>[]; messages: CourierMessageView[]; link: SessionLink; sites?: CourierSiteChoice[] } = { connected: false, targets: [], messages: [], link: 'direct' };
+  /** 新建会话可选的站点（内置 + 在 Courier 里添加的）：只在 /courier 状态里，详情页刷新时读。 */
+  private courierSites: CourierSiteChoice[] | undefined;
   private webFlags: { busy: string[]; asking: string[] } = { busy: [], asking: [] };
   private handoff: PendingHandoff | null = null; // Never populated by polling; cleared on disposal.
   private navigationGeneration = 0;
@@ -161,14 +198,101 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (this.view !== view || this.disposed) return;
       void this.onMessage(m).catch(error => { if (this.view === view && !this.disposed) console.error('BlackHole: sidebar action failed', error); });
     });
+    // 侧栏隐藏/显示：feed 隐藏时中止挂起的请求，显示时用原 offset 立即拉一次
+    const visibility = view.onDidChangeVisibility?.(() => this.emitFeedEvent(view.visible ? 'show' : 'hide'));
     view.onDidDispose(() => {
       messages.dispose();
-      if (this.view === view) { this.view = undefined; this.handoff = null; this.viewGeneration++; this.refreshAgain = false; }
+      visibility?.dispose();
+      if (this.view === view) {
+        this.view = undefined; this.handoff = null; this.viewGeneration++; this.refreshAgain = false;
+        this.emitFeedEvent('hide');
+      }
     });
     view.webview.options = { enableScripts: true };
-    view.webview.html = this.html();
+    view.webview.html = this.html(view.webview);
+    this.emitFeedEvent('show');
     void this.refresh(true);
   }
+
+  private emitFeedEvent(event: FeedEvent): void {
+    for (const fn of [...this.feedEvents]) fn(event);
+  }
+
+  private feedEnv(): FeedEnv {
+    return {
+      now: () => Date.now(),
+      sleep: abortableSleep,
+      visible: () => this.view !== undefined && this.view.visible !== false,
+      subscribe: (cb) => {
+        this.feedEvents.add(cb);
+        return () => { this.feedEvents.delete(cb); };
+      },
+    };
+  }
+
+  /** 打开选中会话的 feed（先关掉上一个）。 */
+  private openFeed(id: string): void {
+    this.closeFeed(); // 同时清空 pageCalls
+    const feed: SidebarFeed = new SessionFeed({
+      sessionId: id,
+      limit: FEED_LIMIT,
+      fetchJson: (feedPath, signal) => this.api.feedJson(feedPath, signal, feedTimeoutMs(feedPath)),
+      env: this.feedEnv(),
+    });
+    const slot: FeedSlot = { id, feed, off: () => undefined, last: feed.snapshot() };
+    slot.off = feed.subscribe(() => this.onFeed(slot));
+    this.feed = slot;
+    feed.start();
+  }
+
+  private closeFeed(): void {
+    this.pageCalls = [];
+    const slot = this.feed;
+    if (!slot) return;
+    this.feed = null;
+    slot.off();
+    slot.feed.stop();
+  }
+
+  /** 刷新 feed：发送消息、停止、解除配对等操作后立即再读一次，不等长轮询。 */
+  private kickFeed(): void {
+    this.feed?.feed.kick();
+  }
+
+  /** feed 有变化：只有回复文本在变（流式输出）时发轻量消息，其他变化整页重绘。 */
+  private onFeed(slot: FeedSlot): void {
+    if (this.disposed || this.feed !== slot) return;
+    const prev = slot.last;
+    const next = slot.feed.snapshot();
+    slot.last = next;
+    if (this.mode !== 'calls' || this.selectedId !== slot.id) return;
+    this.pageCalls = next.calls;
+    if (!onlyMessagesChanged(prev, next)) { this.postUpdate(); return; }
+    const before = new Map(prev.messages.map((m) => [m.id, m]));
+    for (const m of next.messages) {
+      if (before.get(m.id) !== m) void this.post({ type: 'chatMsg', sessionId: slot.id, message: chatView(m) });
+    }
+  }
+
+  /** 当前详情页的 feed 快照（不在详情页或 feed 还没开时为 null）。 */
+  private feedSnapshot(): SidebarFeedSnapshot | null {
+    return this.mode === 'calls' && this.feed?.id === this.selectedId ? this.feed.feed.snapshot() : null;
+  }
+
+  /** 详情页的聊天状态：全部来自 feed 的 state 与回复（不再单独拉 /courier、/courier/messages）。 */
+  private get courier(): CourierPane {
+    const snap = this.feedSnapshot();
+    const st = snap?.state ?? null;
+    const t = st?.target ?? null;
+    return {
+      connected: st?.connected ?? false,
+      targets: t ? [{ targetId: t.targetId, site: t.site, label: t.label, conversationKey: null, open: t.open, ready: t.ready, busy: t.busy, draft: t.draft }] : [],
+      messages: snap?.messages ?? [],
+      link: st?.link ?? (this.selected()?.draft ? 'new' : 'direct'),
+      sites: this.courierSites,
+    };
+  }
+
 
   /** Whether inline approvals are actually visible, not merely retained in memory. */
   get visible(): boolean {
@@ -191,9 +315,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     this.previewGeneration++;
     this.mode = 'calls';
     this.selectedId = session.id;
-    this.win = emptyWindow();
-    this.pageCalls = [];
-    this.olderBusy = false;
+    this.openFeed(session.id);
     this.todos = [];
     this.todoGoal = undefined;
     this.todosUnavailable = false;
@@ -275,16 +397,13 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       const sel = this.sessions.find((s) => s.id === this.selectedId);
       if (!sel) {
         this.mode = 'sessions'; // selected session vanished
+        this.closeFeed();
         this.handoff = null;
       } else {
         const detailCurrent = () => current() && this.mode === 'calls' && this.selectedId === sel.id;
         let todosUnavailable = false;
-        const head = headRequest(this.win, CALL_PAGE_SIZE);
-        if (head.restart) this.win = emptyWindow(); // too many new calls since the anchor: start over at the newest
-        const anchor = this.win.anchor;
-        let feedOk = true;
-        const [feed, todoBoard, courier, thread] = await Promise.all([
-          this.api.callsPage(sel.id, 0, 0, head.limit).catch(() => { feedOk = false; return failed({ calls: [] as CallRow[], total: 0, window_total: 0, max_seq: 0 }); }),
+        // 时间线、回复、聊天状态都由 feed 自己推送（onFeed），这里只拉任务清单和新建会话可选的站点。
+        const [todoBoard, courier] = await Promise.all([
           // daemon 不可达即清空可见清单，但明确标记为“暂不可用”，避免 webview
           // 把一次 transport failure 当成真实空 board 并丢掉当前详情页的完成态上下文。
           this.api.todos(sel.id).catch(() => {
@@ -292,28 +411,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
             return failed({ items: [] as TodoItem[], contract: undefined, updated_at: 0 });
           }),
           // Chat state is optional: any failure (even a synchronous one) must not block the call page.
-          Promise.resolve().then(() => this.api.courierStatus(true)).catch(() => ({ connected: false, targets: [] as CourierTargetView[] })),
-          Promise.resolve().then(() => this.api.courierMessages(sel.id)).catch(() => ({ messages: [] as CourierMessageView[] })),
+          Promise.resolve().then(() => this.api.courierStatus(true)).catch(() => null),
         ]);
         if (!detailCurrent()) { this.refreshAgain = true; return; }
-        // A daemon failure keeps what is loaded; a restart that raced an older-page load is dropped.
-        if (feedOk && this.win.anchor === anchor) {
-          this.win = applyHead(this.win, feed);
-          this.pageCalls = rowsOf(this.win);
-        }
         this.todos = todoBoard.items;
         this.todoGoal = todoBoard.contract?.goal;
         this.todosUnavailable = todosUnavailable;
-        this.courier = {
-          connected: courier.connected,
-          targets: courier.targets.filter((t) => t.sessionId === sel.id)
-            .map((t) => ({ targetId: t.targetId, site: t.site, label: t.label, conversationKey: t.conversationKey, open: t.open, ready: t.ready, busy: t.busy, draft: t.draft })),
-          messages: thread.messages,
-          link: ('links' in courier ? courier.links?.[sel.id] : undefined) ?? (sel.draft ? 'new' : courier.targets.some((t) => t.sessionId === sel.id) ? 'paired' : 'direct'),
-          // New-chat sites (builtins + sites added in Courier); an older daemon sends none.
-          sites: 'sites' in courier && Array.isArray(courier.sites) ? courier.sites : undefined,
-        };
-
+        // New-chat sites (builtins + sites added in Courier); an older daemon sends none.
+        if (courier && 'sites' in courier && Array.isArray(courier.sites)) this.courierSites = courier.sites;
       }
     }
 
@@ -330,61 +435,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     }
 
     if (complete) this.lastEpoch = nextEpoch;
-    this.ensureChatStream(this.mode === 'calls' ? this.selectedId : null);
     this.postUpdate();
   }
 
-  /** Keeps one live thread stream for the open session; null stops it. */
-  private ensureChatStream(id: string | null): void {
-    if (this.chatStream?.id === id) return;
-    this.chatStream?.ctl.abort();
-    this.chatStream = null;
-    if (!id || this.disposed) return;
-    const s = { id, ctl: new AbortController() };
-    this.chatStream = s;
-    void Promise.resolve()
-      .then(() => this.api.courierStream(id, (m) => this.onChatMessage(id, m), s.ctl.signal))
-      .catch(() => { /* daemon restarting or an older daemon without the stream: polling still updates */ })
-      .finally(() => {
-        if (this.chatStream !== s) return;
-        this.chatStream = null;
-        if (s.ctl.signal.aborted) return;
-        setTimeout(() => { if (!this.disposed && this.mode === 'calls' && this.selectedId === id && !this.chatStream) this.ensureChatStream(id); }, 3000).unref?.();
-      });
-  }
-
-  private onChatMessage(id: string, m: CourierMessageView): void {
-    if (this.mode !== 'calls' || this.selectedId !== id || !m || typeof m.id !== 'string') return;
-    const list = this.courier.messages;
-    const i = list.findIndex((x) => x.id === m.id);
-    if (i >= 0) list[i] = m;
-    else list.push(m);
-    void this.post({ type: 'chatMsg', sessionId: id, message: chatView(m) });
-    // A finished reply ends the web AI's turn: re-read the chat state so 正在生成 clears without waiting for a poll.
-    if (m.kind === 'agent' && m.status === 'reply') setTimeout(() => { if (!this.disposed && this.selectedId === id) void this.refresh(); }, 2000).unref?.();
-  }
-
-
-
-  /** Scroll-up in the detail timeline: read the next older page under the frozen anchor. */
+  /** 详情页往上翻：由 feed 读下一页更早的调用与回复（/history），状态变化经 onFeed 推给页面。 */
   private async loadOlder(): Promise<void> {
-    const sel = this.mode === 'calls' ? this.selected() : undefined;
-    if (!sel || this.olderBusy || !hasOlder(this.win)) return;
-    const { anchor, older } = this.win;
-    this.olderBusy = true;
-    this.postUpdate();
-    try {
-      const page = await this.api.callsPage(sel.id, older + 1, anchor, CALL_PAGE_SIZE);
-      if (this.mode === 'calls' && this.selectedId === sel.id && this.win.anchor === anchor && this.win.older === older) {
-        this.win = applyOlder(this.win, page);
-        this.pageCalls = rowsOf(this.win);
-      }
-    } catch {
-      // daemon unreachable: keep what is loaded; the next scroll-up retries
-    } finally {
-      this.olderBusy = false;
-      if (!this.disposed) this.postUpdate();
-    }
+    const slot = this.mode === 'calls' ? this.feed : null;
+    if (!slot || slot.id !== this.selectedId) return;
+    await slot.feed.loadOlder(); // 失败时保留已加载的内容，下次再往上翻重试
   }
 
   private selected(): SessionInfo | undefined {
@@ -400,6 +458,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
 
   private postUpdate(): void {
     if (!this.view || this.disposed) return;
+    const snap = this.feedSnapshot();
+    const courier = this.mode === 'calls' ? this.courier : undefined;
     void this.post({
       type: 'update',
       mode: this.mode,
@@ -435,13 +495,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
               };
             })
           : [],
-      callTotal: this.mode === 'calls' ? this.win.total : 0,
-      hasOlder: this.mode === 'calls' ? hasOlder(this.win) : false,
-      olderBusy: this.mode === 'calls' && this.olderBusy,
+      // 「会话开始 · 共 N 次调用」只在已翻到头（没有更早的）时显示，这时已加载的调用数就是总数
+      callTotal: snap && !snap.hasOlder ? snap.calls.length : 0,
+      hasOlder: snap?.hasOlder ?? false,
+      olderBusy: snap?.loadingOlder ?? false,
       todos: this.mode === 'calls' ? this.todos : [],
       goal: this.mode === 'calls' ? this.todoGoal : undefined,
       todosUnavailable: this.mode === 'calls' ? this.todosUnavailable : false,
-      courier: this.mode === 'calls' ? { ...this.courier, messages: messagesInWindow(this.win, this.courier.messages).map(chatView) } : undefined,
+      courier: courier ? { ...courier, messages: courier.messages.map(chatView) } : undefined,
       links: this.mode === 'sessions' ? this.links : undefined,
       web: this.mode === 'sessions' ? this.webFlags : undefined,
       handoffSynchronized: this.handoffSynchronized,
@@ -633,6 +694,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         this.navigationGeneration++;
         this.previewGeneration++;
         this.mode = 'sessions';
+        this.closeFeed();
         this.handoff = null;
         // 模式切换必须立即重绘：epoch 门控会因"没有新变更"跳过本轮刷新，
         // 返回列表就永远停在详情页
@@ -727,6 +789,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const site = typeof m.site === 'string' && /^(arena|chatgpt|c-[a-z0-9-]{1,30})$/.test(m.site) ? m.site : 'chatgpt';
         const r = await this.hooks.chatSend(s, targetId, m.text, site);
         void this.post({ type: 'chatResult', id: s.id, ok: r.ok, sent: r.sent, message: r.message });
+        this.kickFeed();
         void this.refresh();
         return;
       }
@@ -736,6 +799,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const targetId = typeof m.targetId === 'string' ? m.targetId : null;
         const r = await this.hooks.chatStop(s, targetId);
         void this.post({ type: 'chatStopResult', id: s.id, ok: r.ok, code: r.code, message: r.message });
+        this.kickFeed();
         void this.refresh();
         return;
       }
@@ -743,6 +807,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const s = m.id ? this.sessions.find((x) => x.id === m.id) : undefined;
         if (!s) return;
         await this.hooks.unpair(s);
+        this.kickFeed();
         void this.refresh(true);
         return;
       }
@@ -751,6 +816,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         if (!s) return;
         const r = await this.hooks.chatCard(s, typeof m.targetId === 'string' ? m.targetId : null);
         void this.post({ type: 'chatCardResult', id: s.id, ok: r.ok, message: r.message });
+        this.kickFeed();
         void this.refresh();
         return;
       }
@@ -758,6 +824,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const s = m.id ? this.sessions.find((x) => x.id === m.id) : undefined;
         if (!s) return;
         await this.hooks.chatReload(s);
+        this.kickFeed();
         void this.refresh();
         return;
       }
@@ -765,6 +832,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const s = m.id ? this.sessions.find((x) => x.id === m.id) : undefined;
         if (!s) return;
         await this.hooks.rename(s);
+        this.kickFeed();
         void this.refresh(true);
         return;
       }
@@ -781,9 +849,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     }
   }
 
-  private html(): string {
+  private html(webview?: WebviewView['webview']): string {
     const nonce = Array.from({ length: 16 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-    const csp = `default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
+    // Mermaid: reuse the Web build's copy shipped with the daemon (dist/daemon/web/assets/mermaid-<hash>.min.js).
+    const mermaidFile = webview?.asWebviewUri ? mermaidAsset() : '';
+    const mermaidSrc = mermaidFile ? webview!.asWebviewUri(Uri.file(mermaidFile)).toString() : '';
+    const scriptSrc = webview?.cspSource ? ` ${webview.cspSource}` : '';
+    const mermaidConfigs = JSON.stringify({ dark: mermaidConfig(true), default: mermaidConfig(false) });
+    const csp = `default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'${scriptSrc};`;
     return `<!DOCTYPE html>
 <html lang="zh-cn">
 <head>
@@ -1044,6 +1117,20 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .md-copy:hover, .md-copy:focus-visible { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
   .md-copy:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
   .md-copy.done { color: var(--vscode-testing-iconPassed, var(--vscode-charts-green)); }
+  .md-diagram { overflow-x: auto; padding: 6px 30px 6px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+  .md-diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+  div.md-mermaid[data-mm="ok"] > pre { display: none; }
+  .md-diagram { cursor: zoom-in; }
+  .md-diagram:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+  .mm-zoom { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); outline: none; }
+  .mm-zoom-bar { display: flex; justify-content: flex-end; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--vscode-panel-border); }
+  .mm-zoom-bar button { min-width: 28px; height: 24px; padding: 0 6px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; background: transparent; color: var(--vscode-foreground); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+  .mm-zoom-bar button:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .mm-zoom-bar button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+  .mm-zoom-stage { position: relative; flex: 1; overflow: hidden; touch-action: none; cursor: grab; }
+  .mm-zoom-stage:active { cursor: grabbing; }
+  .mm-zoom-pic { position: absolute; top: 0; left: 0; transform-origin: 0 0; user-select: none; }
+  .mm-zoom-pic svg { display: block; max-width: none; }
   .md blockquote { padding-left: 10px; border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vscode-panel-border)); color: var(--vscode-descriptionForeground); }
   .md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 12px; }
   .md th, .md td { border: 1px solid var(--vscode-panel-border); padding: 3px 8px; text-align: left; }
@@ -2035,6 +2122,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const body = document.createElement('div');
         body.className = 'msg-body md';
         body.innerHTML = m.html || '';
+        renderDiagrams(body);
         el.append(head, body);
         if (final && m.status !== 'streaming') el.append(msgCopy(m.text, 'agent-copy'));
         return el;
@@ -2062,6 +2150,156 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       el.append(msgCopy(m.text, 'user-copy'));
       return el;
     }
+    // Mermaid diagrams (markdown.ts marks closed mermaid fences .md-mermaid): mermaid.min.js loads on
+    // first use; SVGs are cached by theme + source so re-rendered cards do not flicker; a diagram that
+    // fails to parse keeps its code block.
+    const MERMAID_SRC = '${mermaidSrc}';
+    const MERMAID_CONFIG = ${mermaidConfigs};
+    const mmCache = new Map();
+    let mmLoad = null, mmTheme = '', mmSeq = 0;
+    function mmThemeNow() {
+      const c = document.body.classList;
+      return c.contains('vscode-dark') || (c.contains('vscode-high-contrast') && !c.contains('vscode-high-contrast-light')) ? 'dark' : 'default';
+    }
+    function mmApply(block, svg) {
+      if (!svg) { block.dataset.mm = 'fail'; return; }
+      let fig = block.querySelector(':scope > .md-diagram');
+      if (!fig) { fig = document.createElement('div'); fig.className = 'md-diagram'; fig.tabIndex = 0; fig.title = '点击放大'; fig.setAttribute('role', 'button'); block.insertBefore(fig, block.querySelector(':scope > pre')); }
+      fig.innerHTML = svg;
+      block.dataset.mm = 'ok';
+    }
+    function loadMermaid() {
+      if (!mmLoad) mmLoad = new Promise((resolve, reject) => {
+        const sc = document.createElement('script');
+        sc.src = MERMAID_SRC;
+        sc.nonce = '${nonce}';
+        sc.onload = () => (window.mermaid ? resolve(window.mermaid) : reject(new Error('mermaid')));
+        sc.onerror = () => reject(new Error('mermaid'));
+        document.head.append(sc);
+      }).catch((err) => { mmLoad = null; throw err; });
+      return mmLoad;
+    }
+    function renderDiagrams(root) {
+      if (!MERMAID_SRC || !root) return;
+      const t = mmThemeNow();
+      const pending = [];
+      root.querySelectorAll('.md-mermaid:not([data-mm])').forEach((block) => {
+        const code = block.querySelector('pre code');
+        const src = code ? code.textContent || '' : '';
+        const key = t + '|' + src;
+        if (mmCache.has(key)) mmApply(block, mmCache.get(key));
+        else { block.dataset.mm = 'wait'; pending.push({ block, src, key }); }
+      });
+      if (!pending.length) return;
+      loadMermaid().then(async (mermaid) => {
+        for (const p of pending) {
+          let svg = mmCache.get(p.key);
+          if (svg === undefined) {
+            if (mmTheme !== t) { mermaid.initialize(MERMAID_CONFIG[t]); mmTheme = t; }
+            const id = 'bh-mm-' + (++mmSeq);
+            try { svg = (await mermaid.render(id, p.src)).svg; } catch { svg = ''; }
+            const scratch = document.getElementById('d' + id);
+            if (scratch) scratch.remove(); // left behind on a parse error
+            if (mmCache.size >= 200) mmCache.delete(mmCache.keys().next().value);
+            mmCache.set(p.key, svg);
+          }
+          mmApply(p.block, svg);
+        }
+      }).catch(() => { pending.forEach((p) => { delete p.block.dataset.mm; }); });
+    }
+    // Diagram zoom viewer: click a diagram; wheel / pinch zoom, drag pans, double-click toggles fit / 2x,
+    // keys + - 0 Esc. Same behaviour as the Web console (diagrams.ts).
+    function openZoom(svgEl) {
+      const vb = (svgEl.getAttribute('viewBox') || '').split(/[ ,]+/).map(Number);
+      const w = vb.length === 4 && vb[2] > 0 ? vb[2] : (svgEl.getBoundingClientRect().width || 1);
+      const h = vb.length === 4 && vb[3] > 0 ? vb[3] : (svgEl.getBoundingClientRect().height || 1);
+      const pic = svgEl.cloneNode(true);
+      pic.removeAttribute('style');
+      pic.setAttribute('width', String(w));
+      pic.setAttribute('height', String(h));
+      const overlay = document.createElement('div');
+      overlay.className = 'mm-zoom';
+      overlay.tabIndex = -1;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-label', 'Mermaid 图');
+      const bar = document.createElement('div');
+      bar.className = 'mm-zoom-bar';
+      const button = (label, title) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label; b.title = title; b.setAttribute('aria-label', title);
+        bar.append(b);
+        return b;
+      };
+      const out = button('−', '缩小'), pct = button('100%', '适应窗口'), zin = button('+', '放大'), close = button('×', '关闭');
+      const stage = document.createElement('div');
+      stage.className = 'mm-zoom-stage';
+      const holder = document.createElement('div');
+      holder.className = 'mm-zoom-pic';
+      holder.append(pic);
+      stage.append(holder);
+      overlay.append(bar, stage);
+      let scale = 1, x = 0, y = 0;
+      const draw = () => { holder.style.transform = 'translate(' + x + 'px, ' + y + 'px) scale(' + scale + ')'; pct.textContent = Math.round(scale * 100) + '%'; };
+      const fitScale = () => { const r = stage.getBoundingClientRect(); return Math.min((r.width - 24) / w, (r.height - 24) / h, 2); };
+      const fit = () => { const r = stage.getBoundingClientRect(); scale = fitScale(); x = (r.width - w * scale) / 2; y = (r.height - h * scale) / 2; draw(); };
+      const zoomAt = (next, px, py) => { const s = Math.min(8, Math.max(0.1, next)); x = px - (px - x) * s / scale; y = py - (py - y) * s / scale; scale = s; draw(); };
+      const center = () => { const r = stage.getBoundingClientRect(); return [r.width / 2, r.height / 2]; };
+      const local = (e) => { const r = stage.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+      stage.addEventListener('wheel', (e) => { e.preventDefault(); const p = local(e); zoomAt(scale * Math.exp(-e.deltaY * 0.0015), p[0], p[1]); }, { passive: false });
+      stage.addEventListener('dblclick', (e) => { const p = local(e); const f = fitScale(); if (Math.abs(scale - f) < 0.01) zoomAt(f * 2, p[0], p[1]); else fit(); });
+      const pointers = new Map();
+      let pinch = 0;
+      const spread = () => { const v = Array.from(pointers.values()); return [Math.hypot(v[0][0] - v[1][0], v[0][1] - v[1][1]), (v[0][0] + v[1][0]) / 2, (v[0][1] + v[1][1]) / 2]; };
+      stage.addEventListener('pointerdown', (e) => { stage.setPointerCapture(e.pointerId); pointers.set(e.pointerId, local(e)); if (pointers.size === 2) pinch = spread()[0]; });
+      stage.addEventListener('pointermove', (e) => {
+        const prev = pointers.get(e.pointerId);
+        if (!prev) return;
+        const cur = local(e);
+        pointers.set(e.pointerId, cur);
+        if (pointers.size === 1) { x += cur[0] - prev[0]; y += cur[1] - prev[1]; draw(); return; }
+        const s = spread();
+        if (pinch > 0 && s[0] > 0) zoomAt(scale * s[0] / pinch, s[1], s[2]);
+        pinch = s[0];
+      });
+      const lift = (e) => { pointers.delete(e.pointerId); pinch = 0; };
+      stage.addEventListener('pointerup', lift);
+      stage.addEventListener('pointercancel', lift);
+      const prevFocus = document.activeElement;
+      const shut = () => { overlay.remove(); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
+      out.addEventListener('click', () => { const c = center(); zoomAt(scale / 1.25, c[0], c[1]); });
+      zin.addEventListener('click', () => { const c = center(); zoomAt(scale * 1.25, c[0], c[1]); });
+      pct.addEventListener('click', fit);
+      close.addEventListener('click', shut);
+      overlay.addEventListener('keydown', (e) => {
+        const c = center();
+        if (e.key === 'Escape') shut();
+        else if (e.key === '+' || e.key === '=') zoomAt(scale * 1.25, c[0], c[1]);
+        else if (e.key === '-') zoomAt(scale / 1.25, c[0], c[1]);
+        else if (e.key === '0') fit();
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      document.body.append(overlay);
+      overlay.focus();
+      fit();
+    }
+    function zoomTarget(t) {
+      const fig = t && t.closest ? t.closest('.md-diagram') : null;
+      return fig ? fig.querySelector('svg') : null;
+    }
+    document.addEventListener('click', (e) => { const svg = zoomTarget(e.target); if (svg) openZoom(svg); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const svg = zoomTarget(e.target);
+      if (svg) { e.preventDefault(); openZoom(svg); }
+    });
+    // VS Code theme switch (body class): redraw the diagrams in the new theme.
+    new MutationObserver(() => {
+      if (!mmTheme || mmThemeNow() === mmTheme) return;
+      document.querySelectorAll('.md-mermaid[data-mm="ok"], .md-mermaid[data-mm="fail"]').forEach((b) => { delete b.dataset.mm; });
+      renderDiagrams(document);
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
     // Code-block copy button (markdown.ts): the extension writes the clipboard.
     document.addEventListener('click', (e) => {
       const btn = e.target.closest && e.target.closest('.md-copy');
@@ -2559,8 +2797,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     this.view = undefined;
     this.viewGeneration++;
     this.refreshAgain = false;
-    this.chatStream?.ctl.abort();
-    this.chatStream = null;
+    this.closeFeed();
+    this.feedEvents.clear();
     for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
   }
 }

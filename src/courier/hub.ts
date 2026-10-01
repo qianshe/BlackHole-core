@@ -18,6 +18,8 @@ const TARGET_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HELLO_MS = 5000;
 const REFRESH_MS = 3000;
+/** 有绑定的聊天在生成时，隔多久主动向 Courier 要一次最新目标状态（防 busy 卡住）。 */
+const BUSY_REFRESH_MS = 7500;
 const MAX_PENDING = 8;
 /** Images pasted into a composer: uploaded first (POST /attachments), then named by id in /send. */
 export const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -141,6 +143,8 @@ export class CourierHub {
   private readonly waiters = new Map<string, Waiter>();
   /** Set by close(): a retiring daemon must not take Courier back while it shuts down. */
   private closed = false;
+  /** busy 兔底循环的定时器（见 syncBusyLoop）。 */
+  private busyTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: {
     sendTimeoutMs?: number;
@@ -180,6 +184,13 @@ export class CourierHub {
      * session's 60 s activity window so 「运行中」 ends with the reply, not up to a minute later.
      */
     onIdle?: (sessionId: string) => void;
+    /**
+     * 会话 state（配对、Courier 目标、busy）可能变了：daemon 据此刷新 feed 的 state。多次通知无害，
+     * 由接收方比较快照后决定要不要取新 rev。
+     */
+    onStateChange?: (sessionId: string) => void;
+    /** busy 兔底循环的间隔（默认 7500ms）。 */
+    busyRefreshMs?: number;
   } = {}) {}
 
   /** UI state of one session (see SessionLink). */
@@ -196,6 +207,50 @@ export class CourierHub {
     return Object.fromEntries(this.liveSessions().map((s) => [s.id, this.link(s.id)]));
   }
 
+  /** 回复线程的存储（feed/history 处理函数直接查它）。 */
+  get messageStore(): CourierMessages | undefined {
+    return this.opts.messages;
+  }
+
+  /** 绑定了会话的聊天目标所属的会话 id。 */
+  private boundSessions(): string[] {
+    return this.targets.map((t) => t.sessionId).filter((id): id is string => !!id);
+  }
+
+  /** 该会话绑定的聊天目标，没有则 null（feed 的 state 用）。 */
+  targetOf(sessionId: string): CourierTarget | null {
+    return this.targets.find((t) => t.sessionId === sessionId) ?? null;
+  }
+
+  /** 通知 daemon：这些会话的 state 可能变了。回调抛错不影响 hub。 */
+  private touch(ids: Iterable<string>): void {
+    const notify = this.opts.onStateChange;
+    if (!notify) return;
+    for (const id of new Set(ids)) {
+      try { notify(id); } catch { /* 只是通知 */ }
+    }
+  }
+
+  /**
+   * busy 兔底（session-feed 计划 §8 R11）：Courier 已连接且有绑定的聊天在生成时，定时向它要一次
+   * 最新目标状态。否则 busy 的翻转只靠 Courier 主动推送，一旦丢了就会一直卡在「生成中」。
+   * 没有 busy 目标、断连或关闭即停。
+   */
+  private syncBusyLoop(): void {
+    const needed = !this.closed && this.conn !== null && this.targets.some((t) => t.sessionId && t.busy === true);
+    if (!needed) { this.stopBusyLoop(); return; }
+    if (this.busyTimer) return;
+    this.busyTimer = setInterval(() => {
+      if (!this.conn) { this.stopBusyLoop(); return; }
+      void this.request({ type: 'targets.list' }, REFRESH_MS).catch(() => undefined);
+    }, this.opts.busyRefreshMs ?? BUSY_REFRESH_MS);
+    this.busyTimer.unref();
+  }
+
+  private stopBusyLoop(): void {
+    if (this.busyTimer) { clearInterval(this.busyTimer); this.busyTimer = null; }
+  }
+
   /** Cut the pairing of a session (any UI). The session stays; it only receives from now on. */
   unpair(sessionId: unknown): { ok: boolean; message: string } {
     if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) return { ok: false, message: '缺少 BlackHole 会话' };
@@ -208,6 +263,7 @@ export class CourierHub {
     this.conn?.send(JSON.stringify({ type: 'bind.clear', sessionId, reason: 'unpaired' }));
     this.opts.log?.(`courier: unpaired ${sessionId}`);
     this.opts.onChange?.();
+    this.touch([sessionId]);
     return { ok: true, message: '已解除配对' };
   }
 
@@ -232,6 +288,7 @@ export class CourierHub {
       this.opts.log?.(`courier: forgot ended session ${sessionId}`);
       this.opts.onChange?.();
     }
+    this.touch([sessionId]);
   }
 
   /** Courier's bindings are the pairing truth, except ones the user cut (Courier is told again). */
@@ -333,7 +390,11 @@ export class CourierHub {
       this.conn = conn;
       this.version = str(m.version, 32);
       this.since = Date.now();
+      const touched = this.boundSessions();
       this.targets = [];
+      // Courier 连上了：所有存活会话的 state.connected 都可能变（草稿、还没绑定的会话也要知道）
+      this.touch([...touched, ...this.liveSessions().map((s) => s.id)]);
+      this.syncBusyLoop();
       if (old) { this.settleAll('courier_replaced'); old.close(1000); }
       conn.send(JSON.stringify({ type: 'hello.ok', protocol: COURIER_PROTOCOL, ...(this.opts.sites ? { sites: this.opts.sites.list() } : {}), ...(this.opts.access ? { access: (this.lastAccess = this.accessState()) } : {}) }));
       this.opts.log?.(`courier: connected (v${this.version ?? '?'})`);
@@ -345,7 +406,11 @@ export class CourierHub {
       this.conn = null;
       this.version = null;
       this.since = null;
+      const touched = this.boundSessions();
       this.targets = [];
+      this.syncBusyLoop();
+      // 断连立即刷新 state：曾绑定的会话让 busy 立刻清除（不依赖 busy 兔底循环），所有存活会话的 connected 变为 false
+      this.touch([...touched, ...this.liveSessions().map((s) => s.id)]);
       this.settleAll('courier_offline');
       this.opts.messages?.finishStreaming();
       this.opts.log?.('courier: disconnected');
@@ -357,6 +422,7 @@ export class CourierHub {
       case 'targets':
         {
           const before = JSON.stringify(this.targets);
+          const touched = this.boundSessions();
           const wasBusy = new Set(this.targets.filter((t) => t.busy === true && t.sessionId).map((t) => t.targetId));
           this.targets = cleanTargets(m.targets);
           const idle = new Set(this.targets.filter((t) => t.sessionId && t.busy === false && wasBusy.has(t.targetId)).map((t) => t.sessionId!));
@@ -364,6 +430,9 @@ export class CourierHub {
           this.syncPairs();
           // UIs that skip polls while nothing changed must still see open/busy/binding changes.
           if (JSON.stringify(this.targets) !== before) this.opts.onChange?.();
+          // 旧、新两份绑定的会话都要刷新 state；快照没变时接收方不会取新 rev
+          this.touch([...touched, ...this.boundSessions()]);
+          this.syncBusyLoop();
         }
         if (typeof m.id === 'string') this.settle(m.id, m);
         return;
@@ -386,6 +455,7 @@ export class CourierHub {
         if (sid && this.liveSessions().some((x) => x.id === sid)) {
           this.opts.onStarted?.(sid); // a draft picked in Courier is kept for real
           this.opts.pairs?.set(sid, 'paired', str(m.site, 32), str(m.conversationKey, 128));
+          this.touch([sid]);
         }
         return;
       }
@@ -448,12 +518,9 @@ export class CourierHub {
   private asking(): string[] {
     const out: string[] = [];
     for (const s of this.liveSessions()) {
-      const list = this.opts.messages?.list(s.id) ?? [];
-      for (let i = list.length - 1; i >= 0; i--) {
-        const m = list[i]!;
-        if (m.kind === 'user') break;
-        if (m.question) { if (!m.question.answered) out.push(s.id); break; }
-      }
+      // 只看最近一条「用户消息或带提问的消息」，不读整个会话：是带未答问题的 agent 消息才算在等回答
+      const m = this.opts.messages?.latestTurnMarker(s.id);
+      if (m && m.kind !== 'user' && m.question && !m.question.answered) out.push(s.id);
     }
     return out;
   }
@@ -699,7 +766,7 @@ export class CourierHub {
 
   close(): void {
     this.closed = true;
-    this.opts.messages?.flush();
+    this.stopBusyLoop();
     this.settleAll('courier_offline');
     this.conn?.close(1001);
     this.conn = null;

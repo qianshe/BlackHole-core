@@ -234,6 +234,21 @@ select option, select optgroup { background-color: var(--surface); color: var(--
    horizontally scrolling <pre>. Shared by the console and the phone page. */
 div.md-code { position: relative; margin: 0 0 10px; }
 div.md-code:last-child { margin-bottom: 0; }
+/* Mermaid (diagrams.ts): the drawing replaces the source; the copy button still copies the source. */
+.md-diagram { overflow-x: auto; padding: 8px 34px 8px 8px; border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; }
+.md-diagram img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+div.md-mermaid[data-mm="ok"] > pre { display: none; }
+.md-diagram { cursor: zoom-in; }
+.md-diagram:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Zoom viewer (diagrams.ts) */
+.mm-zoom { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; background: var(--bg); outline: none; }
+.mm-zoom-bar { display: flex; justify-content: flex-end; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.mm-zoom-bar button { min-width: 32px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+.mm-zoom-bar button:hover { border-color: var(--border-strong); }
+.mm-zoom-bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mm-zoom-stage { position: relative; flex: 1; overflow: hidden; touch-action: none; cursor: grab; }
+.mm-zoom-stage:active { cursor: grabbing; }
+.mm-zoom-stage img { position: absolute; top: 0; left: 0; max-width: none; transform-origin: 0 0; user-select: none; }
 div.md-code > pre { margin: 0; }
 div.md-code > pre[data-lang], div.md-code > pre { padding-right: 34px; }
 .md-copy { position: absolute; top: 4px; right: 4px; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; opacity: .55; cursor: pointer; }

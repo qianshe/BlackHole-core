@@ -1,7 +1,8 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'node:crypto';
 import { parseBuildArgs, buildDefines, daemonBuildDefines } from './build-config.mjs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
@@ -271,6 +272,10 @@ if (watch) {
   await esbuild.build(supervisorOptions);
   const writeCloudBuild = () => writeFileSync('dist/cloud-build.json', JSON.stringify({ ...cloudBuild, extensionSha256: createHash('sha256').update(readFileSync('dist/extension.js')).digest('hex'), daemonSha256: createHash('sha256').update(readFileSync('dist/daemon/cli.js')).digest('hex'), processSupervisorSha256: createHash('sha256').update(readFileSync('dist/daemon/process-supervisor.cjs')).digest('hex') }, null, 2) + '\n');
   copyAsset('../../client/bh.py', 'dist/daemon/bh.py');
+  // Mermaid: the sidebar reuses the Web build's copy (dist/daemon/web/assets/mermaid-<hash>.min.js,
+  // copied below); only the license is added here.
+  const mermaidDir = dirname(createRequire(import.meta.url).resolve('mermaid/package.json'));
+  copyAsset(join(mermaidDir, 'LICENSE'), 'dist/mermaid-LICENSE');
   // Local Web page (packages/web build) is served by the daemon from dist/daemon/web.
   rmSync('dist/daemon/web', { recursive: true, force: true });
   if (existsSync('../web/dist/index.html')) {

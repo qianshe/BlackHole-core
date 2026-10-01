@@ -192,6 +192,28 @@ if (process.argv.includes('--fixture-daemon')) {
     const below = await (await web(`/sessions/${session.id}/calls?page=0&limit=1&anchor=${p0.max_seq - 1}`, { cookie })).json();
     assert.equal(below.calls[0].id, calls.calls[1].id, 'rows newer than the anchor are left out');
     assert.equal(below.window_total, p0.total - 1);
+
+    // 会话时间线（session-feed 计划）：feed（full + 增量 + 长轮询）与 history 在同一个登录后的 data 路由上。
+    const feed = await (await web(`/sessions/${session.id}/feed?limit=10`, { cookie })).json();
+    assert.equal(feed.full, true);
+    assert.equal(typeof feed.boot, 'string');
+    assert.ok(feed.offset > 0);
+    assert.deepEqual(feed.calls.map((c) => c.id), calls.calls.map((c) => c.id).reverse(), 'feed 的头部窗口与 /calls 同一批调用（时间线升序）');
+    assert.ok(feed.calls.every((c) => typeof c.created_at === 'string' && 'args' in c), 'Web 与 /calls 同样的投影字段');
+    assert.ok(!JSON.stringify(feed).includes(sid), 'recorded args drop the credential');
+    assert.equal(feed.state.name, 'local web fixture');
+    const hist = await (await web(`/sessions/${session.id}/history?limit=10`, { cookie })).json();
+    assert.deepEqual(hist.items.calls.map((c) => c.id), feed.calls.map((c) => c.id), 'history 从最新开始，与 feed 头部同一批');
+    assert.equal(hist.older, null);
+    assert.equal((await web(`/sessions/nope/feed`, { cookie })).status, 404);
+    // 增量：再调一次工具，带着 offset/boot 只拿到新的那一条；空闲时长轮询在 wait 秒后返回空
+    const quiet = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}&wait=1`, { cookie })).json();
+    assert.deepEqual([quiet.full, quiet.calls, quiet.messages], [false, [], []]);
+    await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+    const inc = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}`, { cookie })).json();
+    assert.equal(inc.full, false);
+    assert.ok(inc.calls.length >= 1 && inc.calls.every((c) => c.tool === 'guide'));
+    assert.ok(inc.offset > feed.offset);
     const todos = await (await web(`/sessions/${session.id}/todos`, { cookie })).json();
     assert.deepEqual(todos.items.map((i) => i.content), ['first step', 'second step']);
     assert.equal((await web('/sessions/nope/todos', { cookie })).status, 404);

@@ -2,7 +2,7 @@
   "name": "blackhole-vscode",
   "displayName": "BlackHole",
   "description": "Connect Web Agents to your local workspace, shell and MCP tools with explicit execution boundaries.",
-  "version": "0.3.188",
+  "version": "0.3.190",
   "private": true,
   "publisher": "qianshe",
   "icon": "media/icon.png",
@@ -318,6 +318,7 @@
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.25.0",
     "javascript-obfuscator": "4.1.1",
+    "mermaid": "11.17.2",
     "qrcode-generator": "1.4.4",
     "typescript": "^5.7.2"
   }

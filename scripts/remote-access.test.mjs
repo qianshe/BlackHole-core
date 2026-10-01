@@ -180,6 +180,19 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal(made.json.session.auto_approve, false);
     assert.equal((await phone('/sessions', { cookie: dev, method: 'POST', body: { project_id: 'missing' } })).status, 400);
 
+    // 会话时间线（session-feed）：手机通道的 feed/history 只给已配对的设备；有数据返回时服务端用 retry_ms=750 限速，不撞 remoteLimit。
+    const feedPath = `/sessions/${made.json.session.id}/feed`;
+    assert.equal((await phone(feedPath)).status, 401, 'unpaired: no timeline');
+    const phoneFeed = await phone(`${feedPath}?limit=20`, { cookie: dev });
+    assert.equal(phoneFeed.status, 200, phoneFeed.text);
+    assert.equal(phoneFeed.json.full, true);
+    assert.equal(phoneFeed.json.retry_ms, 750, 'phone channel with data: the server paces the next request');
+    assert.equal(typeof phoneFeed.json.state.status, 'string');
+    const phoneQuiet = await phone(`${feedPath}?offset=${phoneFeed.json.offset}&boot=${phoneFeed.json.boot}`, { cookie: dev });
+    assert.deepEqual([phoneQuiet.json.full, phoneQuiet.json.calls, phoneQuiet.json.messages, phoneQuiet.json.retry_ms], [false, [], [], 0], 'no data: no delay');
+    assert.equal((await phone(`/sessions/${made.json.session.id}/history?limit=10`, { cookie: dev })).status, 200);
+    assert.equal((await phone('/sessions/nope/feed', { cookie: dev })).status, 404);
+
     // Revoked sessions are gone from the phone list too.
     const revoked = await req(`/api/sessions/${made.json.session.id}/revoke`, { method: 'POST', body: {} });
     if (revoked.status === 200) assert.ok(!(await phone('/sessions', { cookie: dev })).json.sessions.some((x) => x.id === made.json.session.id), 'revoked session hidden');

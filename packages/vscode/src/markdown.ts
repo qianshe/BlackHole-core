@@ -4,12 +4,31 @@
  * limited to http(s) and mailto. Unclosed code fences (a reply still streaming) run to the end.
  *
  * Blocks: paragraphs, # headings, > quotes, - / 1. lists (one nesting level), ``` code,
- * | tables |, --- rules. Inline: `code`, **bold**, *italic*, ~~strike~~, [text](url), bare URLs.
+ * | tables |, --- rules. Closed ```mermaid fences get class md-mermaid (rendered by each UI). Inline: `code`, **bold**, *italic*, ~~strike~~, [text](url), bare URLs.
  */
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const escapeHtml = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c]!);
 
 const SAFE_URL = /^(?:https?:\/\/|mailto:)/i;
+
+/**
+ * Mermaid settings shared by the three UIs: the 'base' theme recoloured to the single blue accent
+ * (mermaid's default theme is lavender/purple), SVG text labels, strict security (no click handlers or
+ * HTML in labels), a system font so the size measured while rendering matches the drawn image.
+ */
+export function mermaidConfig(dark: boolean): Record<string, unknown> {
+  const palette = dark
+    ? { darkMode: true, background: '#181818', primaryColor: '#1d3349', primaryBorderColor: '#3794ff', primaryTextColor: '#d0d0d0', secondaryColor: '#2a2a2a', tertiaryColor: '#202020', lineColor: '#9d9d9d', textColor: '#d0d0d0', noteBkgColor: '#2a2a2a', noteTextColor: '#d0d0d0', noteBorderColor: '#414141' }
+    : { darkMode: false, background: '#ffffff', primaryColor: '#e5eff9', primaryBorderColor: '#005fb8', primaryTextColor: '#1f1f1f', secondaryColor: '#f0f0f0', tertiaryColor: '#f7f7f7', lineColor: '#616161', textColor: '#1f1f1f', noteBkgColor: '#f0f0f0', noteTextColor: '#1f1f1f', noteBorderColor: '#cecece' };
+  return {
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'base',
+    themeVariables: { ...palette, fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif', fontSize: '14px' },
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+  };
+}
 /** Copy icon of the code-block button (inline SVG: the webviews load nothing external). */
 const COPY_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>';
 
@@ -56,9 +75,12 @@ export function renderMarkdown(text: string): string {
       const body: string[] = [];
       for (i++; i < lines.length && !lines[i]!.trim().startsWith(fence[1]!); i++) body.push(lines[i]!);
       const lang = fence[2] ? ` data-lang="${fence[2]}"` : '';
+      // A closed ```mermaid fence is marked for diagram rendering; each UI swaps the drawing in and keeps
+      // this code block as the fallback. Unclosed (still streaming) fences stay plain code.
+      const diagram = /^mermaid$/i.test(fence[2] ?? '') && i < lines.length;
       // The copy button sits outside <pre> so it stays in the corner while the code scrolls sideways;
       // each UI copies the block's <code> text on click (.md-copy).
-      out.push(`<div class="md-code"><button type="button" class="md-copy" title="复制代码" aria-label="复制代码">${COPY_ICON}</button><pre${lang}><code>${body.join('\n')}</code></pre></div>`);
+      out.push(`<div class="md-code${diagram ? ' md-mermaid' : ''}"><button type="button" class="md-copy" title="复制代码" aria-label="复制代码">${COPY_ICON}</button><pre${lang}><code>${body.join('\n')}</code></pre></div>`);
       continue;
     }
     if (!line.trim()) { flush(); continue; }

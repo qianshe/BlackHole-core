@@ -476,6 +476,7 @@ export class ControlApi {
   }
   openaiTunnelDiagnostics(): Promise<Record<string, unknown>> { return this.req('GET', '/openai-tunnel/diagnostics', undefined, 8000); }
 
+
   private async req<T>(method: string, path: string, body?: unknown, timeoutMs = 8_000, port = this.cfg().port): Promise<T> {
     const res = await fetch(`${apiBase(port)}${path}`, {
       method,
@@ -631,6 +632,31 @@ export class ControlApi {
   /** 浏览分页：按锚定 seq 窗口取一页。anchor=0 表示未锚定，响应里的 max_seq 供首次锚定。 */
   callsPage(id: string, page: number, anchor: number, limit = 20): Promise<{ calls: CallRow[]; total: number; window_total?: number; max_seq: number }> {
     return this.req('GET', `/sessions/${encodeURIComponent(id)}/calls?anchor=${anchor}&page=${page}&limit=${limit}`);
+  }
+
+  /**
+   * 会话 feed / history 的 GET（session-feed 计划 §7）：`path` 从 /sessions/... 开始。长轮询会挂起最多 wait 秒，
+   * 所以超时要由调用方按 (wait+10) 秒传入（默认的 8 秒会把它掰断）；`signal` 中止时立即结束。
+   * HTTP 失败抛带数字 `status` 的错误，网络错误没有 status。
+   */
+  async feedJson(path: string, signal: AbortSignal, timeoutMs: number): Promise<unknown> {
+    const ctl = new AbortController();
+    const onAbort = (): void => ctl.abort();
+    if (signal.aborted) ctl.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${apiBase(this.cfg().port)}${path}`, { signal: ctl.signal });
+      const json: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const code = (json as { error?: unknown } | null)?.error;
+        throw Object.assign(new Error(typeof code === 'string' ? code : `HTTP ${res.status}`), { status: res.status });
+      }
+      return json;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 
   handoff(id: string): Promise<HandoffSnapshot> {

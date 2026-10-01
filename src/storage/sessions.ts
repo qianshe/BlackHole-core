@@ -44,8 +44,17 @@ export class SessionsRepo {
    * tell a delete from an archive — deleting a chat cannot be undone, archiving can.
    */
   onSessionEnded?: (id: string, reason?: 'revoked' | 'archived' | 'discarded') => void;
+  /**
+   * 名称或状态变化后调用（草稿也算），供 feed 重建会话 state。钩子在方法层而不是 SQL 层，否则会漏掉内存草稿分支；
+   * 回调抛错不影响调用方。草稿被丢弃走 onSessionEnded('discarded')，不在此通知。
+   */
+  onStateChange?: (id: string) => void;
 
   constructor(private db: DatabaseSync) {}
+
+  private notifyState(id: string): void {
+    try { this.onStateChange?.(id); } catch { /* 只是通知，不能打断已完成的写入 */ }
+  }
 
   private pruneDrafts(): void {
     const cut = now() - DRAFT_TTL_MS;
@@ -219,10 +228,13 @@ export class SessionsRepo {
     if (this.drafts.has(id)) {
       // Ending a draft just forgets it; pause/resume only make sense once it exists.
       if (status === 'revoked' || status === 'archived') { const d = this.draft(id)!; this.discardDraft(id); return { ...d, status }; }
-      return this.patchDraft(id, { status });
+      const patched = this.patchDraft(id, { status });
+      this.notifyState(id);
+      return patched;
     }
     this.db.prepare('UPDATE sessions SET status = ?, last_active_at = ? WHERE id = ?').run(status, now(), id);
     if (status === 'revoked' || status === 'archived') this.onSessionEnded?.(id, status);
+    this.notifyState(id);
     return this.get(id);
   }
 
@@ -244,8 +256,13 @@ export class SessionsRepo {
   /** Rename (null/empty clears it back to the default title). */
   setName(id: string, name: string | null): SessionRow | undefined {
     const value = name && name.trim() ? name.trim().slice(0, 500) : null;
-    if (this.drafts.has(id)) return this.patchDraft(id, { name: value });
+    if (this.drafts.has(id)) {
+      const patched = this.patchDraft(id, { name: value });
+      this.notifyState(id);
+      return patched;
+    }
     this.db.prepare('UPDATE sessions SET name = ? WHERE id = ?').run(value, id);
+    this.notifyState(id);
     return this.get(id);
   }
 

@@ -24,6 +24,8 @@ export interface DaemonDeps {
   daemonId?: string;
   /** Browser Courier extension connection (sends text into bound web chats). */
   courier?: import('./courier/hub.js').CourierHub;
+  /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
+  feed?: import('./storage/feedLog.js').FeedLog;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
