@@ -351,6 +351,11 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
       const tunnelHost = new URL(tunnelOrigin).hostname.toLowerCase();
       if (tunnelHost === hostname) return tunnelOrigin;
     }
+    // 经局域网直连监听器进来的请求：链接用对方实际访问的地址，而不是对方机器上的 127.0.0.1
+    const lanPort = deps.lan?.localPort();
+    if (lanPort && req.socket?.localPort === lanPort) {
+      try { return new URL(`http://${rawHost}`).origin; } catch { /* 地址不合法就走默认 */ }
+    }
     return fallback;
   };
   const buildPair = (req: Request): ProtocolPair => {

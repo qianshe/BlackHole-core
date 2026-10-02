@@ -32,6 +32,8 @@ export function patchSettings(deps: DaemonDeps, body: unknown, source: string, r
   if (r.changed.length > 0) deps.events.append(null, 'settings_changed', { source, keys: r.changed, revision: r.record.revision });
   // Turning phone access off ends every pairing now, not on the next request.
   if (r.changed.includes('remoteAccess') && !r.record.values.remoteAccess) deps.revokeRemoteDevices?.();
+  // 局域网直连开关和端口即时生效，不用重启守护进程。
+  if (r.changed.includes('lanAccess') || r.changed.includes('lanPort')) void deps.lan?.apply(r.record.values.lanAccess, r.record.values.lanPort);
   // Courier follows its site list: a site deleted in any UI is unregistered in the browser.
   if (r.changed.includes('courierSites')) deps.courier?.pushSites();
   return { status: 200, body: settingsView(deps, r.record) };

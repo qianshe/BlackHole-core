@@ -176,3 +176,22 @@ test('courierSites from Courier: put keeps one entry per origin, remove deletes,
   assert.equal(r.status, 200);
   assert.equal(pushed, 5);
 });
+
+test('lanAccess / lanPort: off by default, validated, daemon-owned, re-applied live only when they change', () => {
+  assert.equal(DEFAULT_SETTINGS.lanAccess, false, '局域网直连默认关闭');
+  assert.equal(DEFAULT_SETTINGS.lanPort, 7307);
+  assert.ok('values' in normalizeSettingsPatch({ lanAccess: true, lanPort: 8000 }));
+  for (const bad of [{ lanAccess: 'yes' }, { lanAccess: 1 }, { lanPort: 80 }, { lanPort: 70000 }, { lanPort: 8000.5 }, { lanPort: '8000' }]) {
+    assert.ok('error' in normalizeSettingsPatch(bad), JSON.stringify(bad));
+  }
+  const s = new SettingsStore(repo());
+  s.update({ connectorName: 'x' });
+  const unseeded = unseededKeys(s.get());
+  assert.ok(!unseeded.includes('lanAccess') && !unseeded.includes('lanPort'), 'the VS Code extension never hands these over');
+  const applied = [];
+  const d = { ...deps(s), lan: { apply: (on, port) => { applied.push([on, port]); return Promise.resolve(); } } };
+  assert.equal(patchSettings(d, { values: { lanAccess: true } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { lanPort: 9000 } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { connectorName: 'y' } }, 'web', false).status, 200);
+  assert.deepEqual(applied, [[true, 7307], [true, 9000]], 'only lan changes re-apply the listener');
+});

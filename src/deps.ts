@@ -26,6 +26,8 @@ export interface DaemonDeps {
   courier?: import('./courier/hub.js').CourierHub;
   /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
   feed?: import('./storage/feedLog.js').FeedLog;
+  /** 局域网直连监听器（设置 lanAccess 打开时才真正监听）。 */
+  lan?: import('./lan/listener.js').LanListener;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;

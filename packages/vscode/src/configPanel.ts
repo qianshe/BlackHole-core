@@ -126,6 +126,9 @@ type PanelMessage =
   | { type: 'remote'; action: 'pair' | 'revoke'; id?: string; name?: string }
   | { type: 'grantsClear' }
   | { type: 'courierSiteRemove'; id: string }
+  | { type: 'lanToggle'; on: boolean }
+  | { type: 'lanPort'; port: number }
+  | { type: 'lanCopy'; url: string }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
   | { type: 'copyTunnelId' }
@@ -281,6 +284,9 @@ export class ConfigPanel {
     else if (m.type === 'remote') await this.remoteAction(m);
     else if (m.type === 'grantsClear') await this.grantsClear();
     else if (m.type === 'courierSiteRemove' && typeof m.id === 'string') await this.courierSiteRemove(m.id);
+    else if (m.type === 'lanToggle' && typeof m.on === 'boolean') await this.lanToggle(m.on);
+    else if (m.type === 'lanPort' && Number.isInteger(m.port)) await this.lanSave({ lanPort: m.port });
+    else if (m.type === 'lanCopy' && typeof m.url === 'string') { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：直连 MCP 链接已复制。'); }
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
     else if (m.type === 'copyTunnelId') await this.copyTunnelId();
@@ -333,6 +339,7 @@ export class ConfigPanel {
     await this.pushProxies();
     await this.pushGrants();
     await this.pushCourierSites();
+    await this.pushLan();
     await this.pushRemote();
   }
 
@@ -347,7 +354,7 @@ export class ConfigPanel {
     const overview = await this.overview();
     if (this.disposed) return;
     await this.post({ type: 'status', overview });
-    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); }
+    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); void this.pushLan(); }
     if (!this.semanticSynced && overview.daemon === 'running' && overview.version) void this.postSemantic();
     const next = readAnchors(overview);
     const action = decideSyncAction(this.anchors, next);
@@ -531,6 +538,44 @@ export class ConfigPanel {
       void window.showInformationMessage(`BlackHole：已删除「${String(site.name)}」。`);
     } catch (e) {
       void window.showErrorMessage(`BlackHole: 删除 Courier 网页站点失败 — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** 局域网直连：设置值加上守护进程的监听状态，推给页面。 */
+  private async pushLan(): Promise<void> {
+    try {
+      const [s, h] = await Promise.all([this.api.settings(), this.api.health()]);
+      await this.post({ type: 'lan', on: s.values.lanAccess === true, port: typeof s.values.lanPort === 'number' ? s.values.lanPort : 7307, lan: h.lan_access ?? null });
+    } catch {
+      /* 守护进程没运行或版本较旧：保留上一次的显示 */
+    }
+  }
+
+  /** 开启前说清楚风险，由用户决定。 */
+  private async lanToggle(on: boolean): Promise<void> {
+    if (on) {
+      const pick = await window.showWarningMessage('BlackHole：开启局域网直连？同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', { modal: true }, '开启');
+      if (pick !== '开启' || this.disposed) return;
+    }
+    await this.lanSave({ lanAccess: on });
+  }
+
+  /** 条件写入（带 revision）；别处刚改过设置时重试一次。守护进程异步开关端口，稍后再刷新一次状态。 */
+  private async lanSave(values: Record<string, unknown>): Promise<void> {
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const s = await this.api.settings();
+        try {
+          await this.api.patchSettings(values, s.revision);
+          break;
+        } catch (e) {
+          if (attempt > 0) throw e;
+        }
+      }
+      await this.pushLan();
+      setTimeout(() => { if (!this.disposed) void this.pushLan(); }, 600);
+    } catch (e) {
+      void window.showErrorMessage(`BlackHole: 保存局域网直连设置失败 — ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1432,6 +1477,13 @@ export class ConfigPanel {
     <div class="hint" style="margin:0 0 10px">在浏览器 Courier 里用「检测此页面」接入的网页 AI，新会话可以选它们。删除后 Courier 会解除它的绑定、停止接管该网站并收回访问权限。</div>
     <div id="cslist" style="display:grid;gap:8px"></div>
   </div>
+  <div class="sec">局域网直连</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">让另一台服务器上的 agent 直接用 MCP 连到这台电脑，不经过公网渠道。只开放 MCP 端点；控制接口、本地 Web 和面板不会对外开放。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用；Windows 首次开启时可能弹出防火墙提示。</div>
+    <div class="chrow"><span class="chst dim" id="lanst">…</span><span class="sp"></span><button id="lanToggle">开启直连</button></div>
+    <div class="f" style="margin-top:10px"><label for="lanPort">直连端口</label><input id="lanPort" type="number" min="1024" max="65535" spellcheck="false"><div class="hint">1024–65535，不能与主端口相同；修改后立即生效。</div></div>
+    <div id="lanurls" style="display:grid;gap:8px;margin-top:10px"></div>
+  </div>
   <div class="sec">授权管理</div>
   <div class="card">
     <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
@@ -1833,6 +1885,7 @@ export class ConfigPanel {
       else if (m.type === 'semantic') renderSemantic(m.info ?? null);
       else if (m.type === 'grants') renderGrants(m.grants ?? { always: [], sessions: [] });
       else if (m.type === 'courierSites') renderCourierSites(Array.isArray(m.sites) ? m.sites : []);
+      else if (m.type === 'lan') renderLan(m);
       else if (m.type === 'proxies') { renderProxies(m.info); if (pxModalFor && pxData[pxModalFor]) renderPxTools(pxData[pxModalFor]); }
       else if (m.type === 'proxiesReport') renderProxiesReport(m.report);
       else if (m.type === 'proxiesEditResult') renderProxiesEditResult(m);
@@ -1847,6 +1900,29 @@ export class ConfigPanel {
     });
     // 授权按实际生效 scope 展示：全局（持久）+ 会话（进程内）。
     // pattern/path 键保持可读化；单条删除后对应操作恢复询问。
+    // 局域网直连：状态、开关、端口和可复制的直连 MCP 链接。
+    let lanOn = false;
+    function renderLan(m) {
+      lanOn = !!m.on;
+      const lan = m.lan || null;
+      const st = !lanOn ? ['dim', '未开启'] : lan && lan.error ? ['bad', lan.error] : lan && lan.listening ? ['ok', '正在监听 0.0.0.0:' + lan.port] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
+      $('lanst').className = 'chst ' + st[0];
+      $('lanst').textContent = st[1];
+      $('lanToggle').textContent = lanOn ? '关闭直连' : '开启直连';
+      $('lanToggle').className = lanOn ? 'secondary' : '';
+      if (document.activeElement !== $('lanPort')) $('lanPort').value = String(m.port);
+      const urls = lanOn && lan && lan.listening ? (lan.addresses || []).map((a) => 'http://' + a + ':' + lan.port + lan.mcp_path) : [];
+      const list = $('lanurls');
+      list.innerHTML = urls.map((u) => '<div class="ag-row"><span class="nm" style="flex:1" title="' + esc(u) + '">' + esc(u.replace(lan.mcp_path, '/mcp/…')) + '</span>'
+        + '<button class="secondary" data-url="' + esc(u) + '">复制 MCP 链接</button></div>').join('');
+      for (const el of list.querySelectorAll('button')) el.addEventListener('click', () => vs.postMessage({ type: 'lanCopy', url: el.dataset.url }));
+    }
+    $('lanToggle').addEventListener('click', () => vs.postMessage({ type: 'lanToggle', on: !lanOn }));
+    $('lanPort').addEventListener('change', () => {
+      const n = Number($('lanPort').value);
+      if (Number.isInteger(n) && n >= 1024 && n <= 65535) vs.postMessage({ type: 'lanPort', port: n });
+    });
+
     // Courier 网页站点：浏览器 Courier「检测此页面」接入的网站；删除后 Courier 解除绑定并收回权限。
     function renderCourierSites(sites) {
       const list = $('cslist');

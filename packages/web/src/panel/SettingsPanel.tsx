@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api, ApiError, panel,
-  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health,
+  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health, type LanAccessView,
   type ProxiesInfo, type ProxyConfigRow, type ProxyToolsResult, type RevalidateReport, type SemanticInfo, type SettingsValues, type SettingsView,
 } from '../api';
 import { ServiceCard } from '../AccountCard';
@@ -165,7 +165,7 @@ function Activity({ health }: { health: Health | null }) {
 
 // ─── the panel ─────────────────────────────────────────────────────────────
 type Draft = Record<TextKey, string>;
-type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites';
+type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites' | 'lanAccess' | 'lanPort';
 type FieldState = { state: 'saving' | 'saved' | 'error'; msg?: string };
 const draftOf = (v: SettingsValues): Draft => Object.fromEntries(TEXT_KEYS.map((k) => [k, String((v as unknown as Record<string, unknown>)[k] ?? '')])) as Draft;
 const serverText = (v: SettingsValues, k: TextKey) => String((v as unknown as Record<string, unknown>)[k] ?? '');
@@ -546,6 +546,15 @@ export function SettingsPanel() {
     if (await commit({ courierSites: rest }, ['courierSites'])) ui.toast(`已删除「${site.name}」`);
   };
 
+  // 局域网直连：开启前说清楚风险，由用户决定；守护进程异步开关端口，稍后刷新状态。
+  const toggleLan = async (on: boolean) => {
+    if (on) {
+      const ok = await ui.confirm('BlackHole：开启局域网直连？\n同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', ['开启']);
+      if (ok !== '开启') return;
+    }
+    if (await commit({ lanAccess: on }, ['lanAccess'])) setTimeout(refreshHealth, 500);
+  };
+
   const fieldStatus = (k: SaveKey) => {
     const s = fstate[k];
     return s && s.state !== 'error' ? <span className={'bhp-fs ' + s.state}>{s.state === 'saving' ? '保存中…' : '已保存'}</span> : null;
@@ -668,6 +677,18 @@ export function SettingsPanel() {
         </>
       )}
 
+      <div className="sec" id="set-lan">局域网直连<small>让另一台服务器上的 agent 直接用 MCP 连到这台电脑，不经过公网渠道。默认关闭。</small></div>
+      <LanAccess
+        on={!!server?.values.lanAccess}
+        port={server?.values.lanPort ?? 7307}
+        lan={reachable ? health?.lan_access ?? null : null}
+        status={<>{fieldStatus('lanAccess')}{fieldStatus('lanPort')}</>}
+        error={<>{fieldError('lanAccess')}{fieldError('lanPort')}</>}
+        onToggle={(on) => void toggleLan(on)}
+        onPort={(p) => void commit({ lanPort: p }, ['lanPort']).then((ok) => { if (ok) setTimeout(refreshHealth, 500); })}
+        onCopy={(u) => void copy(u).then(() => ui.toast('BlackHole：直连 MCP 链接已复制。'))}
+      />
+
       <div className="sec" id="set-proxies">MCP Proxies<small>把其他 MCP 服务器接入 BlackHole，按需启用它们的工具。</small></div>
       <Proxies ui={ui} />
 
@@ -733,6 +754,45 @@ export function SettingsPanel() {
         </div>
       )}
       {ui.node}
+    </div>
+  );
+}
+
+/** 局域网直连：开关、端口、监听状态和可复制的直连 MCP 链接。 */
+function LanAccess({ on, port, lan, status, error, onToggle, onPort, onCopy }: {
+  on: boolean; port: number; lan: LanAccessView | null; status: ReactNode; error: ReactNode;
+  onToggle: (on: boolean) => void; onPort: (port: number) => void; onCopy: (url: string) => void;
+}) {
+  const [portText, setPortText] = useState(String(port));
+  useEffect(() => { setPortText(String(port)); }, [port]);
+  const savePort = () => {
+    const n = Number(portText.trim());
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) { setPortText(String(port)); return; }
+    if (n !== port) onPort(n);
+  };
+  const urls = on && lan?.listening ? lan.addresses.map((a) => `http://${a}:${lan.port}${lan.mcp_path}`) : [];
+  const [cls, text] = !on ? ['', '未开启'] : lan?.error ? ['bad', lan.error] : lan?.listening ? ['ok', `正在监听 0.0.0.0:${lan.port}`] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
+  return (
+    <div className="card">
+      <div className="chrow">
+        <span className={'chst ' + cls}>{text}</span>{status}<span className="sp" />
+        <button type="button" className={on ? 'secondary' : ''} onClick={() => onToggle(!on)}>{on ? '关闭直连' : '开启直连'}</button>
+      </div>
+      <div className="fgrid">
+        <div className="f"><label htmlFor="lanPort">直连端口</label>
+          <input id="lanPort" name="lanPort" inputMode="numeric" spellCheck={false} autoComplete="off" value={portText}
+            onChange={(e) => setPortText(e.target.value)} onBlur={savePort} onKeyDown={(e) => { if (e.key === 'Enter') savePort(); }} />
+          <div className="d">1024–65535，不能与主端口相同；修改后立即生效。</div>
+        </div>
+      </div>
+      {error}
+      {urls.map((u) => (
+        <div className="mcpurl" key={u}><span title={u}>{lan ? u.replace(lan.mcp_path, '/mcp/…') : u}</span>
+          <div className="mcp-actions"><button type="button" onClick={() => onCopy(u)}>复制 MCP 链接</button></div>
+        </div>
+      ))}
+      {on && lan?.listening && !urls.length && <div className="d">没有找到可用的本机地址：请用这台电脑在局域网里的 IP 加上端口 {lan.port} 连接。</div>}
+      <div className="d">只开放 MCP 端点；控制接口、本地 Web 和面板不会对外开放。连接时仍需要 MCP 链接里的令牌和会话 ID。数据经明文 HTTP 传输，建议只在可信内网或 Tailscale / WireGuard 等组网中使用；Windows 首次开启时可能弹出防火墙提示。</div>
     </div>
   );
 }

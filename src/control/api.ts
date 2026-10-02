@@ -24,7 +24,7 @@ import { processManagementCapability } from '../execution.js';
 import { createWorkspaceSession, normalizeWritableDirs, type CreateSessionInput } from '../services/sessions.js';
 import { migrateSettings, patchSettings, settingsView } from '../settings/service.js';
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
-import { mountOpenAITunnel } from './openai-tunnel-routes.js';
+import { loopbackPeer, mountOpenAITunnel } from './openai-tunnel-routes.js';
 import { mountFeedRoutes } from '../feed/routes.js';
 
 /**
@@ -52,6 +52,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   // reject proxy-forwarded requests in case someone fronts this daemon with
   // their own reverse proxy (lesson from codex-with-chatgpt).
   app.use((req, res, next) => {
+    // Host 头可以伪造：先按 TCP 来源地址判断，只接受本机连接（局域网直连开着时也一样）。
+    if (!loopbackPeer(req)) {
+      res.status(403).json({ error: 'control API is loopback-only' });
+      return;
+    }
     if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']) {
       res.status(403).json({ error: 'control API refuses proxied requests' });
       return;
@@ -136,6 +141,8 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       ...(deps.openaiTunnel ? { openai_tunnel_api_version: 1, openai_tunnel: deps.openaiTunnel.view() } : {}),
       // Clients re-read settings when this moves (an edit made in another client).
       ...(deps.settings ? { settings_revision: deps.settings.get().revision } : {}),
+      // 局域网直连状态：是否在监听、本机可用地址和错误（控制接口只对本机开放，可以带 MCP 路径）
+      ...(deps.lan ? { lan_access: { ...deps.lan.view(), mcp_path: mcpPath() } } : {}),
       ...(deps.entitlement ? { cloud_origin: deps.entitlement.cloudOrigin, entitlement_bridge_version: 2 } : {}),
       ...(deps.account ? { account_api_version: ACCOUNT_API_VERSION, account_storage: deps.account.storage } : {}),
       started_at: new Date(bootTime).toISOString(),

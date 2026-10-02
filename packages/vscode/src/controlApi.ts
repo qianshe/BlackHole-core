@@ -61,6 +61,8 @@ export interface Health {
   daemon_id?: string;
   /** Daemon-owned settings revision; a change means another client edited them. Older daemons omit it. */
   settings_revision?: number;
+  /** 局域网直连状态（旧版守护进程没有这一项）。 */
+  lan_access?: { enabled: boolean; port: number; listening: boolean; error: string | null; addresses: string[]; mcp_path: string } | null;
   /** v2.6 工具表面代次：reload/目录刷新/预热即自增 → 设置页自动重取工具列表。 */
   proxy_surface_gen?: number | null;
   /** v2.6 MCP 主机连接代次：每次握手（重连）自增 → 设置页自动重新获取工具列表。 */

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
 import { CourierHub } from './courier/hub.js';
+import { LanListener } from './lan/listener.js';
 import { CourierMessages, purgeCourierMessagesOlderThan } from './courier/messages.js';
 import { importCourierMessagesJson } from './courier/messagesImport.js';
 import { CourierPairs } from './courier/pairs.js';
@@ -456,6 +457,12 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // long-lived SSE streams (MCP GET) must not be cut by the default 5-min cap
   server.requestTimeout = 0;
 
+  // 局域网直连（设置里的开关，默认关闭）：另起一个 0.0.0.0 监听器，只开放 MCP。
+  const mainAddr = server.address();
+  const lan = new LanListener(app, mainAddr && typeof mainAddr === 'object' ? mainAddr.port : cfg.port, log);
+  deps.lan = lan;
+  await lan.apply(settings.get().values.lanAccess, settings.get().values.lanPort);
+
   // no tunnel auto-start at boot: the channel is started on demand by the
   // extension sidebar / CLI (`tunnel start`), persistent or temporary.
   // The watchdog closes the public channel once every heartbeat sender is gone;
@@ -485,6 +492,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     clearInterval(processSweep);
     courier.close();
     feed.shutdown(); // 放走所有挂起的长轮询请求，server.close() 才能完成
+    await lan.close();
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();

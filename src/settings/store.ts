@@ -1,6 +1,7 @@
 import type { MachineStateRepo } from '../storage/machineState.js';
 import type { Config } from '../config.js';
 import { SEMANTIC_MODES, type SemanticMode } from '../config.js';
+import { DEFAULT_LAN_PORT } from '../lan/listener.js';
 
 /**
  * Daemon-owned user settings. The daemon is the source of truth; the VS Code
@@ -58,6 +59,10 @@ export interface Settings {
   openaiTunnelId: string;
   /** Courier sites added by detection (daemon-owned, not a VS Code setting). */
   courierSites: CourierSite[];
+  /** 局域网直连：另开一个 0.0.0.0 监听器，只开放 MCP；默认关闭，由用户决定。改动即时生效。 */
+  lanAccess: boolean;
+  /** 局域网直连监听的端口（不能与主端口相同）。 */
+  lanPort: number;
 }
 
 export interface SettingsRecord {
@@ -70,7 +75,7 @@ export interface SettingsRecord {
 
 /** The first six keys (0.3.174). Records written before `seeded` existed had all of them. */
 export const V1_SETTING_KEYS = ['connectorName', 'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'channelMode', 'semanticMode'] as const;
-export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites'] as const;
+export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'lanAccess', 'lanPort'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /**
@@ -102,6 +107,8 @@ export const DEFAULT_SETTINGS: Settings = {
   openaiTunnelClientPath: '',
   openaiTunnelId: '',
   courierSites: [],
+  lanAccess: false,
+  lanPort: DEFAULT_LAN_PORT,
 };
 
 const MAX_TEXT = 1000;
@@ -208,6 +215,10 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
     return { value: out };
   }
   if (key === 'remoteAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'remoteAccess must be true or false' };
+  if (key === 'lanAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'lanAccess must be true or false' };
+  if (key === 'lanPort') {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1024 && raw <= 65535 ? { value: raw } : { error: 'lanPort must be an integer between 1024 and 65535' };
+  }
   const t = text(key, raw);
   if ('error' in t) return t;
   const v = t.value;
@@ -316,7 +327,7 @@ export function unseededKeys(record: SettingsRecord): SettingKey[] {
 }
 
 /** Owned by the daemon from the start: never handed over by the extension. */
-export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites'];
+export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'lanAccess', 'lanPort'];
 
 /**
  * Startup overlay: seeded daemon-owned settings win over the launcher's

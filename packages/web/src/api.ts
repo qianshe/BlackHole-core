@@ -94,6 +94,20 @@ export interface SettingsValues {
   openaiTunnelId: string;
   /** Sites added in the Courier browser extension (检测此页面); deleting one here removes it in Courier. */
   courierSites: CourierSiteView[];
+  /** 局域网直连开关（默认关闭）。 */
+  lanAccess: boolean;
+  /** 局域网直连端口。 */
+  lanPort: number;
+}
+
+/** 守护进程 health 里的局域网直连状态。 */
+export interface LanAccessView {
+  enabled: boolean;
+  port: number;
+  listening: boolean;
+  error: string | null;
+  addresses: string[];
+  mcp_path: string;
 }
 
 export interface CourierSiteView {
@@ -246,6 +260,8 @@ export interface Health {
   openai_tunnel?: OpenAITunnelView | null;
   mcp_url: string;
   mcp_path: string;
+  /** 旧版守护进程没有这一项 */
+  lan_access?: LanAccessView | null;
   stats?: { total: number; diff_added: number; diff_removed: number } | null;
   activity_days?: { start: number; total: number; diff_added: number; diff_removed: number }[];
 }
