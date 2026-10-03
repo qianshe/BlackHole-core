@@ -14,7 +14,9 @@ test('test extension and daemon build in an isolated output tree without touchin
   const root = fs.mkdtempSync(path.join(cache, 'process-build-')), plugin = path.join(root, 'packages/vscode');
   const links = [];
   t.after(() => { for (const link of links) fs.rmSync(link, { recursive: true, force: true }); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
-  for (const directory of ['src', 'scripts', 'client', 'config']) fs.cpSync(path.join(repository, directory), path.join(root, directory), { recursive: true });
+  // Core carries its own public build profiles; private deployment config must not be required.
+  for (const directory of ['src', 'scripts', 'client']) fs.cpSync(path.join(repository, directory), path.join(root, directory), { recursive: true });
+  assert.equal(fs.existsSync(path.join(root, 'config')), false, 'isolated Core build must not copy private deployment configuration');
   for (const file of ['package.json', 'tsconfig.json']) fs.copyFileSync(path.join(repository, file), path.join(root, file));
   fs.mkdirSync(plugin, { recursive: true });
   for (const directory of ['src', 'test']) fs.cpSync(path.join(repository, 'packages/vscode', directory), path.join(plugin, directory), { recursive: true });
@@ -35,8 +37,11 @@ test('test extension and daemon build in an isolated output tree without touchin
   assert.equal(metadata.environment, 'test'); assert.notEqual(metadata.origin, 'https://blackhole.stellarbridge.dpdns.org');
   assert.equal(sha(path.join(plugin, 'dist/extension.js')), metadata.extensionSha256);
   assert.equal(sha(path.join(plugin, 'dist/daemon/cli.js')), metadata.daemonSha256);
-  for (const rel of ['dist/daemon/workspace/windows-env.js', 'dist/workspace/windows-env.js']) {
+  for (const rel of ['dist/workspace/windows-env.js', 'dist/workspace/shell-codepage.js', 'dist/workspace/sandboxed-shell.js', 'dist/win32/ffi.js', 'dist/node_modules/koffi/package.json']) {
     assert.ok(fs.existsSync(path.join(plugin, rel)), `shared Windows execution environment must ship at ${rel}`);
+  }
+  for (const rel of ['dist/daemon/workspace', 'dist/daemon/win32', 'dist/daemon/node_modules']) {
+    assert.ok(!fs.existsSync(path.join(plugin, rel)), `the Windows sandbox chain and koffi ship once; ${rel} is a duplicate`);
   }
   const supervisor = path.join(plugin, 'dist/daemon/process-supervisor.cjs');
   assert.ok(fs.existsSync(supervisor), 'POSIX supervisor must ship beside the bundled daemon');

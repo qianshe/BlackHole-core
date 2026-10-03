@@ -73,6 +73,24 @@ export function formatTime(iso: string | null, now = Date.now()): string {
   return sameDay ? hms : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
 }
 
+/** Compact sidebar time: relative within a week, then "9月20日" (year only when different). */
+export function shortTime(iso: string | null, now = Date.now()): string {
+  const rel = relativeTime(iso, now);
+  const t = Date.parse(iso ?? '');
+  if (Number.isNaN(t) || now - t < 7 * 86_400_000) return rel;
+  const d = new Date(t);
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  return d.getFullYear() === new Date(now).getFullYear() ? md : `${d.getFullYear()}年${md}`;
+}
+
+/** Default session: running first, then the most recently active live one, else the newest. */
+export function pickDefaultSession<S extends SessionLike & { activity?: string | null; last_active_at: string | null; created_at: string | null }>(list: S[]): S | undefined {
+  const stamp = (x: S): number => Date.parse(x.last_active_at ?? x.created_at ?? '') || 0;
+  const live = list.filter((x) => x.status === 'active' || x.status === 'paused');
+  const pool = live.length ? live : list;
+  return [...pool].sort((a, b) => Number(b.activity === 'running') - Number(a.activity === 'running') || stamp(b) - stamp(a))[0];
+}
+
 /** Full timestamp for tooltips. */
 export function formatFull(iso: string | null): string {
   if (!iso) return '';
@@ -150,7 +168,8 @@ export interface ViewState {
   settings: string | null;
 }
 
-export const SETTINGS_SECTIONS = ['overview', 'account', 'channel', 'remote', 'mcp', 'common', 'grants', 'proxies', 'agents', 'advanced'] as const;
+// Same order as the VS Code settings page (phone access lives in the channel card and 高级).
+export const SETTINGS_SECTIONS = ['overview', 'account', 'channel', 'mcp', 'proxies', 'common', 'grants', 'advanced'] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** View state lives in the query string (the fragment is reserved for the one-time ticket). */
@@ -285,7 +304,7 @@ export function errorText(code: string, message?: string): string {
 
 export const PERMISSION_LABEL: Record<string, string> = {
   'read-only': '只读',
-  'workspace-write': '可写工作区',
+  'workspace-write': '工作区可写',
   'danger-full-access': '完全访问',
 };
 
@@ -320,3 +339,66 @@ export function takeTicket(hash: string): string | null {
   return /^[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
 }
 
+
+
+// ── call result presentation, same rules as packages/vscode/src/callFormat.ts ──
+const CSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;?]*[ -/]*[@-~]', 'g');
+const stripAnsi = (text: string): string => text.replace(CSI, '');
+
+/** +added / -removed for editor writes, else null (same payload shape VS Code reads). */
+export function resultDiff(summary: string | null): { added: number; removed: number } | null {
+  if (!summary) return null;
+  try {
+    const d = (JSON.parse(summary) as { result?: { diff?: { added?: unknown; removed?: unknown } } }).result?.diff;
+    if (!d || typeof d.added !== 'number' || typeof d.removed !== 'number') return null;
+    return d.added > 0 || d.removed > 0 ? { added: d.added, removed: d.removed } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Readable result text for the expanded row (never raw JSON when a message exists). */
+export function resultBody(summary: string | null): string {
+  if (!summary) return '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(summary);
+  } catch {
+    return stripAnsi(summary);
+  }
+  const t = parsed as { truncated?: boolean; preview?: string };
+  if (t && t.truncated && typeof t.preview === 'string') return stripAnsi(t.preview) + '\n\n…… 结果已截断（存证上限 32KB），完整输出已交付 AI。';
+  const r = parsed as { result?: { message?: string }; stdout?: string; stderr?: string };
+  if (r && r.result && typeof r.result.message === 'string') return stripAnsi(r.result.message);
+  if (r && (typeof r.stdout === 'string' || typeof r.stderr === 'string')) {
+    const out = [r.stdout ?? '', r.stderr ? `[stderr]\n${r.stderr}` : ''].filter(Boolean).join('\n');
+    return stripAnsi(out) || '(无输出)';
+  }
+  if (parsed && typeof parsed === 'object') {
+    const o = parsed as Record<string, unknown>;
+    if (typeof o.reason === 'string') return stripAnsi(o.reason);
+    if (typeof o.message === 'string') return stripAnsi(o.message);
+    if (typeof o.status === 'string') {
+      const parts = [o.status, typeof o.state === 'string' ? o.state : '', typeof o.processId === 'string' ? o.processId : '', typeof o.exitCode === 'number' ? `exit ${o.exitCode}` : ''].filter(Boolean);
+      return stripAnsi(parts.join(' · '));
+    }
+  }
+  return stripAnsi(summary);
+}
+
+const SHELL_TOOLS = new Set(['exec', 'pwsh', 'bash', 'cmd']);
+
+/**
+ * Split a call into the compact tool label ("editor create", "proxy call")
+ * and its target, so the row reads left to right without a wide empty column.
+ */
+export function callHeadline(tool: string, args: unknown, summary: string): { label: string; target: string } {
+  const a = args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+  const op = a.operation && typeof a.operation === 'object' && !Array.isArray(a.operation) ? (a.operation as Record<string, unknown>) : a;
+  const raw = SHELL_TOOLS.has(tool) ? '' : typeof op.command === 'string' ? op.command : typeof a.command === 'string' ? a.command : '';
+  const sub = /^[a-z][a-z_-]{0,19}$/i.test(raw) ? raw : '';
+  let target = summary;
+  if (sub && target.startsWith(sub + ' ')) target = target.slice(sub.length + 1);
+  else if (sub === 'call' && target.startsWith('调用 ')) target = target.slice(3);
+  return { label: sub ? `${tool} ${sub}` : tool, target };
+}

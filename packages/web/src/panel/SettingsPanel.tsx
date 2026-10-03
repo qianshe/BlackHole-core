@@ -4,32 +4,29 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api, ApiError, panel,
-  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type GrantsInfo, type Health,
+  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health, type LanAccessView,
   type ProxiesInfo, type ProxyConfigRow, type ProxyToolsResult, type RevalidateReport, type SemanticInfo, type SettingsValues, type SettingsView,
 } from '../api';
+import { ServiceCard } from '../AccountCard';
 import './panel.css';
+import { OPENAI_TUNNEL_ID } from './openaiCopy';
+import { OpenAISection, openaiStatus } from './OpenAISection';
 import { RemoteSection } from './RemoteSection';
+import { channelSummary } from '../console/ChannelsPane';
 
-type TextKey = 'cloudflaredPath' | 'publicBaseUrl' | 'tunnelProbeProxy' | 'gitUsrBinPath' | 'skillsDir' | 'connectorName' | 'namedTunnelName';
-const FIELD: Record<TextKey, { label: string; desc: string }> = {
-  cloudflaredPath: { label: 'cloudflared 路径', desc: '公网渠道需要 cloudflared。安装后填写可执行文件的完整路径。' },
-  publicBaseUrl: { label: '公网地址', desc: '填写 HTTPS Base URL；BlackHole 会自动生成 MCP 链接。' },
-  tunnelProbeProxy: { label: '公网连通性检测代理（排障用）', desc: '通常留空。仅当提示“公网地址已在线，但本机无法完成检测”，并且电脑正在使用 Clash、mihomo 等本机代理时，填写该代理的本机 HTTP 地址（例如 http://127.0.0.1:7897）。这里只影响公网地址检测，不会修改其他网络连接；修改后需重启本地服务。' },
-  gitUsrBinPath: { label: 'GNU 工具目录 (Git usr/bin)', desc: 'grep/sed/awk/find 所在目录（Git for Windows 安装目录下的 usr/bin）。会加入 BlackHole exec/process 的 PATH，但不会把 shell 切换为 Bash；留空则不改 PATH。' },
-  skillsDir: { label: '自定义 Skill 目录', desc: '留空使用 ~/.agents/skills。填写后替代这个默认库；项目里的 .agents/skills 仍然有效且优先。建议填绝对路径或 ~/ 开头的路径。' },
-  connectorName: { label: '连接器名称', desc: '复制连接器提示词时 @提及的名字。多人共用一个网页 AI 账号时，各自起名区分自己的连接器。留空 = BlackHole。' },
-  namedTunnelName: { label: 'named tunnel 名称', desc: '持久渠道执行的 cloudflared tunnel run <名称>。' },
+type TextKey = 'cloudflaredPath' | 'publicBaseUrl' | 'tunnelProbeProxy' | 'gitUsrBinPath' | 'skillsDir' | 'connectorName' | 'namedTunnelName' | 'openaiTunnelClientPath' | 'openaiTunnelId';
+const FIELD: Record<TextKey, { label: string; desc: string; ph: string }> = {
+  cloudflaredPath: { label: 'cloudflared 路径', desc: '公网渠道需要 cloudflared。安装后填写可执行文件的完整路径。', ph: 'cloudflared 可执行文件的完整路径' },
+  publicBaseUrl: { label: '公网地址', desc: '填写 HTTPS Base URL；BlackHole 会自动生成 MCP 链接。', ph: 'https://blackhole.example.com' },
+  tunnelProbeProxy: { label: '公网连通性检测代理（排障用）', desc: '通常留空。仅当提示“公网地址已在线，但本机无法完成检测”，并且电脑正在使用 Clash、mihomo 等本机代理时，填写该代理的本机 HTTP 地址（例如 http://127.0.0.1:7897）。这里只影响公网地址检测，不会修改其他网络连接；修改后需重启本地服务。', ph: '通常留空，例如 http://127.0.0.1:7897' },
+  gitUsrBinPath: { label: 'GNU 工具目录 (Git usr/bin)', desc: 'grep/sed/awk/find 所在目录（Git for Windows 安装目录下的 usr/bin）。会加入 BlackHole exec/process 的 PATH，但不会把 shell 切换为 Bash；留空则不改 PATH。', ph: '例如 C:\\Program Files\\Git\\usr\\bin' },
+  skillsDir: { label: '自定义 Skill 目录', desc: '留空使用 ~/.agents/skills。填写后替代这个默认库；项目里的 .agents/skills 仍然有效且优先。建议填绝对路径或 ~/ 开头的路径。', ph: '~/.agents/skills' },
+  connectorName: { label: '连接器名称', desc: '复制连接器提示词时 @提及的名字。多人共用一个网页 AI 账号时，各自起名区分自己的连接器。留空 = BlackHole。', ph: 'BlackHole' },
+  namedTunnelName: { label: 'named tunnel 名称', desc: '持久渠道执行的 cloudflared tunnel run <名称>。', ph: '例如 blackhole' },
+  openaiTunnelClientPath: { label: 'tunnel-client 路径', desc: 'OpenAI 官方 tunnel-client（纯 runtime 版）可执行文件的完整路径。启动 OpenAI 渠道只使用这里保存的路径；留空时「一键安装」会依次查找 PATH 与一键安装目录，验证后自动保存，无需重启 daemon。', ph: '留空可一键安装' },
+  openaiTunnelId: { label: 'Tunnel ID', desc: '在 OpenAI Platform 的隧道设置中复制的 Tunnel ID（不是 URL，也不是密钥）。', ph: 'tunnel_…' },
 };
 const TEXT_KEYS = Object.keys(FIELD) as TextKey[];
-/** Same catalogue as packages/vscode/src/webAgents.ts AGENTS. */
-const AGENTS = [
-  { name: 'ChatGPT', description: 'OpenAI ChatGPT' },
-  { name: 'WorkBuddy', description: 'WorkBuddy 工作助手' },
-  { name: 'Manus', description: 'Manus AI agent' },
-  { name: 'Trae CN', description: 'Trae (国内版)' },
-  { name: 'Trae AI', description: 'Trae (国际版)' },
-  { name: 'Arena', description: 'LMArena AI' },
-];
 const SEM_MODES = [
   { v: 'off', t: '关闭', title: '彻底不提供语义搜索' },
   { v: 'explicit', t: '手动', title: '使用下方保存的 key 或环境变量里的 key' },
@@ -56,14 +53,6 @@ const orderLabel = (o: BillingOrder) => `${days(o.durationSeconds)} 天 · ${pri
 const DEFAULT_PLANS: { sku: BillingSku; label: string }[] = [{ sku: 'pro_day', label: '1 天 · ¥1.00' }, { sku: 'pro_week', label: '7 天 · ¥5.00' }, { sku: 'pro_month', label: '30 天 · ¥15.00' }];
 const errText = (e: unknown) => (e instanceof ApiError ? e.detail || e.message || e.code : e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-function normalizeUrl(raw: string): string | null {
-  const t = raw.trim();
-  if (!t) return null;
-  try {
-    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`);
-    return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname ? u.toString() : null;
-  } catch { return null; }
-}
 async function copy(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
@@ -176,8 +165,14 @@ function Activity({ health }: { health: Health | null }) {
 
 // ─── the panel ─────────────────────────────────────────────────────────────
 type Draft = Record<TextKey, string>;
+type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites' | 'lanAccess' | 'lanPort' | 'lanUrl';
+type FieldState = { state: 'saving' | 'saved' | 'error'; msg?: string };
 const draftOf = (v: SettingsValues): Draft => Object.fromEntries(TEXT_KEYS.map((k) => [k, String((v as unknown as Record<string, unknown>)[k] ?? '')])) as Draft;
 const serverText = (v: SettingsValues, k: TextKey) => String((v as unknown as Record<string, unknown>)[k] ?? '');
+const ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/;
+/** Labels for pending_restart keys that are not text fields. */
+const RESTART_LABELS: Record<string, string> = { channelMode: '渠道方式', semanticMode: 'Devin Key 模式', webAgents: 'Web Agent 显示', customWebAgents: '自定义站点', remoteAccess: '手机访问' };
+const restartLabel = (k: string) => (k in FIELD ? FIELD[k as TextKey].label : RESTART_LABELS[k] ?? k);
 
 export function SettingsPanel() {
   const ui = useUi();
@@ -186,28 +181,131 @@ export function SettingsPanel() {
   const [channelMode, setChannelMode] = useState<'cloudflare' | 'openai' | 'custom'>('cloudflare');
   const [semMode, setSemMode] = useState<string>('explicit');
   const [semKey, setSemKey] = useState('');
-  const [agentsOn, setAgentsOn] = useState<Set<string>>(new Set());
   const [health, setHealth] = useState<Health | null>(null);
   const [reachable, setReachable] = useState(true);
   const [semantic, setSemantic] = useState<SemanticInfo | null | undefined>(undefined);
   const [skills, setSkills] = useState<{ cls: string; hint: string } | null>(null);
   const [customProbe, setCustomProbe] = useState<{ url: string; state: 'idle' | 'probing' | 'online' | 'error'; detail: string }>({ url: '', state: 'idle', detail: '' });
   const [cf, setCf] = useState<{ busy: boolean; label: string; cls: string; text: string }>({ busy: false, label: '一键初始化安装', cls: 'hint', text: '准备并验证 cloudflared；验证后可选择保存并重启 daemon，不会自动启动渠道。' });
-  const [waName, setWaName] = useState('');
-  const [waUrl, setWaUrl] = useState('');
   const [grants, setGrants] = useState<GrantsInfo | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [fstate, setFstateView] = useState<Partial<Record<SaveKey, FieldState>>>({});
+  const [restarting, setRestarting] = useState(false);
+  const modeRef = useRef(channelMode);
+  modeRef.current = channelMode;
+
+  // Async saves read the latest values through refs, never through a stale render.
+  const serverRef = useRef<SettingsView | null>(null);
+  const draftRef = useRef<Draft | null>(null);
+  const fstateRef = useRef<Partial<Record<SaveKey, FieldState>>>({});
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const inflight = useRef(new Set<Promise<boolean>>());
+  const putDraft = (next: Draft) => { draftRef.current = next; setDraft(next); };
+  const markField = (keys: SaveKey[], s: FieldState | null) => {
+    const next = { ...fstateRef.current };
+    for (const k of keys) { if (s) next[k] = s; else delete next[k]; }
+    fstateRef.current = next;
+    setFstateView(next);
+  };
+
+  /**
+   * Adopt a server view. Fields just committed take the saved value unless the user
+   * kept typing; `force` fields take it unconditionally; untouched fields follow the server.
+   */
+  const applyServer = (next: SettingsView, committed: Partial<Record<TextKey, string>> = {}, force: SaveKey[] = []) => {
+    const prev = serverRef.current;
+    serverRef.current = next;
+    setServer(next);
+    const d = draftRef.current;
+    if (!d || !prev) putDraft(draftOf(next.values));
+    else {
+      const out = { ...d };
+      for (const k of TEXT_KEYS) {
+        const sent = committed[k];
+        if (force.includes(k) || (sent !== undefined ? d[k].trim() === sent : d[k] === serverText(prev.values, k))) out[k] = serverText(next.values, k);
+      }
+      putDraft(out);
+    }
+    if (!prev || force.includes('channelMode')) setChannelMode(next.values.channelMode);
+    else setChannelMode((m) => (m === prev.values.channelMode ? next.values.channelMode : m));
+    if (!prev || force.includes('semanticMode')) setSemMode(next.values.semanticMode);
+    else setSemMode((m) => (m === prev.values.semanticMode ? next.values.semanticMode : m));
+  };
+
+  /** Save some values, one request at a time; retry once over a revision bump that touched other keys. */
+  const commit = (values: Partial<SettingsValues>, keys: SaveKey[], committed: Partial<Record<TextKey, string>> = {}): Promise<boolean> => {
+    markField(keys, { state: 'saving' });
+    const task = async (): Promise<boolean> => {
+      try {
+        let base = serverRef.current ?? (await api.settings());
+        for (let attempt = 0; ; attempt++) {
+          try {
+            applyServer(await api.saveSettings(base.revision, values), committed);
+            markField(keys, { state: 'saved' });
+            setTimeout(() => { if (keys.every((k) => fstateRef.current[k]?.state === 'saved')) markField(keys, null); }, 2500);
+            return true;
+          } catch (e) {
+            if (!(e instanceof ApiError) || e.code !== 'revision_conflict' || attempt > 0) throw e;
+            const fresh = await api.settings();
+            const changed = (Object.keys(values) as (keyof SettingsValues)[]).filter((k) => JSON.stringify(fresh.values[k]) !== JSON.stringify(base.values[k]));
+            if (changed.length) {
+              applyServer(fresh, {}, keys);
+              markField(keys, { state: 'error', msg: '这一项刚在别处被修改，已显示最新值；如仍需修改请重新输入。' });
+              return false;
+            }
+            applyServer(fresh);
+            base = fresh;
+          }
+        }
+      } catch (e) {
+        markField(keys, { state: 'error', msg: '保存失败：' + errText(e) });
+        return false;
+      }
+    };
+    const run = chain.current.then(task, task);
+    chain.current = run;
+    inflight.current.add(run);
+    void run.finally(() => inflight.current.delete(run));
+    return run;
+  };
+
+  const validate = (k: TextKey, v: string): string | null => {
+    if (k === 'publicBaseUrl' && modeRef.current === 'custom' && !/^https:\/\/[^\s/]+/i.test(v)) return '自定义公网地址需要填写可访问的 HTTPS Base URL。';
+    if (k === 'openaiTunnelId' && v && !OPENAI_TUNNEL_ID.test(v)) return 'Tunnel ID 应为 OpenAI Platform 隧道设置中的 ID（tunnel_ 加 32 位小写十六进制），不是 URL。';
+    if (k === 'openaiTunnelClientPath' && v && !ABSOLUTE_PATH.test(v)) return 'tunnel-client 路径需要填写可执行文件的绝对路径，或留空。';
+    return null;
+  };
+  /** Blur / Enter: save the field if it differs from the daemon. */
+  const commitText = (k: TextKey): Promise<boolean> => {
+    const d = draftRef.current, s = serverRef.current;
+    if (!d || !s) return Promise.resolve(false);
+    const next = d[k].trim();
+    // Custom mode is saved together with its first valid HTTPS address.
+    const withMode = k === 'publicBaseUrl' && modeRef.current === 'custom' && s.values.channelMode !== 'custom';
+    if (next === serverText(s.values, k) && !withMode) { if (fstateRef.current[k]?.state === 'error') markField([k], null); return Promise.resolve(true); }
+    const bad = validate(k, next);
+    if (bad) { markField([k], { state: 'error', msg: bad }); return Promise.resolve(false); }
+    const values = (withMode ? { publicBaseUrl: next, channelMode: 'custom' } : { [k]: next }) as Partial<SettingsValues>;
+    return commit(values, withMode ? [k, 'channelMode'] : [k], { [k]: next } as Partial<Record<TextKey, string>>);
+  };
+  const revertText = (k: TextKey) => {
+    const d = draftRef.current, s = serverRef.current;
+    if (d && s) putDraft({ ...d, [k]: serverText(s.values, k) });
+    markField([k], null);
+  };
+  const dirtyKeys = () => {
+    const d = draftRef.current, s = serverRef.current;
+    return d && s ? TEXT_KEYS.filter((k) => d[k].trim() !== serverText(s.values, k)) : [];
+  };
 
   const loadSettings = useCallback(async () => {
     const s = await api.settings();
-    setServer(s);
-    setDraft(draftOf(s.values));
-    setChannelMode(s.values.channelMode);
-    setSemMode(s.values.semanticMode);
-    setAgentsOn(new Set(s.values.webAgents));
+    serverRef.current = null;
+    draftRef.current = null;
+    applyServer(s);
     setSemKey('');
     setCustomProbe({ url: '', state: 'idle', detail: '' });
     return s;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const loadSemantic = useCallback(() => { panel.semantic().then(setSemantic, () => setSemantic(null)); }, []);
   const loadGrants = useCallback(() => { panel.grants().then(setGrants, () => undefined); }, []);
@@ -223,7 +321,15 @@ export function SettingsPanel() {
         await sleep(2000);
       }
     })();
-    return () => { stop = true; };
+    // Leaving the page with an unsaved (or still saving) field asks first; closing the
+    // settings saves whatever valid text is still in a focused field.
+    const onUnload = (e: BeforeUnloadEvent) => { if (inflight.current.size || dirtyKeys().length) { e.preventDefault(); e.returnValue = ''; } };
+    window.addEventListener('beforeunload', onUnload);
+    return () => {
+      stop = true;
+      window.removeEventListener('beforeunload', onUnload);
+      for (const k of dirtyKeys()) void commitText(k);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -234,15 +340,15 @@ export function SettingsPanel() {
     return () => clearTimeout(t);
   }, [skillsDir]);
 
-  const set = (k: TextKey, v: string) => setDraft((d) => (d ? { ...d, [k]: v } : d));
+  const set = (k: TextKey, v: string) => { if (draftRef.current) putDraft({ ...draftRef.current, [k]: v }); };
 
   // ── status (renderStatus) ──
   const o = health;
   const t = reachable ? o?.tunnel : 'unreachable';
   const dm: [string, string] = reachable ? ['ok', '运行中' + (o?.version ? ' · v' + o.version : '')] : ['', '未运行'];
-  const cmap: Record<string, [string, string]> = { online: ['ok', o?.tunnel_mode === 'named' ? '持久在线' : '临时在线'], unverified: ['warn', '未验证'], starting: ['warn', '启动中…'], error: ['bad', '启动失败'], unavailable: ['bad', '不可用'], unreachable: ['', '未连接'] };
-  const customMap: Record<string, [string, string]> = { idle: ['', '待检测'], probing: ['warn', '检测中…'], online: ['ok', '自定义在线'], error: ['bad', '自定义不可达'] };
-  const cm: [string, string] = channelMode === 'custom' ? customMap[customProbe.state] ?? ['', '待检测'] : cmap[t ?? ''] ?? ['', '未启动'];
+  // Overview: every running channel in one line (持久 · gpt), the same wording as the sidebar.
+  const chSum = channelSummary(reachable ? health : null, channelMode, customProbe.state === 'online');
+  const oaSt = openaiStatus(reachable ? health : null, reachable, draft?.openaiTunnelClientPath ?? '');
   const hasNamed = !!o?.public_base_url;
   let chst: { text: string; cls: string };
   let cnerr: { text: string; cls: string } | null = null;
@@ -252,10 +358,6 @@ export function SettingsPanel() {
     const s = customProbe.state === 'online' ? ['自定义 · 在线', 'ok'] : customProbe.state === 'probing' ? ['检测中…', 'warn'] : customProbe.state === 'error' ? ['自定义 · 不可达', 'bad'] : ['待检测', 'dim'];
     chst = { text: s[0]!, cls: s[1]! };
     if (customProbe.detail) cnerr = { text: customProbe.detail, cls: customProbe.state === 'error' ? 'bad' : '' };
-  } else if (channelMode === 'openai') {
-    // The OpenAI channel is managed from the VS Code settings page (plan D5).
-    showQ = showN = false;
-    chst = { text: '在 VS Code 中管理', cls: 'dim' };
   } else if (t === 'online' || t === 'unverified') {
     chst = { text: (t === 'online' ? '在线 · ' : '未验证 · ') + (o?.tunnel_mode === 'named' ? '持久' : '临时'), cls: t === 'online' ? 'ok' : 'warn' };
     if (o?.tunnel_reason) cnerr = { text: o.tunnel_reason, cls: 'warn' };
@@ -273,12 +375,15 @@ export function SettingsPanel() {
   } else chst = { text: '未启动', cls: 'dim' };
   const customReady = channelMode === 'custom' && customProbe.state === 'online' && !!customProbe.url;
   const mcpValue = channelMode === 'custom' ? (customReady && o?.mcp_path ? customProbe.url + o.mcp_path : '') : reachable ? o?.mcp_url || '' : '';
+  // A loopback link works on this computer only: copyable, but not "ready".
+  const mcpLocal = /:\/\/(127\.|localhost|\[::1\])/.test(mcpValue);
+  const savedTunnelId = server?.values.openaiTunnelId ?? '';
 
   // ── actions ──
   const refreshHealth = () => { panel.health().then(setHealth, () => undefined); };
   const requireCloudflaredPath = () => {
-    if (draft?.cloudflaredPath.trim()) return true;
-    ui.toast('使用公网渠道前，请先填写 cloudflared 可执行文件的完整路径并保存。', 'warn');
+    if (serverRef.current?.values.cloudflaredPath.trim()) return true;
+    ui.toast('使用公网渠道前，请先填写 cloudflared 可执行文件的完整路径。', 'warn');
     document.getElementById('cloudflaredPath')?.focus();
     return false;
   };
@@ -302,6 +407,24 @@ export function SettingsPanel() {
     const r = await api.probePublicUrl(url).catch(() => ({ ok: false, detail: '公网地址不可达' }));
     setCustomProbe((p) => (p.url === url ? { url, state: r.ok ? 'online' : 'error', detail: r.ok ? '' : r.detail || '公网地址不可达' } : p));
   };
+  const pickChannel = (m: 'cloudflare' | 'openai' | 'custom') => {
+    const s = serverRef.current;
+    setCustomProbe({ url: '', state: 'idle', detail: '' });
+    setChannelMode(m);
+    if (!s) return;
+    if (m === s.values.channelMode) { markField(['channelMode'], null); return; }
+    // Custom needs its HTTPS address first; the mode is saved with it (commitText).
+    if (m === 'custom' && !/^https:\/\/[^\s/]+/i.test((draftRef.current?.publicBaseUrl ?? '').trim())) {
+      markField(['channelMode'], { state: 'error', msg: '填写并保存 HTTPS 公网地址后，自定义渠道才会成为默认渠道。' });
+      return;
+    }
+    void commit({ channelMode: m }, ['channelMode']).then((ok) => { if (!ok && serverRef.current) setChannelMode(serverRef.current.values.channelMode); });
+  };
+  const pickSemMode = (m: string) => {
+    setSemMode(m);
+    if (m === serverRef.current?.values.semanticMode) return;
+    void commit({ semanticMode: m as SettingsValues['semanticMode'] }, ['semanticMode']).then((ok) => { if (!ok && serverRef.current) setSemMode(serverRef.current.values.semanticMode); });
+  };
   /** Restart in place and wait until a new daemon answers. */
   const restartAndWait = async (): Promise<boolean> => {
     const before = (await panel.health().catch(() => null))?.daemon_id;
@@ -324,28 +447,32 @@ export function SettingsPanel() {
       if (job.state === 'error') { done('hint bad', job.error); return; }
       if (job.state !== 'done') { done('hint bad', '初始化未完成'); return; }
       setCf({ busy: true, label: '等待确认…', cls: 'hint', text: 'cloudflared 验证通过，等待确认；尚未保存或启动渠道。' });
-      const choice = await ui.confirm('BlackHole：cloudflared 验证通过。保存该路径并重启 daemon 使其生效？', ['仅回填路径', '保存并重启'],
+      const choice = await ui.confirm('BlackHole：cloudflared 验证通过。保存该路径，并重启 daemon 使其生效？', ['仅保存路径', '保存并重启'],
         <div className="buy-dialog-note" style={{ marginTop: 0 }}>{job.path}<br />重启会短暂中断本地服务；不会自动启动公网渠道。</div>);
-      if (choice === '保存并重启') {
-        const latest = await api.settings();
-        if (latest.values.channelMode !== initialMode || latest.values.cloudflaredPath !== initialPath) { done('hint bad', `渠道配置已变化，未保存路径或重启 daemon。已验证文件：${job.path}`); return; }
-        setCf({ busy: true, label: '正在应用…', cls: 'hint', text: '正在保存路径并重启 daemon；不会自动启动渠道。' });
-        setServer(await api.saveSettings(latest.revision, { cloudflaredPath: job.path }));
-        set('cloudflaredPath', job.path);
-        const restarted = await restartAndWait();
-        done(restarted ? 'hint ok' : 'hint bad', restarted ? '路径已保存，daemon 已重启；尚未启动渠道。' : '路径已保存，但 daemon 重启失败。');
+      if (!choice) { done('hint', 'cloudflared 已就绪：' + job.path + '。未保存路径。'); return; }
+      const latest = await api.settings();
+      if (latest.values.channelMode !== initialMode || latest.values.cloudflaredPath !== initialPath || (draftRef.current?.cloudflaredPath ?? '') !== previous) {
+        done('hint bad', `渠道配置已变化，未保存路径或重启 daemon。已验证文件：${job.path}`);
         return;
       }
-      if ((document.getElementById('cloudflaredPath') as HTMLInputElement | null)?.value !== previous) {
-        done('hint', 'cloudflared 已就绪：' + job.path + '。当前模式或路径已变化，未自动回填；请自行确认。');
-        return;
-      }
+      setCf({ busy: true, label: '正在保存…', cls: 'hint', text: '正在保存路径；不会自动启动渠道。' });
       set('cloudflaredPath', job.path);
-      done('hint ok', (job.installed ? '安装完成。' : '已有可用的 cloudflared，未下载。') + '路径已回填，请按原流程保存设置；尚未启动渠道。');
+      if (!(await commit({ cloudflaredPath: job.path }, ['cloudflaredPath'], { cloudflaredPath: job.path }))) { done('hint bad', '路径保存失败；请查看上面的输入框提示。'); return; }
+      if (choice !== '保存并重启') { done('hint ok', (job.installed ? '安装完成。' : '已有可用的 cloudflared，未下载。') + '路径已保存，重启 daemon 后生效；尚未启动渠道。'); return; }
+      setCf({ busy: true, label: '正在重启…', cls: 'hint', text: '路径已保存，正在重启 daemon；不会自动启动渠道。' });
+      const restarted = await restartAndWait();
+      if (restarted) await loadSettings().catch(() => undefined);
+      done(restarted ? 'hint ok' : 'hint bad', restarted ? '路径已保存，daemon 已重启；尚未启动渠道。' : '路径已保存，但 daemon 重启失败。');
     } catch (e) { done('hint bad', errText(e)); }
   };
   const restart = async () => {
-    if (await restartAndWait()) { ui.toast('BlackHole：daemon 已重启。'); await loadSettings().catch(() => undefined); loadSemantic(); }
+    if (restarting) return;
+    if ((await ui.confirm('BlackHole：重启 daemon 会短暂中断本地服务，已连接的网页 AI 需要等它恢复。', ['重启'])) !== '重启') return;
+    setRestarting(true);
+    await Promise.allSettled([...inflight.current]);
+    const ok = await restartAndWait();
+    setRestarting(false);
+    if (ok) { ui.toast('BlackHole：daemon 已重启。'); await loadSettings().catch(() => undefined); loadSemantic(); }
     else ui.toast('BlackHole：重启 daemon 失败', 'bad');
   };
   const rotateToken = async () => {
@@ -374,72 +501,76 @@ export function SettingsPanel() {
     try { await panel.grantsClear(); loadGrants(); ui.toast('BlackHole：全部全局授权已清除。'); }
     catch (e) { ui.toast('BlackHole: 清除授权失败 — ' + errText(e), 'bad'); }
   };
+  const semanticSave = async () => {
+    const key = semKey.trim();
+    if (!key) return;
+    try { await panel.semanticSave(key); setSemKey(''); ui.toast('BlackHole：Devin Key 已保存；重启 daemon 后生效。'); }
+    catch (e) { ui.toast('BlackHole: Devin Key 保存失败 — ' + errText(e), 'bad'); }
+    loadSemantic();
+  };
   const semanticClear = async () => {
     if ((await ui.confirm('BlackHole：清除 Devin Key 后，重启 daemon 会使 context_search 下线。', ['清除 Key'])) !== '清除 Key') return;
     try { await panel.semanticClear(); ui.toast('BlackHole：Devin Key 已清除；重启 daemon 后 context_search 下线。'); }
     catch (e) { ui.toast('BlackHole: 清除失败 — ' + errText(e), 'bad'); }
     loadSemantic();
   };
-  const patchNow = async (values: Partial<SettingsValues>) => {
-    const latest = server ?? (await api.settings());
-    try { setServer(await api.saveSettings(latest.revision, values)); }
-    catch (e) {
-      if (!(e instanceof ApiError) || e.code !== 'revision_conflict') throw e;
-      const fresh = await api.settings();
-      setServer(await api.saveSettings(fresh.revision, values));
-    }
+  /** OpenAI start: pending saves land first, then the daemon must hold exactly the fields shown. */
+  const prepareOpenaiStart = async (): Promise<number> => {
+    const keys: TextKey[] = ['openaiTunnelClientPath', 'openaiTunnelId'];
+    for (const k of keys) if (dirtyKeys().includes(k)) void commitText(k);
+    await Promise.allSettled([...inflight.current]);
+    if (keys.some((k) => fstateRef.current[k]?.state === 'error' || dirtyKeys().includes(k))) throw new Error('unsaved_settings');
+    const fresh = await api.settings();
+    const d = draftRef.current!;
+    const diff = Object.fromEntries(keys.filter((k) => serverText(fresh.values, k).trim() !== d[k].trim()).map((k) => [k, d[k].trim()])) as Partial<Record<TextKey, string>>;
+    if (!Object.keys(diff).length) return fresh.revision;
+    applyServer(fresh);
+    if (!(await commit(diff as Partial<SettingsValues>, keys, diff))) throw new Error('unsaved_settings');
+    return serverRef.current!.revision;
   };
-  const addCustomAgent = async () => {
-    const name = waName.trim(), raw = waUrl.trim();
-    if (!name || !raw || !server) return;
-    setWaName(''); setWaUrl('');
-    const url = normalizeUrl(raw);
-    if (!url) { ui.toast(`BlackHole: 无法识别的网址「${raw}」，示例：example.com 或 https://example.com`, 'bad'); return; }
-    const custom = server.values.customWebAgents;
-    if ([...AGENTS, ...custom].some((a) => a.name.toLowerCase() === name.toLowerCase())) { ui.toast(`BlackHole: 名称「${name}」已存在`, 'bad'); return; }
-    try { await patchNow({ customWebAgents: [...custom, { name, url }] }); ui.toast('BlackHole：自定义站点已添加。'); }
-    catch (e) { ui.toast('BlackHole: ' + errText(e), 'bad'); }
-  };
-  const removeCustomAgent = async (name: string) => {
-    if (!server || (await ui.confirm(`BlackHole：删除自定义站点「${name}」？`, ['删除'])) !== '删除') return;
-    try { await patchNow({ customWebAgents: server.values.customWebAgents.filter((a) => a.name !== name) }); ui.toast(`BlackHole：自定义站点「${name}」已删除。`); }
-    catch (e) { ui.toast('BlackHole: ' + errText(e), 'bad'); }
+  const openaiInstalled = async (previous: string, path: string): Promise<boolean> => {
+    await Promise.allSettled([...inflight.current]);
+    const s = serverRef.current;
+    if (!s || (draftRef.current?.openaiTunnelClientPath ?? '') !== previous || serverText(s.values, 'openaiTunnelClientPath') !== previous.trim()) return false;
+    set('openaiTunnelClientPath', path);
+    return commit({ openaiTunnelClientPath: path }, ['openaiTunnelClientPath'], { openaiTunnelClientPath: path });
   };
 
-  const save = async () => {
-    if (!server || !draft || cf.busy || saving) return;
-    if (channelMode === 'custom' && !/^https:\/\/[^\s/]+/i.test(draft.publicBaseUrl.trim())) { ui.toast('BlackHole: 自定义公网地址需要填写可访问的 HTTPS Base URL。', 'bad'); return; }
-    const values: Record<string, unknown> = {};
-    const saved: string[] = [];
-    for (const k of TEXT_KEYS) {
-      const next = draft[k].trim();
-      if (next !== serverText(server.values, k)) { values[k] = next; saved.push(FIELD[k].label); }
-    }
-    if (channelMode !== server.values.channelMode) { values.channelMode = channelMode; saved.push('渠道方式'); }
-    if (semMode !== server.values.semanticMode) { values.semanticMode = semMode; saved.push('Devin Key 模式'); }
-    const nextAgents = AGENTS.map((a) => a.name).filter((n) => agentsOn.has(n));
-    if (JSON.stringify(nextAgents) !== JSON.stringify(server.values.webAgents.filter((n) => AGENTS.some((a) => a.name === n)))) { values.webAgents = nextAgents; saved.push('Web Agent 显示'); }
-    setSaving(true);
-    try {
-      if (Object.keys(values).length) await api.saveSettings(server.revision, values as Partial<SettingsValues>);
-      if (semKey.trim()) {
-        try { await panel.semanticSave(semKey.trim()); saved.push('Devin Key'); }
-        catch (e) { ui.toast('BlackHole: Devin Key 保存失败 — ' + errText(e), 'bad'); }
-      }
-      const detail = saved.length ? '（' + [...new Set(saved)].join('、') + '）' : '';
-      ui.toast('BlackHole：设置已保存' + detail + '；相关改动需重启 daemon 生效。');
-      await loadSettings();
-      loadSemantic();
-    } catch (e) {
-      if (e instanceof ApiError && e.code === 'revision_conflict') { ui.toast('设置刚在别处被修改过，已加载最新值，请重新修改后保存。', 'warn'); await loadSettings(); }
-      else ui.toast('BlackHole: 保存失败 — ' + errText(e), 'bad');
-    } finally { setSaving(false); }
+  /** Delete a Courier site: saved at once; Courier then unbinds it, stops injecting and drops the host permission. */
+  const removeCourierSite = async (id: string) => {
+    const site = serverRef.current?.values.courierSites?.find((x) => x.id === id);
+    if (!site) return;
+    const ok = await ui.confirm(`BlackHole：删除 Courier 网页站点「${site.name}」？浏览器里的 Courier 会解除它的绑定、停止接管 ${site.origin} 并收回访问权限。`, ['删除']);
+    if (ok !== '删除') return;
+    const rest = (serverRef.current?.values.courierSites ?? []).filter((x) => x.id !== id);
+    if (await commit({ courierSites: rest }, ['courierSites'])) ui.toast(`已删除「${site.name}」`);
   };
 
-  const field = (k: TextKey, extra?: ReactNode) => (
+  // 局域网直连：开启前说清楚风险，由用户决定；守护进程异步开关端口，稍后刷新状态。
+  const toggleLan = async (on: boolean) => {
+    if (on) {
+      const ok = await ui.confirm('BlackHole：开启局域网直连？\n同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', ['开启']);
+      if (ok !== '开启') return;
+    }
+    if (await commit({ lanAccess: on }, ['lanAccess'])) setTimeout(refreshHealth, 500);
+  };
+
+  const fieldStatus = (k: SaveKey) => {
+    const s = fstate[k];
+    return s && s.state !== 'error' ? <span className={'bhp-fs ' + s.state}>{s.state === 'saving' ? '保存中…' : '已保存'}</span> : null;
+  };
+  const fieldError = (k: SaveKey) => { const s = fstate[k]; return s?.state === 'error' ? <div className="bhp-ferr" role="alert">{s.msg}</div> : null; };
+  const textInput = (k: TextKey, id: string = k, disabled = false, onEdit?: () => void) => (
+    <input id={id} type="text" spellCheck={false} value={draft?.[k] ?? ''} placeholder={FIELD[k].ph} disabled={disabled || !draft} aria-invalid={fstate[k]?.state === 'error' || undefined}
+      onChange={(e) => { set(k, e.target.value); onEdit?.(); }}
+      onBlur={() => void commitText(k)}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); else if (e.key === 'Escape' && (dirtyKeys().includes(k) || fstateRef.current[k]?.state === 'error')) { e.preventDefault(); e.stopPropagation(); revertText(k); } }} />
+  );
+  const field = (k: TextKey, extra?: ReactNode, disabled = false) => (
     <div className="f" key={k}>
-      <label htmlFor={k}>{FIELD[k].label}</label>
-      <input id={k} type="text" spellCheck={false} value={draft?.[k] ?? ''} disabled={k === 'cloudflaredPath' && cf.busy} onChange={(e) => set(k, e.target.value)} />
+      <label htmlFor={k}>{FIELD[k].label}{fieldStatus(k)}</label>
+      {textInput(k, k, disabled)}
+      {fieldError(k)}
       <div className="d">{FIELD[k].desc}</div>
       {extra}
     </div>
@@ -451,135 +582,253 @@ export function SettingsPanel() {
     : { text: '未配置', cls: 'dim', clear: false };
   const hasCfPath = (draft?.cloudflaredPath.trim() ?? '') !== '';
   const port = window.location.port || '7306';
+  const pending = server?.pending_restart ?? [];
 
   return (
     <div className="bhp">
       <h1>BlackHole 设置<span className="ver">{o?.version ? 'v' + o.version : ''}</span></h1>
       <div className="cockpit" id="set-overview">
         <div className="cell"><div className="ck-k">Daemon</div><div className="ck-v"><span className={'d ' + dm[0]} /><span>{dm[1]}</span></div></div>
-        <div className="cell"><div className="ck-k">渠道</div><div className="ck-v"><span className={'d ' + cm[0]} /><span>{cm[1]}</span></div></div>
+        <div className="cell"><div className="ck-k">渠道</div>
+          <div className="ck-v"><span className={'d ' + (chSum.tone === 'muted' ? '' : chSum.tone)} /><span>{chSum.text}</span></div>
+        </div>
         <Activity health={reachable ? health : null} />
       </div>
+      <div className="bhp-autosave">修改在离开输入框或按 Enter 后自动保存，Esc 撤销尚未保存的输入。</div>
 
-      <div className="sec" id="set-account">账号与订阅</div>
+      <div className="sec" id="set-account">账号与订阅<small>登录状态、订阅时长与购买记录。</small></div>
       <AccountSection ui={ui} />
 
-      <div className="sec" id="set-channel">公网渠道</div>
+      <div className="sec" id="set-channel">公网渠道<small>让网页 AI 连到这台电脑：Cloudflare、OpenAI Secure MCP Tunnel，或你自己的反向代理。</small></div>
       <div className="card">
         <div className="channel-mode"><span className="lbl">渠道方式</span>
           {(['cloudflare', 'openai', 'custom'] as const).map((m) => (
             <button key={m} type="button" className={'agchip' + (channelMode === m ? ' on' : '')} aria-pressed={channelMode === m} disabled={cf.busy}
-              onClick={() => { setCustomProbe({ url: '', state: 'idle', detail: '' }); setChannelMode(m); }}>{m === 'cloudflare' ? 'Cloudflare' : m === 'openai' ? 'OpenAI' : '自定义'}</button>
+              onClick={() => pickChannel(m)}>{m === 'cloudflare' ? 'Cloudflare' : m === 'openai' ? 'OpenAI' : '自定义'}</button>
           ))}
+          {fieldStatus('channelMode')}
         </div>
+        {fieldError('channelMode')}
         {channelMode === 'cloudflare' ? (
           <div id="channelCloudflare">
-            <div className="fgrid channel-config">{field('cloudflaredPath')}{field('publicBaseUrl')}</div>
+            <div className="fgrid channel-config">{field('cloudflaredPath', undefined, cf.busy)}{field('publicBaseUrl')}</div>
             {!hasCfPath && <button id="cfInstall" className="secondary" type="button" disabled={cf.busy} onClick={() => void cfInstall()}>{cf.label}</button>}
             {(!hasCfPath || cf.cls !== 'hint') && <div id="cfInstallMessage" className={cf.cls} role="status" aria-live="polite">{cf.text}</div>}
             <div className="channel-required">cloudflared 由 BlackHole 启停；固定公网地址仅用于持久渠道。修改后需重启 daemon。</div>
           </div>
         ) : channelMode === 'openai' ? (
-          <div id="channelOpenai">
-            <div className="channel-custom-note">OpenAI Secure MCP Tunnel 请在 VS Code 的 BlackHole 设置页安装、配置与启停；只出站连接，不提供公网地址。选择此项只更改默认渠道，不会停止 Cloudflare。</div>
-          </div>
+          <OpenAISection health={health} reachable={reachable} clientPath={draft?.openaiTunnelClientPath ?? ''}
+            fields={(installing) => <>{field('openaiTunnelClientPath', undefined, installing)}{field('openaiTunnelId')}</>}
+            confirm={ui.confirm} toast={ui.toast} prepareStart={prepareOpenaiStart} onInstalled={openaiInstalled} />
         ) : (
           <div id="channelCustom">
             <div className="fgrid channel-config">
-              <div className="f"><label htmlFor="customPublicBaseUrl">公网地址</label>
+              <div className="f"><label htmlFor="customPublicBaseUrl">公网地址{fieldStatus('publicBaseUrl')}</label>
                 <div className="channel-probe-line">
-                  <input id="customPublicBaseUrl" type="text" spellCheck={false} placeholder="https://blackhole.example.com" value={draft?.publicBaseUrl ?? ''} onChange={(e) => { set('publicBaseUrl', e.target.value); setCustomProbe({ url: '', state: 'idle', detail: '' }); }} />
+                  {textInput('publicBaseUrl', 'customPublicBaseUrl', false, () => setCustomProbe({ url: '', state: 'idle', detail: '' }))}
                   <button className="secondary" type="button" disabled={customProbe.state === 'probing'} onClick={() => void runCustomProbe()}>检测</button>
                 </div>
-                <div className="d">填写当前公网地址并检测；支持 HTTP/HTTPS、域名或 IP，以及自定义端口。</div>
+                {fieldError('publicBaseUrl')}
+                <div className="d">填写当前公网地址并检测；支持 HTTP/HTTPS、域名或 IP，以及自定义端口。作为默认渠道保存时需要 HTTPS。</div>
               </div>
             </div>
             <div className="channel-custom-note">将公网 HTTPS 流量转发到 <code>{'http://127.0.0.1:' + port}</code>；隧道与反向代理由你自行维护。</div>
           </div>
         )}
-        <div className="chrow channel-actions">
-          <span className={'chst ' + chst.cls}>{chst.text}</span>
-          <span className="sp" />
-          {showQ && <button className="secondary" type="button" onClick={() => { if (requireCloudflaredPath()) void tunnel('quick'); }}>启动临时</button>}
-          {showN && <button className="secondary" type="button" disabled={!hasNamed} title={hasNamed ? '启动持久渠道（固定域名）' : '持久渠道需先配置固定公网地址'} onClick={() => { if (requireCloudflaredPath()) void tunnel('named'); }}>启动持久</button>}
-          {showS && <button className="secondary" type="button" onClick={() => void tunnel('stop')}>停止</button>}
-          {showC && <button type="button" onClick={() => void tunnel('copy')}>复制链接</button>}
-        </div>
-        {cnerr && <div className={'hint ' + cnerr.cls} style={{ display: 'block' }}>{cnerr.text}</div>}
-      </div>
-
-      <div className="sec" id="set-remote">手机访问</div>
-      <RemoteSection enabled={!!server?.values.remoteAccess} toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)}
-        onToggle={async (on) => { try { await patchNow({ remoteAccess: on }); } catch (e) { ui.toast('BlackHole: ' + errText(e), 'bad'); } }} />
-
-      <div className="sec" id="set-mcp">MCP 连接</div>
-      <div className="card">
-        <div className="mcpurl"><span>{mcpValue ? 'MCP 链接已就绪' : channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪'}</span>
-          <div className="mcp-actions">
-            <button id="mcpCopy" type="button" disabled={!mcpValue} onClick={() => void copy(mcpValue).then(() => ui.toast('BlackHole：MCP 链接已复制。'))}>复制 MCP 链接</button>
-            <button id="mcpDesc" className="secondary" type="button" disabled={!mcpValue} onClick={() => void copyDesc()}>复制连接器描述</button>
-            <button id="mcpRotate" className="secondary" type="button" onClick={() => void rotateToken()}>重置 MCP 链接</button>
+        {channelMode !== 'openai' && (
+          <div className="chrow channel-actions">
+            <span className={'chst ' + chst.cls}>{chst.text}</span>
+            <span className="sp" />
+            {showQ && <button className="secondary" type="button" onClick={() => { if (requireCloudflaredPath()) void tunnel('quick'); }}>启动临时</button>}
+            {showN && <button className="secondary" type="button" disabled={!hasNamed} title={hasNamed ? '启动持久渠道（固定域名）' : '持久渠道需先配置固定公网地址'} onClick={() => { if (requireCloudflaredPath()) void tunnel('named'); }}>启动持久</button>}
+            {showS && <button className="secondary" type="button" onClick={() => void tunnel('stop')}>停止</button>}
+            {showC && <button type="button" onClick={() => void tunnel('copy')}>复制链接</button>}
           </div>
-        </div>
+        )}
+        {channelMode !== 'openai' && cnerr && <div className={'hint ' + cnerr.cls} style={{ display: 'block' }}>{cnerr.text}</div>}
+        {/* Phone access rides on the channel (same card as VS Code); paired phones are under 高级. */}
+        <RemoteSection part="pair" toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)} />
       </div>
 
-      <div className="sec" id="set-common">常用</div>
+      {channelMode === 'openai' ? (
+        <>
+          <div className="sec" id="set-mcp">OpenAI 连接<small>OpenAI 渠道没有 MCP 链接：ChatGPT 通过 Tunnel ID 连接。</small></div>
+          <div className="card">
+            <div className="mcpurl"><span>{savedTunnelId ? 'Tunnel ID：' + savedTunnelId : '尚未保存 Tunnel ID'}</span>
+              <div className="mcp-actions">
+                <button id="mcpCopy" type="button" disabled={!savedTunnelId} onClick={() => void copy(savedTunnelId).then((ok) => ui.toast(ok ? 'BlackHole：Tunnel ID 已复制。' : 'BlackHole：复制失败。', ok ? 'info' : 'warn'))}>复制 Tunnel ID</button>
+                <button id="mcpDesc" className="secondary" type="button" onClick={() => void copyDesc()}>复制连接器描述</button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="sec" id="set-mcp">MCP 连接<small>把 MCP 链接和连接器描述填进网页 AI 的连接器设置。</small></div>
+          <div className="card">
+            <div className="mcpurl"><span>{mcpValue ? (mcpLocal ? 'MCP 链接仅本机可用（公网渠道未启动）' : 'MCP 链接已就绪') : channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪'}</span>
+              <div className="mcp-actions">
+                <button id="mcpCopy" type="button" disabled={!mcpValue} onClick={() => void copy(mcpValue).then(() => ui.toast('BlackHole：MCP 链接已复制。'))}>复制 MCP 链接</button>
+                <button id="mcpDesc" className="secondary" type="button" disabled={!mcpValue} onClick={() => void copyDesc()}>复制连接器描述</button>
+                <button id="mcpRotate" className="secondary" type="button" onClick={() => void rotateToken()}>重置 MCP 链接</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="sec" id="set-lan">局域网直连<small>监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</small></div>
+      <LanAccess
+        on={!!server?.values.lanAccess}
+        port={server?.values.lanPort ?? 7307}
+        url={server?.values.lanUrl ?? ''}
+        lan={reachable ? health?.lan_access ?? null : null}
+        status={<>{fieldStatus('lanAccess')}{fieldStatus('lanPort')}{fieldStatus('lanUrl')}</>}
+        error={<>{fieldError('lanAccess')}{fieldError('lanPort')}{fieldError('lanUrl')}</>}
+        onToggle={(on) => void toggleLan(on)}
+        onPort={(p) => void commit({ lanPort: p }, ['lanPort']).then((ok) => { if (ok) setTimeout(refreshHealth, 500); })}
+        onUrl={(u) => void commit({ lanUrl: u }, ['lanUrl'])}
+        onCopy={(u) => void copy(u).then(() => ui.toast('BlackHole：直连 MCP 链接已复制。'))}
+      />
+
+      <div className="sec" id="set-proxies">MCP Proxies<small>把其他 MCP 服务器接入 BlackHole，按需启用它们的工具。</small></div>
+      <Proxies ui={ui} />
+
+      <div className="sec" id="set-common">常用<small>Skill 目录、连接器名称与语义搜索（context_search）。</small></div>
       <div className="card">
         <div className="fgrid">
           {field('skillsDir', skills && <div className={'hint ' + skills.cls}>{skills.hint}</div>)}
           {field('connectorName')}
+        </div>
+        <div className="subsec">Devin Key（语义搜索）</div>
+        <div className="fgrid">
           <div className="f"><label htmlFor="semKey">Devin Key</label>
-            <input id="semKey" type="password" spellCheck={false} autoComplete="off" placeholder="sk-…" value={semKey} onChange={(e) => setSemKey(e.target.value)} />
+            <div className="channel-probe-line">
+              <input id="semKey" type="password" spellCheck={false} autoComplete="off" placeholder="sk-…" value={semKey} onChange={(e) => setSemKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void semanticSave(); }} />
+              <button className="secondary" type="button" disabled={!semKey.trim()} onClick={() => void semanticSave()}>保存 Key</button>
+            </div>
             <div className="chrow"><span className={'chst ' + semStatus.cls}>{semStatus.text}</span><span className="sp" />{semStatus.clear && <button className="secondary" type="button" onClick={() => void semanticClear()}>清除已存</button>}</div>
-            <div className="semrow"><span className="lbl">凭据来源</span><div className="agrid">
-              {SEM_MODES.map((m) => <button key={m.v} type="button" className={'agchip' + (semMode === m.v ? ' on' : '')} title={m.title} onClick={() => setSemMode(m.v)}><span className="d" />{m.t}</button>)}
-            </div></div>
+            <div className="d">只保存在本机；不会回显。</div>
+          </div>
+          <div className="f"><label>凭据来源{fieldStatus('semanticMode')}</label>
+            <div className="agrid">
+              {SEM_MODES.map((m) => <button key={m.v} type="button" className={'agchip' + (semMode === m.v ? ' on' : '')} aria-pressed={semMode === m.v} title={m.title} onClick={() => pickSemMode(m.v)}><span className="d" />{m.t}</button>)}
+            </div>
+            {fieldError('semanticMode')}
+            <div className="d">{SEM_MODES.find((m) => m.v === semMode)?.title ?? ''}；修改后需重启 daemon。</div>
           </div>
         </div>
       </div>
 
-      <div className="sec" id="set-grants">授权管理</div>
+      <div className="sec" id="set-courier-sites">Courier 网页站点<small>在浏览器 Courier 里用「检测此页面」接入的网页 AI，新会话可以选它们。删除后 Courier 会解除它的绑定、停止接管该网站并收回访问权限。</small></div>
       <div className="card">
-        <div className="hint" style={{ margin: '0 0 10px' }}>全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
+        <CourierSites sites={server?.values.courierSites ?? []} status={fieldStatus('courierSites')} error={fieldError('courierSites')} onRemove={(id) => void removeCourierSite(id)} />
+      </div>
+
+      <div className="sec" id="set-grants">授权管理<small>全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</small></div>
+      <div className="card">
         <Grants info={grants} onRemove={(s, k, id) => void grantRemove(s, k, id)} />
         <div className="btnrow" style={{ marginTop: 10 }}><button className="secondary" type="button" onClick={() => void grantsClear()}>清除全部全局授权</button></div>
       </div>
 
-      <div className="sec" id="set-proxies">MCP Proxies</div>
-      <Proxies ui={ui} />
-
-      <div className="sec" id="set-agents">Web Agent 显示</div>
+      <div className="sec" id="set-advanced">高级<small>排障与很少需要修改的设置。</small></div>
       <div className="card">
-        <div className="hint" style={{ margin: '0 0 10px' }}>选择要显示的预置站点；自定义站点始终显示。</div>
-        <div className="agrid">
-          {AGENTS.map((a) => <button key={a.name} type="button" className={'agchip' + (agentsOn.has(a.name) ? ' on' : '')} title={a.description} onClick={() => setAgentsOn((s) => { const n = new Set(s); if (n.has(a.name)) n.delete(a.name); else n.add(a.name); return n; })}><span className="d" />{a.name}</button>)}
+        <div className="fgrid">
+          {field('tunnelProbeProxy')}
+          {field('gitUsrBinPath')}
+          <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。</div></div>
+          {field('namedTunnelName')}
         </div>
-        <div className="subsec">自定义站点（手动添加）</div>
-        <div>
-          {!server?.values.customWebAgents.length ? <div className="hint" style={{ margin: 0 }}>还没有自定义站点。</div>
-            : server.values.customWebAgents.map((a) => (
-              <div className="ag-row" key={a.name}><span className="mono-g">{(a.name || '?').charAt(0).toUpperCase()}</span><span className="nm">{a.name}</span><span className="u">{a.url}</span>
-                <button className="del" type="button" title="删除该自定义站点" onClick={() => void removeCustomAgent(a.name)}>删除</button></div>
-            ))}
-        </div>
-        <div className="waadd">
-          <input name="wa-name" aria-label="Web Agent 名称" className="nm" placeholder="名称，如 Kimi" spellCheck={false} value={waName} onChange={(e) => setWaName(e.target.value)} />
-          <input name="wa-url" aria-label="Web Agent 网址" placeholder="网址，如 kimi.com" spellCheck={false} value={waUrl} onChange={(e) => setWaUrl(e.target.value)} />
-          <button className="secondary" type="button" onClick={() => void addCustomAgent()}>添加</button>
+        <RemoteSection part="devices" toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)} />
+        <div className="bhp-danger">
+          <div className="bhp-danger-row">
+            <div><b>重启 daemon</b><small>让需要重启的设置生效；会短暂中断本地服务和已连接的网页 AI。</small></div>
+            <button className="secondary" type="button" disabled={restarting} onClick={() => void restart()}>{restarting ? '重启中…' : '重启 daemon'}</button>
+          </div>
+          <div className="bhp-service"><ServiceCard /></div>
         </div>
       </div>
 
-      <details id="set-advanced"><summary>高级</summary><div className="card" style={{ marginTop: 8 }}><div className="fgrid">
-        {field('tunnelProbeProxy')}
-        {field('gitUsrBinPath')}
-        <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。</div></div>
-        {field('namedTunnelName')}
-      </div></div></details>
-      <div className="actions">
-        <button type="button" disabled={saving || cf.busy} onClick={() => void save()}>保存</button>
-        <button type="button" className="secondary" onClick={() => void restart()}>重启 daemon</button>
-      </div>
+      {pending.length > 0 && (
+        <div className="bhp-restartbar" role="status">
+          <span>需重启 daemon 生效：{[...new Set(pending.map(restartLabel))].join('、')}</span>
+          <button type="button" disabled={restarting} onClick={() => void restart()}>{restarting ? '重启中…' : '立即重启'}</button>
+        </div>
+      )}
       {ui.node}
+    </div>
+  );
+}
+
+/** 局域网直连：开关、端口、监听状态和可复制的直连 MCP 链接。 */
+function LanAccess({ on, port, url, lan, status, error, onToggle, onPort, onUrl, onCopy }: {
+  on: boolean; port: number; url: string; lan: LanAccessView | null; status: ReactNode; error: ReactNode;
+  onToggle: (on: boolean) => void; onPort: (port: number) => void; onUrl: (url: string) => void; onCopy: (url: string) => void;
+}) {
+  const [portText, setPortText] = useState(String(port));
+  useEffect(() => { setPortText(String(port)); }, [port]);
+  const savePort = () => {
+    const n = Number(portText.trim());
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) { setPortText(String(port)); return; }
+    if (n !== port) onPort(n);
+  };
+  const [urlText, setUrlText] = useState(url);
+  useEffect(() => { setUrlText(url); }, [url]);
+  // 格式由守护进程校验（只接受 http(s)://主机[:端口]），错误显示在卡片里。
+  const saveUrl = () => {
+    const next = urlText.trim().replace(/\/+$/, '');
+    if (next !== url) onUrl(next);
+  };
+  // 填了直连域名时，域名链接排在最前面。
+  const urls = on && lan?.listening
+    ? [...(url ? [`${url}${lan.mcp_path}`] : []), ...lan.addresses.map((a) => `http://${a}:${lan.port}${lan.mcp_path}`)]
+    : [];
+  const [cls, text] = !on ? ['', '未开启'] : lan?.error ? ['bad', lan.error] : lan?.listening ? ['ok', `正在监听 0.0.0.0:${lan.port}`] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
+  return (
+    <div className="card">
+      <div className="chrow">
+        <span className={'chst ' + cls}>{text}</span>{status}<span className="sp" />
+        <button type="button" className={on ? 'secondary' : ''} onClick={() => onToggle(!on)}>{on ? '关闭直连' : '开启直连'}</button>
+      </div>
+      <div className="fgrid">
+        <div className="f"><label htmlFor="lanPort">直连端口</label>
+          <input id="lanPort" name="lanPort" inputMode="numeric" spellCheck={false} autoComplete="off" value={portText}
+            onChange={(e) => setPortText(e.target.value)} onBlur={savePort} onKeyDown={(e) => { if (e.key === 'Enter') savePort(); }} />
+          <div className="d">1024–65535，不能与主端口相同；修改后立即生效。</div>
+        </div>
+        <div className="f"><label htmlFor="lanUrl">直连域名（可选）</label>
+          <input id="lanUrl" name="lanUrl" type="text" spellCheck={false} autoComplete="off" placeholder="https://mcp.example.com 或 http://nas.lan:7307" value={urlText}
+            onChange={(e) => setUrlText(e.target.value)} onBlur={saveUrl} onKeyDown={(e) => { if (e.key === 'Enter') saveUrl(); }} />
+          <div className="d">域名映射到这台电脑时填写，下面会列出域名链接。</div>
+        </div>
+      </div>
+      {error}
+      {urls.map((u) => (
+        <div className="mcpurl" key={u}><span title={u}>{lan ? u.replace(lan.mcp_path, '/mcp/…') : u}</span>
+          <div className="mcp-actions"><button type="button" onClick={() => onCopy(u)}>复制 MCP 链接</button></div>
+        </div>
+      ))}
+      {on && lan?.listening && !urls.length && <div className="d">没有找到可用的本机地址：请用这台电脑在局域网里的 IP 加上端口 {lan.port} 连接。</div>}
+    </div>
+  );
+}
+
+function CourierSites({ sites, status, error, onRemove }: { sites: CourierSiteView[]; status: ReactNode; error: ReactNode; onRemove: (id: string) => void }) {
+  if (!sites.length) {
+    return <div className="hint" style={{ margin: 0 }}>还没有接入的网站。在浏览器里打开网页 AI 的聊天页，点工具栏 Courier 的「检测此页面」即可接入（最多 20 个）。{status}{error}</div>;
+  }
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {status && <div className="hint" style={{ margin: 0 }}>{status}</div>}
+      {sites.map((x) => (
+        <div className="ag-row" key={x.id}>
+          <span className="nm" style={{ flex: 1 }}>
+            {x.name} <span className="wa-host">{x.origin.replace(/^https:\/\//, '')}</span>
+          </span>
+          <button className="del" type="button" title="删除这个网站" onClick={() => onRemove(x.id)}>删除</button>
+        </div>
+      ))}
+      {error}
     </div>
   );
 }

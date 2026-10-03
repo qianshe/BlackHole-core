@@ -35,3 +35,10 @@ tasks/
 # Local plan/recovery artifacts only; other .blackhole configuration remains visible.
 /.blackhole/
 BlackHole_短片素材/
+
+# User authentication output must never enter public source history.
+**/auth.json
+**/auth.json.*.tmp
+**/.dev.vars
+**/.dev.vars.*
+**/.secrets.*.env

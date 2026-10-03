@@ -26,7 +26,7 @@ assert.ok(fs.existsSync(path.join(process.cwd(), 'scripts', 'fake-upstream.mjs')
 // find the newest installed extension daemon
 const extRoot = path.join(os.homedir(), '.vscode', 'extensions');
 const cands = fs.readdirSync(extRoot)
-  .filter((d) => /^blackhole\.blackhole-vscode-\d/.test(d))
+  .filter((d) => /^[\w-]+\.blackhole-vscode-\d/.test(d))
   .map((d) => ({ d, v: d.split('-').slice(2).join('-') }))
   .filter((c) => fs.existsSync(path.join(extRoot, c.d, 'dist', 'daemon', 'cli.js')))
   .sort((a, b) => a.v.localeCompare(b.v, undefined, { numeric: true }));

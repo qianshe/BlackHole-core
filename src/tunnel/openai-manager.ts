@@ -94,7 +94,7 @@ const REASONS: Record<string, string> = {
   client_missing: '尚未安装 tunnel-client；请先点击“一键安装”。',
   client_invalid: 'tunnel-client 校验失败；请重新安装或检查路径。',
   credential_missing: '尚未保存 Runtime API Key。',
-  credential_store_unavailable: '系统钥匙串不可用，无法读取 Runtime API Key。',
+  credential_store_unavailable: '无法读取本机保存的 Runtime API Key。',
   spawn_failed: '无法启动 tunnel-client 进程。',
   auth_failed: 'OpenAI 拒绝了 Runtime API Key（401）；请检查后重新保存密钥。',
   permission_denied: '密钥缺少 Tunnels Read/Use 权限，或 Tunnel 未关联当前组织（403）。',

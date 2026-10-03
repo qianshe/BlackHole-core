@@ -77,6 +77,8 @@ export interface RunParams {
   query: string;
   /** Directory to scope the repo map and the searches to (workspace-relative). */
   subPath?: string;
+  /** danger-full-access only: subPath may point outside the workspace. */
+  allowOutside?: boolean;
   treeDepth?: number;
   maxTurns?: number;
   maxResults?: number;
@@ -114,6 +116,7 @@ export async function runContextSearch(params: RunParams): Promise<RunOutcome> {
       timeoutMs: Math.max(10_000, Math.floor(params.cfg.semanticTimeoutMs / (params.maxTurns ?? 3) / 2)),
       signal: controller.signal,
       ...(params.subPath ? { subPath: params.subPath } : {}),
+      ...(params.allowOutside ? { allowOutside: true } : {}),
     });
   } catch (e) {
     if (controller.signal.aborted) {

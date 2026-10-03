@@ -1,7 +1,8 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'node:crypto';
 import { parseBuildArgs, buildDefines, daemonBuildDefines } from './build-config.mjs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
@@ -64,12 +65,11 @@ const daemonExternals = [
   // sandboxed-shell → pwsh → windows-env; sandboxed-shell → acl-sandbox → ffi → koffi
   '../workspace/sandboxed-shell.js',
   '../workspace/pwsh.js',
+  '../workspace/shell-codepage.js', // pwsh → shell-codepage (console code-page transport)
   '../workspace/windows-env.js',
   '../win32/acl-sandbox.js',
   '../win32/ffi.js',
   'koffi',
-  // daemon-owned account storage (plan 6.11): native per-platform binaries, shipped like koffi
-  '@napi-rs/keyring',
 ];
 const daemonOptions = {
   ...common,
@@ -105,81 +105,45 @@ function copyAsset(src, dest) {
  *  time (MODULE_TYPELESS warning + perf overhead). */
 function writeModuleTypeMarkers() {
   const marker = JSON.stringify({ type: 'module' });
-  for (const dir of ['dist/daemon/workspace', 'dist/daemon/win32', 'dist/workspace', 'dist/win32']) {
+  for (const dir of ['dist/workspace', 'dist/win32']) {
     writeFileSync(`${dir}/package.json`, marker);
   }
 }
 
-// The external (non-bundled) win32 sandbox chain: compiled files land at the
-// exact relative path the daemon's createRequire('../workspace/sandboxed-shell.js')
-// resolves to from dist/daemon/cli.js — dist/daemon/workspace/sandboxed-shell.js.
+// The external (non-bundled) win32 sandbox chain: compiled files land where every
+// require in dist/daemon/cli.js resolves them — '../workspace/*.js' and
+// '../win32/*.js' relative to dist/daemon/, i.e. dist/workspace/ and dist/win32/.
+// One copy only: loading ffi.js twice in one process registers its koffi types twice.
 function copyDaemonExternals(rootDist) {
-  const files = ['workspace/sandboxed-shell.js', 'workspace/pwsh.js', 'workspace/windows-env.js', 'win32/acl-sandbox.js', 'win32/ffi.js'];
-  mkdirSync('dist/daemon/workspace', { recursive: true });
-  mkdirSync('dist/daemon/win32', { recursive: true });
-  // Two resolution bases coexist in the bundle:
-  //  - static external requires emit "../workspace/pwsh.js" (relative to the
-  //    bundle root → packages/vscode/dist/workspace/), from source files that
-  //    imported pwsh directly (tools.ts etc.)
-  //  - the dynamic loader uses "./workspace/sandboxed-shell.js" (relative to
-  //    dist/daemon/, where __filename points in the bundled form)
-  // Ship the chain at BOTH layouts so every require form resolves.
+  const files = ['workspace/sandboxed-shell.js', 'workspace/pwsh.js', 'workspace/shell-codepage.js', 'workspace/windows-env.js', 'win32/acl-sandbox.js', 'win32/ffi.js'];
+  // Older builds also shipped a daemon-local duplicate; remove it so it never packs.
+  for (const stale of ['dist/daemon/workspace', 'dist/daemon/win32']) rmSync(stale, { recursive: true, force: true });
   mkdirSync('dist/workspace', { recursive: true });
   mkdirSync('dist/win32', { recursive: true });
   for (const rel of files) {
-    copyAsset(`${rootDist}/${rel}`, `dist/daemon/${rel}`);
     copyAsset(`${rootDist}/${rel}`, `dist/${rel}`);
   }
   copyKoffiNodeModules();
-  copyKeyringNodeModules();
-}
-
-/**
- * @napi-rs/keyring resolves its native binary from a sibling
- * @napi-rs/keyring-<target> package. Ships the loader plus every target
- * package found locally or fetched by scripts/fetch-keyring-prebuilds.mjs
- * (.cache/keyring-prebuilds). A target without a binary reports account
- * storage as unavailable instead of crashing the daemon.
- */
-function copyKeyringNodeModules() {
-  const loader = realpathSync('../../node_modules/@napi-rs/keyring');
-  const dest = 'dist/daemon/node_modules/@napi-rs';
-  rmSync(dest, { recursive: true, force: true });
-  copyRealFileTree(loader, `${dest}/keyring`, isRuntimeKoffiFile);
-  const found = new Map();
-  const pnpmStore = join(loader, '..');
-  for (const dir of [pnpmStore, join(process.cwd(), '../../.cache/keyring-prebuilds')]) {
-    let names = [];
-    try { names = readdirSync(dir); } catch { names = []; }
-    for (const name of names) {
-      const m = /^(?:@napi-rs\+)?keyring-([a-z0-9-]+?)(?:@[\d.]+)?$/.exec(name);
-      if (!m || found.has(m[1])) continue;
-      const pkg = existsSync(join(dir, name, 'package.json')) ? join(dir, name) : join(dir, name, 'node_modules/@napi-rs', `keyring-${m[1]}`);
-      if (existsSync(join(pkg, 'package.json'))) found.set(m[1], pkg);
-    }
-  }
-  for (const [target, pkg] of found) copyRealFileTree(pkg, `${dest}/keyring-${target}`, isRuntimeKoffiFile);
-  console.log(`copied @napi-rs/keyring (${[...found.keys()].join(', ') || 'no native targets'})`);
 }
 
 /**
  * The sandbox chain's ffi.js does `import koffi from 'koffi'` — a BARE module
  * specifier. Inside the installed extension there is no ancestor
- * node_modules, so the vsix must SHIP koffi itself, beside the daemon entry:
- * dist/daemon/node_modules/koffi (the JS loader) plus
- * dist/daemon/node_modules/@koromix/koffi-win32-x64 (the native koffi.node
+ * node_modules, so the vsix must SHIP koffi itself: dist/node_modules/koffi
+ * (the JS loader) plus dist/node_modules/@koromix/koffi-win32-x64 (the native koffi.node
  * the loader discovers via its @koromix sibling convention). pnpm installs
  * these as junctions — cpSync would try to RECREATE the link (EPERM without
  * privileges on Windows), so copyRealFileTree walks and copies REAL files.
  */
 function copyKoffiNodeModules() {
   const koffiRoot = resolveKoffiRealRoot();
-  // koffi must live beside BOTH chain layouts: dist/daemon/node_modules serves
-  // the daemon-local copies, dist/node_modules serves the outer ones
-  // (dist/win32/ffi.js reached by static external requires, e.g. the proxy job
-  // object) — inside the installed extension there is no ancestor
-  // node_modules, so every layout needs its own walk-up base.
-  for (const dest of ['dist/daemon/node_modules', 'dist/node_modules']) {
+  // ONE copy: Node resolves the bare 'koffi' by walking up from the importing file,
+  // so dist/win32/ffi.js, dist/workspace/*.js and dist/daemon/cli.js (DPAPI, code
+  // page) all reach dist/node_modules; the daemon always runs from the extension
+  // directory. dist/daemon/node_modules held a duplicate (koffi + the removed
+  // keyring) in older builds; drop it so stale copies never ship.
+  rmSync('dist/daemon/node_modules', { recursive: true, force: true });
+  for (const dest of ['dist/node_modules']) {
     rmSync(dest, { recursive: true, force: true });
     mkdirSync(dest, { recursive: true });
     copyRealFileTree(koffiRoot, `${dest}/koffi`, isRuntimeKoffiFile);
@@ -203,7 +167,7 @@ function copyKoffiNodeModules() {
       if (existsSync(buildDir)) copyRealFileTree(buildDir, `${dest}/koffi/build`, isRuntimeKoffiFile);
     }
   }
-  console.log('copied koffi into dist/daemon/node_modules and dist/node_modules');
+  console.log('copied koffi into dist/node_modules');
 }
 
 /** Extension allowlist for the shipped koffi trees: the loader chain is
@@ -308,6 +272,10 @@ if (watch) {
   await esbuild.build(supervisorOptions);
   const writeCloudBuild = () => writeFileSync('dist/cloud-build.json', JSON.stringify({ ...cloudBuild, extensionSha256: createHash('sha256').update(readFileSync('dist/extension.js')).digest('hex'), daemonSha256: createHash('sha256').update(readFileSync('dist/daemon/cli.js')).digest('hex'), processSupervisorSha256: createHash('sha256').update(readFileSync('dist/daemon/process-supervisor.cjs')).digest('hex') }, null, 2) + '\n');
   copyAsset('../../client/bh.py', 'dist/daemon/bh.py');
+  // Mermaid: the sidebar reuses the Web build's copy (dist/daemon/web/assets/mermaid-<hash>.min.js,
+  // copied below); only the license is added here.
+  const mermaidDir = dirname(createRequire(import.meta.url).resolve('mermaid/package.json'));
+  copyAsset(join(mermaidDir, 'LICENSE'), 'dist/mermaid-LICENSE');
   // Local Web page (packages/web build) is served by the daemon from dist/daemon/web.
   rmSync('dist/daemon/web', { recursive: true, force: true });
   if (existsSync('../web/dist/index.html')) {
@@ -331,3 +299,4 @@ if (watch) {
   }
   console.log('Universal build: cloudflared is external (PATH or blackhole.cloudflaredPath).');
 }
+

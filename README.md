@@ -1,5 +1,3 @@
-> **Private migration candidate.** Keep this repository private. Import scope, verification and known failures are recorded in [MIGRATION-STATUS.md](MIGRATION-STATUS.md). This is not a public release or production deployment.
-
 <div align="right">
 
 **English** | [简体中文](README.zh-CN.md)
@@ -9,6 +7,12 @@
 # BlackHole
 
 **A local MCP bridge that gives Web Agents controlled access to your development workspace.**
+
+[![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
+
+[Usage](packages/vscode/README.md) · [Contributing](CONTRIBUTING.md) · [CI](.github/CI.md) · [Releases](RELEASE-VALIDATION.md) · [Security](SECURITY.md)
+
+This is the public repository for BlackHole's local runtime and clients. The hosted Cloud backend is maintained separately. See [repository scope](MIGRATION-STATUS.md) and [license](#license).
 
 BlackHole connects web-based AI agents to a local daemon through MCP Streamable HTTP. Agents can inspect files, edit code and run tools in a selected workspace, while you manage sessions, permissions, approvals and activity from VS Code.
 
@@ -22,7 +26,7 @@ BlackHole daemon (loopback listener)
 Selected workspace, shell and configured MCP upstreams
 ```
 
-The [VS Code extension](packages/vscode/README.md) is the recommended user-facing entry point. This README also covers the architecture and source-development workflow. See [License scope](#license-scope) before assuming that one license covers the entire repository.
+The [VS Code extension](packages/vscode/README.md) is the recommended user-facing entry point. This README also covers the architecture and source-development workflow.
 
 ## Get started
 
@@ -147,7 +151,7 @@ These mechanisms restrict **file writes**, not all file reads, network traffic o
 - Shell commands and MCP upstreams may communicate with other services. Their permissions and privacy terms still matter.
 - Optional semantic search sends the necessary paths and code excerpts to Devin Fast Context. The default credential policy requires explicit configuration; discovering local Devin/Windsurf credentials is opt-in.
 - BlackHole Cloud handles login, subscription checks, card redemption and payment/refund operations. Those operations do not upload workspace files by themselves.
-- Account bearer tokens use VS Code SecretStorage. The extension keeps active workspace-session keys in memory; the daemon stores their credential material as hashes. The extension implements no independent product telemetry or advertising tracker.
+- Authentication data is local to the user's machine. Keep credentials and runtime data out of source commits, build artifacts and support attachments. See [security guidance](SECURITY.md) for reporting and disclosure rules.
 
 Do not post connection URLs, keys, tokens, cookies, card codes or sensitive workspace content in public issue reports.
 
@@ -161,7 +165,7 @@ Do not post connection URLs, keys, tokens, cookies, card codes or sensitive work
 
 ## Source development
 
-For contributors working from a source checkout, use **Node.js 22.5 or newer** and the pnpm version declared in `package.json`. These are development requirements, not additional requirements for ordinary extension users.
+Use the Node.js version pinned in [Core CI](.github/workflows/vscode-extension.yml) and the pnpm version declared in `package.json`. These tools are for source development; the installed VS Code extension uses its bundled runtime.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -177,20 +181,16 @@ pnpm start
 
 The default listener is `127.0.0.1:7306`. Source builds do not bypass account, entitlement or permission checks.
 
-This standalone Core repository does not require the private Cloud source or deployment configuration. Public client build profiles live in `scripts/environment-config.mjs`. The default test profile uses a synthetic `example.org` origin and a throwaway public verification key: it supports build/package verification, not real login. For your own test service, pass both `--cloud-origin` and `--cloud-public-key` to the build/package entry point. Never place a signing private key in client configuration. Production issuer and verification trust remain unchanged.
+Core builds independently of the private Cloud repository. The production client profile is [src/environments/production.json](src/environments/production.json). Test builds use an explicit origin/public-key pair or a local `config/environments/test.json`; offline fixtures cannot be packaged for installation. See [release validation](RELEASE-VALIDATION.md) for configuration precedence and artifact checks.
 
-Build or package the extension locally. Before universal packaging, explicitly download the pinned native keyring packages; the script verifies each package against the registry SHA-512 integrity. Only local ignored build/cache directories are written.
+Create the intended package explicitly:
 
 ```bash
-pnpm --filter @blackhole/web build
-pnpm --filter blackhole-vscode build          # synthetic test profile
-node scripts/fetch-keyring-prebuilds.mjs      # required once for universal VSIX
-pnpm --filter blackhole-vscode package        # test VSIX, not a usable Cloud login build
-pnpm --filter blackhole-vscode build:production
-pnpm --filter blackhole-vscode package:production
+pnpm package:vsix:production  # Official service
+pnpm package:vsix:test        # Requires an independent test service profile
 ```
 
-Packaging creates one universal VSIX without `cloudflared`. There is no separate bundled/lite package switch. Building or packaging does not automatically bump a version, install an extension, restart the running daemon or deploy cloud services. Test and production endpoints and trust are fixed build-time profiles, not end-user settings.
+Packaging produces a universal VSIX without `cloudflared`. It does not install the extension, bump its version, restart a daemon, publish a release or deploy Cloud. Source configuration is editable; the selected endpoint and verification key are fixed when the artifact is built.
 
 ### CLI reference
 
@@ -232,7 +232,7 @@ pnpm test:contracts
 
 The full gate includes a Windows-only behavioral smoke suite. The POSIX subset does not replace real OS/architecture acceptance. Live-tunnel, real-browser and external semantic-service checks are separate, environment-dependent tests; do not interpret a local unit-test pass as a real payment or production-deployment acceptance result.
 
-Contributor-only notes, including `docs/vscode/development.md`, are indexed under the root `docs/` directory. They are local maintainer material, not distributed repository documentation or VSIX content, and are not required to use the extension.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for development, [.github/CI.md](.github/CI.md) for automated checks, and [RELEASE-VALIDATION.md](RELEASE-VALIDATION.md) for release acceptance. Private maintainer notes and migration archives are not part of this repository.
 
 ## Community & Feedback
 
@@ -242,8 +242,8 @@ Use **[GitHub Issues](https://github.com/qianshe/BlackHole-core/issues)** for tr
 
 See the [extension changelog](packages/vscode/CHANGELOG.md) for versioned updates.
 
-## License scope
+## License
 
-The source under `packages/vscode` is licensed under **Apache-2.0**, except separately identified third-party components. Read its [LICENSE](packages/vscode/LICENSE), [NOTICE](packages/vscode/NOTICE) and [third-party notices](packages/vscode/THIRD_PARTY_NOTICES.md).
+BlackHole is licensed under the [Apache License 2.0](LICENSE); attribution is in [NOTICE](NOTICE). Third-party components keep their own licenses: see the [third-party notices](packages/vscode/THIRD_PARTY_NOTICES.md) and the [bundled npm package licenses](packages/vscode/THIRD_PARTY_LICENSES.md).
 
-That license does not grant a license to components outside `packages/vscode`, including BlackHole cloud services, payment/account/subscription backends and deployment configuration. Do not assume one open-source license applies to the whole repository or hosted service. Bundled components retain their own applicable terms.
+The license covers this repository only. The hosted BlackHole Cloud service (accounts, subscriptions and payment) is not part of it, and the BlackHole name and logo are not licensed for use by derived works.

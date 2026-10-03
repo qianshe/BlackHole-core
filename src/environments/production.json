@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "environment": "production",
+  "clientTarget": "production",
+  "origin": "https://blackhole.stellarbridge.dpdns.org",
+  "entitlementPublicKey": "MCowBQYDK2VwAyEAhdJo6ndymroW5cuo/tsGYqB+Ge0GQos0gkUmjHo7Jk0="
+}

@@ -13,6 +13,8 @@ export interface CreateSessionInput {
   name?: unknown;
   writable_dirs?: unknown;
   auto_approve?: unknown;
+  /** Reserve only: nothing is stored until the first tool call uses the credential. */
+  draft?: unknown;
 }
 
 type Created = ReturnType<DaemonDeps['sessions']['create']>;
@@ -60,14 +62,17 @@ export function createWorkspaceSession(deps: DaemonDeps, body: CreateSessionInpu
   const expiresAt = typeof body.expires_in_s === 'number' && body.expires_in_s > 0 ? Date.now() + body.expires_in_s * 1000 : null;
   const writableDirs = normalizeWritableDirs(body.writable_dirs);
   if (!Array.isArray(writableDirs)) return { error: writableDirs.error };
-  const session = deps.sessions.create({
+  const input = {
     workspace_path: workspace,
     permission_mode: mode,
     name: name || null,
     expires_at: expiresAt,
     writable_dirs: writableDirs,
     auto_approve: body.auto_approve === true || body.auto_approve === 1 || body.auto_approve === '1',
-  });
+  };
+  // A draft is only reserved; SessionsRepo stores it (and daemon.ts logs session_created) on first use.
+  if (body.draft === true) return { session: deps.sessions.createDraft(input) };
+  const session = deps.sessions.create(input);
   deps.events.append(session.id, 'session_created', {
     workspace_path: workspace,
     permission_mode: mode,

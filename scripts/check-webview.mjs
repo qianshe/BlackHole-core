@@ -22,7 +22,9 @@ const bundle = readFileSync(process.argv[2] ? path.resolve(process.argv[2]) : pa
 const SUBS = {
   '${nonce}': 'abc123',
   '${csp}': 'default-src none',
+  '${mermaidConfigs}': '{"dark":{},"default":{}}',
   '${JSON.stringify(KEYS)}': '["port"]',
+  '${JSON.stringify([...AUTO_SAVE_KEYS])}': '["channelMode","connectorName","openaiTunnelClientPath","openaiTunnelId","pollIntervalMs"]',
   '${sidebarIcons()}': '{"plus":"<svg></svg>","globe":"<svg></svg>","gear":"<svg></svg>","refresh":"<svg></svg>","more":"<svg></svg>","warn":"<svg></svg>"}',
   // Read the literal from this exact bundle, not a potentially newer source tree.
   '${handoffScript}': (() => {

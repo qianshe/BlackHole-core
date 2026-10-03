@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { commands, ConfigurationTarget, ViewColumn, env, window, workspace, type Disposable, type WebviewPanel } from 'vscode';
+import { commands, ConfigurationTarget, ViewColumn, Uri, env, window, workspace, type Disposable, type WebviewPanel } from 'vscode';
 import type { AuthView } from './cloudAuthClient';
 import type { ApprovalGrantsInfo, ControlApi, ProxiesInfo, ProxiesRevalidateReport, ProxyToolsResult } from './controlApi';
 import type { DaemonManager } from './daemonManager';
@@ -13,6 +13,7 @@ import { initializeCloudflared } from './cloudflaredInstall';
 import { initializeOpenAITunnelClient } from './openaiTunnelInstall';
 import qrcode from 'qrcode-generator';
 import type { RemoteView } from './controlApi';
+import type { SettingsSync } from './settingsSync';
 
 /** Configuration preview only. The daemon's session-scoped skill catalog owns
  * validity, precedence and diagnostics; this count is never a usable-skill count. */
@@ -76,8 +77,26 @@ const FIELDS = ALL_FIELDS.filter(f => f.key !== 'daemonEntry' || resolveCloudEnd
 const KEYS = FIELDS.map((f) => f.key);
 /** Settings the daemon only reads at spawn: a change must restart it. */
 const RESTART_KEYS = new Set(['port', 'publicBaseUrl', 'tunnelProbeProxy', 'cloudflaredPath', 'gitUsrBinPath', 'daemonEntry', 'namedTunnelName', 'skillsDir']);
+/**
+ * 改完就生效、不在 daemon 启动指纹里的设置：选中或离开输入框即自动保存（用户 2026-10-03）。
+ * 会触发 daemon 重启的设置仍由「保存」按钮提交，避免每改一个字段就重启一次。
+ */
+const AUTO_SAVE_KEYS = new Set(['channelMode', 'connectorName', 'openaiTunnelClientPath', 'openaiTunnelId', 'pollIntervalMs']);
+/** 渠道总开关缺前提时的提示：告诉用户在本页哪里补上。 */
+const CHANNEL_SWITCH_ERRORS: Record<string, string> = {
+  cloudflared: '还没有 cloudflared：在下方「公网渠道 → Cloudflare」点「一键初始化安装」。',
+  named_url: '持久渠道还没有填公网地址：在下方「公网渠道 → Cloudflare」填写。',
+  openai_setup: 'OpenAI 渠道还没配置完：在下方「公网渠道 → OpenAI」填写 Tunnel ID、tunnel-client 和密钥。',
+  openai_unavailable: '当前 daemon 不支持 OpenAI 渠道。',
+  start_failed: '渠道没有启动，原因见下方公网渠道卡片。',
+};
 /** Same rule as the daemon's settings store: a Tunnel ID, never a URL. */
 const OPENAI_TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
+/** OpenAI onboarding pages the panel may open (developers.openai.com secure-mcp-tunnels guide). */
+const OPENAI_LINKS = new Map([
+  ['platform', 'https://platform.openai.com/settings/organization/tunnels'],
+  ['chatgpt', 'https://chatgpt.com/plugins'],
+]);
 type OpenAIAction = 'start' | 'stop' | 'saveKey' | 'clearKey' | 'diagnostics';
 /** Fixed daemon codes → copy; anything else falls back to the daemon's own reason text. */
 const OPENAI_ERRORS: Record<string, string> = {
@@ -87,6 +106,8 @@ const OPENAI_ERRORS: Record<string, string> = {
   empty_api_key: '请先输入 Runtime API Key。',
   invalid_api_key: 'Runtime API Key 格式不正确（8–1024 个可见字符，不能含空格）。',
   settings_changed: '设置刚刚发生变化；请重试。',
+  settings_changed_elsewhere: 'Tunnel ID 或 tunnel-client 路径刚在别处（如 Web 设置页）修改，已显示最新值；请确认后再启动。',
+  revision_conflict: '设置刚刚发生变化；请重试。',
   settings_unavailable: 'daemon 设置暂不可用；请稍后重试。',
   credential_changed: '密钥刚刚在别处被修改；请重试。',
   already_running: 'OpenAI 渠道正以不同的配置运行；请先停止再启动。',
@@ -94,10 +115,10 @@ const OPENAI_ERRORS: Record<string, string> = {
   daemon_changed: 'daemon 已重启；请重试。',
   cancelled: '启动已被取消。',
   native_loopback_required: '请求被拒绝：仅允许本机扩展调用。',
-  credential_store_unavailable: '系统钥匙串不可用，无法读写 Runtime API Key。',
-  credential_store_timeout: '系统钥匙串响应超时；请稍后重试。',
-  credential_store_failed: '写入系统钥匙串失败；密钥状态已重新读取。',
-  credential_delete_unconfirmed: '无法确认密钥已从系统钥匙串删除；请稍后重试。',
+  credential_store_unavailable: '无法读写本机保存的 Runtime API Key。',
+  credential_store_timeout: '读写 Runtime API Key 超时；请稍后重试。',
+  credential_store_failed: '保存 Runtime API Key 失败；密钥状态已重新读取。',
+  credential_delete_unconfirmed: '无法确认密钥已删除；请稍后重试。',
 };
 type ChannelMode = 'cloudflare' | 'openai' | 'custom';
 const normalizeChannelMode = (v: unknown): ChannelMode => (v === 'custom' || v === 'openai' ? v : 'cloudflare');
@@ -107,6 +128,8 @@ type PanelMessage =
   | { type: 'cloudAccount'; action: 'signIn' | 'redeem' | 'signOut' | 'refresh' | 'buyCard' | 'orders' | 'refund'; sku?: 'pro_day'|'pro_week'|'pro_month' }
   | { type: 'copyUserId'; userId: string }
   | { type: 'save'; values: Record<string, string>; webAgents?: string[] }
+  | { type: 'autosave'; values: Record<string, string>; webAgents?: string[] }
+  | { type: 'channelToggle'; on: boolean }
   | { type: 'restart' }
   | { type: 'tunnel'; action: 'quick' | 'named' | 'stop' | 'copy' }
   | { type: 'installCloudflared'; path: string; channelMode: 'cloudflare' | 'openai' | 'custom' }
@@ -115,10 +138,17 @@ type PanelMessage =
   | { type: 'customProbe'; url: string }
   | { type: 'rotateToken' }
   | { type: 'grantRemove'; scope: 'always' | 'session'; key: string; sessionId?: string }
-  | { type: 'remote'; action: 'toggle' | 'pair' | 'revoke'; on?: boolean; id?: string; name?: string }
+  | { type: 'remote'; action: 'pair' | 'revoke'; id?: string; name?: string }
   | { type: 'grantsClear' }
+  | { type: 'courierSiteRemove'; id: string }
+  | { type: 'lanToggle'; on: boolean }
+  | { type: 'lanPort'; port: number }
+  | { type: 'lanUrl'; url: string }
+  | { type: 'lanCopy'; url: string }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
+  | { type: 'copyTunnelId' }
+  | { type: 'openLink'; target: string }
   | { type: 'addCustomAgent'; name: string; url: string }
   | { type: 'removeCustomAgent'; name: string }
   | { type: 'semanticSave'; key: string }
@@ -134,13 +164,13 @@ type PanelMessage =
 export class ConfigPanel {
   private static panel: ConfigPanel | undefined;
 
-  static open(api: ControlApi, daemon: DaemonManager, poller: Poller): void {
+  static open(api: ControlApi, daemon: DaemonManager, poller: Poller, settingsSync?: SettingsSync): void {
     if (ConfigPanel.panel) {
       ConfigPanel.panel.reveal();
       void ConfigPanel.panel.refresh().catch(error => console.error('BlackHole: settings refresh failed', error));
       return;
     }
-    ConfigPanel.panel = new ConfigPanel(api, daemon, poller);
+    ConfigPanel.panel = new ConfigPanel(api, daemon, poller, settingsSync);
   }
 
   private webview: WebviewPanel;
@@ -158,6 +188,7 @@ export class ConfigPanel {
   private cloudflaredInstallBusy = false;
   private openaiInstallBusy = false;
   private openaiBusy = false;
+  private channelBusy = false;
   private lastProxies: ProxiesInfo | null = null;
   private proxySignature = '';
   private projectionGeneration = 0;
@@ -167,6 +198,8 @@ export class ConfigPanel {
   private webviewReady = false;
   private remoteTick = 0;
   private remoteIds: Set<string> | null = null;
+  /** pairing requests already shown as a notification */
+  private remoteAsked = new Set<string>();
   /** Semantic state is fetched once per daemon lifetime; false retries after startup races. */
   private semanticSynced = false;
 
@@ -174,6 +207,8 @@ export class ConfigPanel {
     private readonly api: ControlApi,
     private readonly daemon: DaemonManager,
     poller: Poller,
+    /** Knows which side changed a setting; absent in older wiring (then VS Code values win, as before). */
+    private readonly settingsSync?: SettingsSync,
   ) {
     this.webview = window.createWebviewPanel('blackholeSettings', 'BlackHole 设置', ViewColumn.One, {
       enableScripts: true,
@@ -251,6 +286,8 @@ export class ConfigPanel {
       await this.refresh();
     }
     else if (m.type === 'save') await this.save(m.values, m.webAgents);
+    else if (m.type === 'autosave') await this.autosave(m.values, m.webAgents);
+    else if (m.type === 'channelToggle' && typeof m.on === 'boolean') await this.channelToggle(m.on);
     else if (m.type === 'restart') {
       try { await this.daemon.restart(); void window.showInformationMessage('BlackHole：daemon 已重启。'); }
       catch (e) { void window.showErrorMessage(`BlackHole：重启 daemon 失败 — ${e instanceof Error ? e.message : String(e)}`); }
@@ -265,8 +302,15 @@ export class ConfigPanel {
     else if (m.type === 'grantRemove') await this.grantRemove(m.scope, m.key, m.sessionId);
     else if (m.type === 'remote') await this.remoteAction(m);
     else if (m.type === 'grantsClear') await this.grantsClear();
+    else if (m.type === 'courierSiteRemove' && typeof m.id === 'string') await this.courierSiteRemove(m.id);
+    else if (m.type === 'lanToggle' && typeof m.on === 'boolean') await this.lanToggle(m.on);
+    else if (m.type === 'lanPort' && Number.isInteger(m.port)) await this.lanSave({ lanPort: m.port });
+    else if (m.type === 'lanUrl' && typeof m.url === 'string') await this.lanSave({ lanUrl: m.url.trim() });
+    else if (m.type === 'lanCopy' && typeof m.url === 'string') { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：直连 MCP 链接已复制。'); }
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
+    else if (m.type === 'copyTunnelId') await this.copyTunnelId();
+    else if (m.type === 'openLink') await this.openLink(m.target);
     else if (m.type === 'addCustomAgent') await this.addCustomAgent(m.name, m.url);
     else if (m.type === 'removeCustomAgent') await this.removeCustomAgent(m.name);
     else if (m.type === 'semanticSave') await this.semanticSave(m.key);
@@ -314,6 +358,8 @@ export class ConfigPanel {
     // Viewing settings must not start upstreams or download packages.
     await this.pushProxies();
     await this.pushGrants();
+    await this.pushCourierSites();
+    await this.pushLan();
     await this.pushRemote();
   }
 
@@ -328,7 +374,7 @@ export class ConfigPanel {
     const overview = await this.overview();
     if (this.disposed) return;
     await this.post({ type: 'status', overview });
-    if (++this.remoteTick % 3 === 0) void this.pushRemote();
+    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); void this.pushLan(); }
     if (!this.semanticSynced && overview.daemon === 'running' && overview.version) void this.postSemantic();
     const next = readAnchors(overview);
     const action = decideSyncAction(this.anchors, next);
@@ -348,10 +394,14 @@ export class ConfigPanel {
   }
 
   private async overview(includeSemantic = false): Promise<Record<string, unknown>> {
-    const health = await this.api.health().catch(() => undefined);
+    // 渠道总开关是可选的：旧版 daemon 没有 /channel 时为 null（驾驶舱不显示开关）。
+    const [health, channel] = await Promise.all([
+      this.api.health().catch(() => undefined),
+      Promise.resolve().then(() => this.api.channel()).catch(() => null),
+    ]);
     if (!health) {
       this.lastUrl = null;
-      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null };
+      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, openai_tunnel_id: this.savedTunnelId(), tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null, channel: null };
     }
     this.lastUrl = health.tunnel_url;
     // Devin Key 卡片随状态轮询自愈：保存/重启后无需手动刷新页面
@@ -375,10 +425,31 @@ export class ConfigPanel {
       mcp_url: health.mcp_url,
       mcp_path: health.mcp_path ?? null,
       openai_tunnel: health.openai_tunnel ?? null,
+      openai_tunnel_id: this.savedTunnelId(),
       stats: health.stats ?? null,
       activity_days: health.activity_days ?? [],
+      channel,
       ...(semantic !== undefined ? { semantic } : {}),
     };
+  }
+
+  /** 驾驶舱里的渠道总开关：和侧边栏同一个 daemon 接口；缺前提时把页面切到对应渠道并提示。 */
+  private async channelToggle(on: boolean): Promise<void> {
+    if (this.channelBusy) return;
+    this.channelBusy = true;
+    let code = '';
+    let message = '';
+    try {
+      const r = await this.api.channelSwitch(on);
+      if (!r.ok) { code = r.error; message = CHANNEL_SWITCH_ERRORS[r.error] ?? `渠道没有启动（${r.error}）。`; }
+    } catch (e) {
+      message = `操作失败：${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      this.channelBusy = false;
+    }
+    if (this.disposed) return;
+    await this.post({ type: 'channelToggleResult', ok: !message, code, message });
+    await this.status();
   }
 
   /**
@@ -434,19 +505,27 @@ export class ConfigPanel {
         }
       }
       this.remoteIds = ids;
+      for (const r of view.requests ?? []) if (!this.remoteAsked.has(r.id)) void this.askPair(r);
     }
     await this.post({ type: 'remote', view, paired });
   }
 
-  private async remoteAction(m: { action: 'toggle' | 'pair' | 'revoke'; on?: boolean; id?: string; name?: string }): Promise<void> {
+  /** A phone scanned the QR code: it only gets in after 允许 here (or in the Web UI). */
+  private async askPair(r: { id: string; name: string }): Promise<void> {
+    this.remoteAsked.add(r.id);
+    const pick = await window.showWarningMessage(`BlackHole：手机「${r.name}」请求访问。不是你本人扫的码，请点「拒绝」。`, '允许', '拒绝');
+    if (pick !== '允许' && pick !== '拒绝') return; // dismissed: the request expires by itself
     try {
-      if (m.action === 'toggle') {
-        if (!m.on && (this.remoteIds?.size ?? 0) > 0) {
-          const pick = await window.showWarningMessage('关闭手机访问后，已配对的手机需要重新扫码。', { modal: true }, '关闭');
-          if (pick !== '关闭') { await this.pushRemote(); return; }
-        }
-        await this.api.patchSettings({ remoteAccess: !!m.on });
-      } else if (m.action === 'pair') {
+      await this.api.remoteDecide(r.id, pick === '允许');
+    } catch {
+      void window.showWarningMessage('BlackHole：这个请求已经处理过或已过期');
+    }
+    if (!this.disposed) await this.pushRemote();
+  }
+
+  private async remoteAction(m: { action: 'pair' | 'revoke'; id?: string; name?: string }): Promise<void> {
+    try {
+      if (m.action === 'pair') {
         const r = await this.api.remotePair();
         const qr = qrcode(0, 'M');
         qr.addData(r.url);
@@ -465,6 +544,84 @@ export class ConfigPanel {
     }
     if (m.action !== 'pair' && m.id) this.remoteIds?.delete(m.id);
     await this.pushRemote();
+  }
+
+  /** Sites added in the Courier browser extension (daemon setting courierSites): list only, deleted here. */
+  private async pushCourierSites(): Promise<void> {
+    try {
+      const s = await this.api.settings();
+      const raw = Array.isArray(s.values.courierSites) ? (s.values.courierSites as Record<string, unknown>[]) : [];
+      const sites = raw.map((x) => ({ id: String(x.id ?? ''), name: String(x.name ?? ''), origin: String(x.origin ?? ''), stop: !!(x.dom as { stop?: unknown } | undefined)?.stop }));
+      await this.post({ type: 'courierSites', sites });
+    } catch {
+      /* daemon down (or older, without courierSites) — the list keeps its last snapshot */
+    }
+  }
+
+  /** Delete one Courier site; the daemon pushes the new list and Courier unbinds it, stops injecting and drops the permission. */
+  private async courierSiteRemove(id: string): Promise<void> {
+    try {
+      const listed = await this.api.settings();
+      const site = (Array.isArray(listed.values.courierSites) ? (listed.values.courierSites as { id?: unknown; name?: unknown; origin?: unknown }[]) : []).find((x) => x.id === id);
+      if (!site) { await this.pushCourierSites(); return; }
+      const pick = await window.showWarningMessage(`BlackHole：删除 Courier 网页站点「${String(site.name)}」？浏览器里的 Courier 会解除它的绑定、停止接管 ${String(site.origin)} 并收回访问权限。`, { modal: true }, '删除');
+      if (pick !== '删除' || this.disposed) return;
+      // Conditional write on a fresh read; one retry covers a revision bump from another client.
+      for (let attempt = 0; ; attempt++) {
+        const s = await this.api.settings();
+        const all = Array.isArray(s.values.courierSites) ? (s.values.courierSites as { id?: unknown }[]) : [];
+        if (!all.some((x) => x.id === id)) break;
+        try {
+          await this.api.patchSettings({ courierSites: all.filter((x) => x.id !== id) }, s.revision);
+          break;
+        } catch (e) {
+          if (attempt > 0) throw e;
+        }
+      }
+      await this.pushCourierSites();
+      void window.showInformationMessage(`BlackHole：已删除「${String(site.name)}」。`);
+    } catch (e) {
+      void window.showErrorMessage(`BlackHole: 删除 Courier 网页站点失败 — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** 局域网直连：设置值加上守护进程的监听状态，推给页面。 */
+  private async pushLan(): Promise<void> {
+    try {
+      const [s, h] = await Promise.all([this.api.settings(), this.api.health()]);
+      await this.post({ type: 'lan', on: s.values.lanAccess === true, port: typeof s.values.lanPort === 'number' ? s.values.lanPort : 7307,
+        url: typeof s.values.lanUrl === 'string' ? s.values.lanUrl : '', lan: h.lan_access ?? null });
+    } catch {
+      /* 守护进程没运行或版本较旧：保留上一次的显示 */
+    }
+  }
+
+  /** 开启前说清楚风险，由用户决定。 */
+  private async lanToggle(on: boolean): Promise<void> {
+    if (on) {
+      const pick = await window.showWarningMessage('BlackHole：开启局域网直连？同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', { modal: true }, '开启');
+      if (pick !== '开启' || this.disposed) return;
+    }
+    await this.lanSave({ lanAccess: on });
+  }
+
+  /** 条件写入（带 revision）；别处刚改过设置时重试一次。守护进程异步开关端口，稍后再刷新一次状态。 */
+  private async lanSave(values: Record<string, unknown>): Promise<void> {
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const s = await this.api.settings();
+        try {
+          await this.api.patchSettings(values, s.revision);
+          break;
+        } catch (e) {
+          if (attempt > 0) throw e;
+        }
+      }
+      await this.pushLan();
+      setTimeout(() => { if (!this.disposed) void this.pushLan(); }, 600);
+    } catch (e) {
+      void window.showErrorMessage(`BlackHole: 保存局域网直连设置失败 — ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private async pushGrants(): Promise<void> {
@@ -502,10 +659,31 @@ export class ConfigPanel {
   private async copyConnectorDesc(): Promise<void> {
     const desc = [
       'BlackHole provides access to the current workspace through MCP.',
-      'Start with guide using the supplied sessionId. Comply with its instructions throughout the session, and use that sessionId on every BlackHole call.',
+      'Use the supplied sessionId on every BlackHole call. Call guide before workspace work and follow it.',
     ].join('\n');
     await env.clipboard.writeText(desc);
     void window.showInformationMessage('BlackHole：连接器描述已复制。');
+  }
+
+  /** Saved Tunnel ID: an identifier (not a URL or secret), so the card may show and copy it offline. */
+  private savedTunnelId(): string | null {
+    return (workspace.getConfiguration('blackhole').get<string>('openaiTunnelId') ?? '').trim() || null;
+  }
+
+  private async copyTunnelId(): Promise<void> {
+    const id = this.savedTunnelId();
+    if (!id) {
+      void window.showWarningMessage('BlackHole: 尚未保存 Tunnel ID，请先在 OpenAI 页签填写并保存。');
+      return;
+    }
+    await env.clipboard.writeText(id);
+    void window.showInformationMessage('BlackHole：Tunnel ID 已复制。在 ChatGPT 开发者模式应用中把 Connection 设为「Tunnel」后选中或粘贴它。');
+  }
+
+  /** Only the fixed OpenAI onboarding pages; the webview cannot open arbitrary URLs. */
+  private async openLink(target: string): Promise<void> {
+    const url = OPENAI_LINKS.get(target);
+    if (url) await env.openExternal(Uri.parse(url));
   }
 
   private async installCloudflared(currentPath: string, channelMode: string): Promise<void> {
@@ -607,12 +785,12 @@ export class ConfigPanel {
         const key = typeof m.key === 'string' ? m.key.trim() : '';
         if (!key) throw new Error('empty_api_key');
         const r = await this.api.openaiTunnelSetKey(daemonId, view.credential_revision, key);
-        message = r.pending_restart ? 'Runtime API Key 已保存到系统钥匙串；重新启动 OpenAI 渠道后生效。' : 'Runtime API Key 已保存到系统钥匙串。';
+        message = r.pending_restart ? 'Runtime API Key 已保存；重新启动 OpenAI 渠道后生效。' : 'Runtime API Key 已保存。';
       } else if (m.action === 'clearKey') {
-        const pick = await window.showWarningMessage('BlackHole：清除 Runtime API Key 会先停止 OpenAI 渠道，再从系统钥匙串删除密钥。', { modal: true }, '清除密钥');
+        const pick = await window.showWarningMessage('BlackHole：清除 Runtime API Key 会先停止 OpenAI 渠道，再删除本机保存的密钥。', { modal: true }, '清除密钥');
         if (pick !== '清除密钥' || this.disposed) return;
         await this.api.openaiTunnelClearKey(daemonId, view.credential_revision);
-        message = 'Runtime API Key 已从系统钥匙串删除；OpenAI 渠道已停止。';
+        message = 'Runtime API Key 已删除；OpenAI 渠道已停止。';
       } else if (m.action === 'start') {
         const revision = await this.syncOpenaiSettings(m.tunnelId, m.clientPath);
         const r = await this.api.openaiTunnelStart(daemonId, revision, view.credential_revision);
@@ -640,6 +818,8 @@ export class ConfigPanel {
 
   /** The daemon must hold exactly the saved fields this window shows (plan §5.2.1). */
   private async syncOpenaiSettings(formTunnelId?: string, formClientPath?: string): Promise<number> {
+    // Edits saved in this window are pushed first, so what remains different was changed on the daemon.
+    await this.settingsSync?.flush();
     const c = workspace.getConfiguration('blackhole');
     const local: Record<string, string> = {
       openaiTunnelId: (c.get<string>('openaiTunnelId') ?? '').trim(),
@@ -648,8 +828,19 @@ export class ConfigPanel {
     if ((formTunnelId !== undefined && formTunnelId.trim() !== local.openaiTunnelId)
       || (formClientPath !== undefined && formClientPath.trim() !== local.openaiTunnelClientPath)) throw new Error('unsaved_settings');
     let s = await this.api.settings();
-    const diff = Object.fromEntries(Object.entries(local).filter(([k, v]) => (typeof s.values[k] === 'string' ? String(s.values[k]).trim() : '') !== v));
-    if (Object.keys(diff).length) s = await this.api.patchSettings(diff);
+    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+    const diff = Object.fromEntries(Object.entries(local).filter(([k, v]) => text(s.values[k]) !== v));
+    if (!Object.keys(diff).length) return s.revision;
+    // This window still shows the value it last saw from the daemon: the daemon moved on
+    // (Web settings, another window). Take the daemon's value and let the operator confirm;
+    // never write the stale copy back or start with it.
+    const base = this.settingsSync?.baseline();
+    if (base && Object.keys(diff).some((k) => text(base[k]) === local[k])) {
+      await this.settingsSync?.sync();
+      await this.refresh();
+      throw new Error('settings_changed_elsewhere');
+    }
+    s = await this.api.patchSettings(diff, s.revision);
     return s.revision;
   }
 
@@ -759,6 +950,41 @@ export class ConfigPanel {
     const detail = saved.length ? '（' + Array.from(new Set(saved)).join('、') + '）' : '';
     void window.showInformationMessage('BlackHole：设置已保存' + detail + (needsRestart ? '；相关改动需重启 daemon 生效。' : '。'));
     await this.refresh();
+  }
+
+  /**
+   * 自动保存：只接受 AUTO_SAVE_KEYS 和 Web Agent 显示，校验规则与「保存」一致。
+   * 不弹成功通知、不重新下发表单（不打断正在编辑的其他字段），结果只回给面板显示。
+   */
+  private async autosave(values: Record<string, string>, webAgents?: string[]): Promise<void> {
+    const c = workspace.getConfiguration('blackhole');
+    const saved: string[] = [];
+    let error: string | undefined;
+    for (const [key, value] of Object.entries(values ?? {})) {
+      if (!AUTO_SAVE_KEYS.has(key)) continue;
+      const raw = String(value ?? '').trim();
+      let next: string | number | undefined = raw;
+      if (key === 'channelMode') next = normalizeChannelMode(raw);
+      else if (key === 'openaiTunnelId' && raw && !OPENAI_TUNNEL_ID.test(raw)) {
+        error = 'Tunnel ID 应为 OpenAI Platform 隧道设置中的 ID（tunnel_ 加 32 位小写十六进制），不是 URL；未保存。';
+        continue;
+      } else if (key === 'openaiTunnelClientPath' && raw && !path.isAbsolute(raw)) {
+        error = 'tunnel-client 路径需要填写可执行文件的绝对路径，或留空；未保存。';
+        continue;
+      } else if (key === 'pollIntervalMs') {
+        next = raw === '' ? undefined : Number(raw);
+        if (typeof next === 'number' && !(Number.isFinite(next) && next >= 250)) { error = '轮询间隔至少 250 毫秒；未保存。'; continue; }
+      }
+      if (String(c.get(key) ?? '') === String(next ?? '')) continue;
+      await c.update(key, next, ConfigurationTarget.Global);
+      saved.push(key);
+    }
+    if (webAgents) {
+      await this.saveWebAgents(webAgents);
+      saved.push('webAgents');
+    }
+    if (this.disposed) return;
+    await this.post({ type: 'autosaved', ok: !error, keys: saved, message: error ?? (saved.length ? '已自动保存' : '') });
   }
 
   /**
@@ -990,12 +1216,14 @@ export class ConfigPanel {
       const control=f.type==='select'
         ? `<select id="${f.key}">${(f.options??[]).map(option=>`<option value="${option.value}">${option.label}</option>`).join('')}</select>`
         : `<input id="${f.key}" type="${f.type === 'number' ? 'number' : 'text'}" spellcheck="false">`;
-      return `<div class="f"><label>${f.label}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
+      // 需重启的字段标出来：它们不自动保存，要点「保存」。
+      const tag = RESTART_KEYS.has(f.key) ? '<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span>' : '';
+      return `<div class="f"><label>${f.label}${tag}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
     };
     // Devin Key 输入框与「daemon 端口」同行（fgrid 空槽位）；状态行、清除按钮、
     // 凭据来源 chips 全部收在输入框正下方，是唯一的 key 手动入口
     const keyCell =
-      '<div class="f"><label>Devin Key</label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
+      '<div class="f"><label>Devin Key<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span></label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
       + '<div class="chrow"><span class="chst dim" id="semst">…</span><span class="sp"></span><button id="semClear" class="secondary" style="display:none">清除已存</button></div>'
       + '<div class="semrow"><span class="lbl">凭据来源</span><div class="agrid" id="semMode"></div></div></div>';
     const cloudflaredField = fieldHtml(FIELDS.find((f) => f.key === 'cloudflaredPath')!);
@@ -1031,6 +1259,20 @@ export class ConfigPanel {
   .ck-v .d.ok { background: var(--vscode-charts-green); }
   .ck-v .d.warn { background: var(--vscode-charts-yellow); }
   .ck-v .d.bad { background: var(--vscode-charts-red); }
+  /* 渠道总开关：与侧边栏标题里的开关同一套样式与状态。开关自身就是状态指示，显示时隐藏状态点。 */
+  .chsw { position: relative; width: 26px; height: 14px; flex-shrink: 0; padding: 0; min-width: 0; border-radius: 999px; cursor: pointer; border: 1px solid var(--vscode-checkbox-border, var(--vscode-panel-border)); background: color-mix(in srgb, var(--vscode-descriptionForeground) 22%, transparent); transition: background .15s, border-color .15s; }
+  .chsw::after { content: ''; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--vscode-foreground); opacity: .8; transition: transform .15s; }
+  .chsw[aria-checked="true"]::after { transform: translateX(12px); background: #fff; opacity: 1; }
+  .chsw[data-state="on"] { background: var(--vscode-charts-green); border-color: transparent; }
+  .chsw[data-state="warn"], .chsw[data-state="starting"] { background: var(--vscode-charts-yellow); border-color: transparent; }
+  .chsw[data-state="starting"]::after { animation: ckSwPulse 1s ease-in-out infinite; }
+  .chsw[data-state="error"] { border-color: var(--vscode-charts-red); }
+  .chsw:disabled { cursor: progress; opacity: 1; }
+  .chsw:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  .chsw:not([hidden]) + .d { display: none; }
+  .ck-msg { margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--vscode-errorForeground); }
+  @keyframes ckSwPulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .chsw, .chsw::after { transition: none; } .chsw[data-state="starting"]::after { animation: none; } }
   .ck-v code { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .sec { font-weight: 600; font-size: 11.5px; color: var(--vscode-descriptionForeground); margin: 20px 0 8px; }
   .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px 14px; }
@@ -1054,6 +1296,8 @@ export class ConfigPanel {
   .f input:focus { outline: 1px solid var(--vscode-focusBorder); }
   .f select { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
   .f select:focus { outline: 1px solid var(--vscode-focusBorder); }
+  select:not([multiple]) { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 9px) 55%; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 26px; cursor: pointer; }
+  select option { background-color: var(--vscode-dropdown-background, var(--vscode-input-background)); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); }
   .f textarea { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; resize: vertical; }
   .f textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
   .f.fwide { grid-column: 1 / -1; }
@@ -1090,6 +1334,7 @@ export class ConfigPanel {
   .ag-row .mono-g { font-family: var(--vscode-editor-font-family); font-size: 10px; font-weight: 700; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); flex-shrink: 0; }
   .ag-row .nm { font-weight: 600; }
   .ag-row .u { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); word-break: break-all; }
+  .wa-host { font-size: 11px; color: var(--vscode-descriptionForeground); }
   .wa-tag { font-size: 10px; padding: 1px 6px; border-radius: 5px; color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
   .ag-row .del { margin-left: auto; font-family: inherit; font-size: 11px; color: var(--vscode-descriptionForeground); background: transparent; border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; }
   .ag-row .del:hover { color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
@@ -1116,7 +1361,11 @@ export class ConfigPanel {
   .pxbtns { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .pxbtns button { box-sizing: border-box; height: 24px; padding: 2px 10px; font-size: 11px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; }
   .pxbtns .pxsw { width: 30px; height: 16px; padding: 0; align-self: center; }
+  .pxbtns .pxe, .pxmhd .pxe { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); border: 1px solid transparent; }
+  .pxbtns .pxe:hover:not(:disabled), .pxmhd .pxe:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, var(--vscode-foreground)); }
   .pxe.danger { color: var(--vscode-errorForeground); }
+  .pxbtns .pxe.danger { background: transparent; border-color: color-mix(in srgb, var(--vscode-errorForeground) 40%, transparent); }
+  .pxbtns .pxe.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); }
   .pxpanel:empty { display: none; }
   .pxpanel { margin-top: 8px; border-top: 1px dashed var(--vscode-panel-border); padding-top: 8px; }
   .pxsw { position: relative; width: 30px; height: 16px; border: none; border-radius: 999px; padding: 0; cursor: pointer; background: color-mix(in srgb, var(--vscode-descriptionForeground) 45%, transparent); flex-shrink: 0; }
@@ -1168,6 +1417,8 @@ export class ConfigPanel {
   details { margin-top: 8px; }
   summary { cursor: pointer; font-weight: 600; opacity: .85; }
   .actions { margin-top: 26px; display: flex; gap: 10px; }
+  .actions .hint { margin: 0; align-self: center; }
+  .f label .rs { font-weight: 400; font-size: 10px; margin-left: 6px; padding: 0 5px; border-radius: 8px; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
   button { font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer; border: none; border-radius: 6px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
   button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
   button:disabled { opacity: .6; cursor: not-allowed; }
@@ -1239,7 +1490,7 @@ export class ConfigPanel {
       <div class="buy-dialog-actions"><button id="cloudBuyCancel" class="secondary">取消</button><button id="cloudBuyConfirm">前往付款</button></div>
     </div>
   </div>
-    <div class="cell"><div class="ck-k">渠道</div><div class="ck-v"><span class="d" id="ckCd"></span><span id="ckCv">—</span></div></div>
+    <div class="cell"><div class="ck-k">渠道</div><div class="ck-v"><button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false" aria-label="公网渠道开关" hidden></button><span class="d" id="ckCd"></span><span id="ckCv">—</span></div><div class="ck-msg" id="ckSwMsg" role="status" hidden></div></div>
     <div class="cell wide" id="activity"><div class="activity-head"><div class="ck-k">活动</div><div class="activity-today" id="activityToday">等待本地服务</div></div><div class="activity-track"><div class="activity-grid" id="activityGrid" role="group" aria-label="最近 7 天活动"></div></div></div>
   </div>
   <div id="activityTooltip" class="activity-tooltip" role="tooltip" hidden></div>
@@ -1254,7 +1505,7 @@ export class ConfigPanel {
   <div class="card">
     <div class="channel-mode"><span class="lbl">渠道方式</span><button type="button" class="agchip" data-channel-mode="cloudflare">Cloudflare</button><button type="button" class="agchip" data-channel-mode="openai">OpenAI</button><button type="button" class="agchip" data-channel-mode="custom">自定义</button></div>
     <div id="channelCloudflare"><div class="fgrid channel-config">${cloudflaredField}${publicUrlField}</div><button id="cfInstall" class="secondary" type="button">一键初始化安装</button><div id="cfInstallMessage" class="hint" role="status" aria-live="polite">准备并验证 cloudflared；验证后可选择保存并重启 daemon，不会自动启动渠道。</div><div class="channel-required">cloudflared 由 BlackHole 启停；固定公网地址仅用于持久渠道。修改后需重启 daemon。</div></div>
-    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label>Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存入系统钥匙串"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在系统钥匙串，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
+    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label>Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存在本机"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在本机，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">准备：在 <a href="#" id="oaLinkPlatform" data-link="platform">OpenAI Platform 隧道设置</a> 创建 Tunnel 并复制 Tunnel ID；Runtime API Key 需 Tunnels Read/Use 权限（创建/编辑 Tunnel 另需 Manage），Tunnel 还需关联要使用的 ChatGPT workspace。这些权限本地无法验证，诊断只能提示检查。</div><div class="channel-required">接入 ChatGPT：启动本渠道后，在 <a href="#" id="oaLinkChatgpt" data-link="chatgpt">chatgpt.com/plugins</a> 点 + 新建开发者模式应用（需先在 设置 → 安全 开启开发者模式），Connection 选「Tunnel」并选中该 Tunnel ID；应用名建议与「连接器名称」一致，复制的连接器提示词才能 @ 到它。</div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址，所以只支持连接器提示词，不支持沙箱直连；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
     <div id="channelCustom" style="display:none"><div class="fgrid channel-config">${customPublicUrlField}</div><div class="channel-custom-note">将公网 HTTPS 流量转发到 <code id="customLocalTarget">http://127.0.0.1:7306</code>；隧道与反向代理由你自行维护。</div></div>
     <div class="chrow channel-actions">
       <span class="chst dim" id="cnst" style="display:none"></span>
@@ -1263,15 +1514,10 @@ export class ConfigPanel {
       <button id="cnNamed" class="secondary">启动持久</button>
       <button id="cnStop" class="secondary" style="display:none">停止</button>
       <button id="cnCopy" style="display:none">复制链接</button>
+      <button id="rmPair" class="secondary" disabled>手机扫码</button>
     </div>
     <div class="hint bad" id="cnerr" style="display:none"></div>
-  </div>
-  <div class="sec">手机访问</div>
-  <div class="card" id="rmCard">
-    <label class="row" style="gap:8px;align-items:center;display:flex"><input type="checkbox" id="rmOn"> 允许手机扫码访问</label>
-    <div class="hint" id="rmHint">开启后可用手机查看会话、处理审批。</div>
-    <div class="row" style="margin-top:8px"><button id="rmPair" disabled>显示二维码</button></div>
-    <ul id="rmDevices" style="list-style:none;margin:8px 0 0;padding:0"></ul>
+    <div class="hint" id="rmHint" style="margin:6px 0 0"></div>
   </div>
   <div class="buy-modal" id="rmModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="rmTitle">
     <div class="buy-dialog">
@@ -1284,21 +1530,9 @@ export class ConfigPanel {
       <div class="buy-dialog-actions"><button class="secondary" id="rmClose">关闭</button><button id="rmAgain">重新生成</button></div>
     </div>
   </div>
-  <div class="sec">MCP 连接</div>
+  <div class="sec" id="mcpSec">MCP 连接</div>
   <div class="card">
     <div class="mcpurl"><span id="mcpurl">MCP 链接尚未就绪</span><div class="mcp-actions"><button id="mcpCopy">复制 MCP 链接</button><button id="mcpDesc" class="secondary">复制连接器描述</button><button id="mcpRotate" class="secondary">重置 MCP 链接</button></div></div>
-  </div>
-  <div class="sec">常用</div>
-  <div class="card">
-    <div class="fgrid">${common}</div>
-  </div>
-  <div class="sec">授权管理</div>
-  <div class="card">
-    <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
-    <div id="aglist" style="display:grid;gap:8px"></div>
-    <div class="btnrow" style="margin-top:10px">
-      <button id="agClear" class="secondary">清除全部全局授权</button>
-    </div>
   </div>
   <div class="sec">MCP Proxies</div>
   <div class="card">
@@ -1320,6 +1554,10 @@ export class ConfigPanel {
       <div class="pxmbody" id="pxModalBody"></div>
     </div>
   </div>
+  <div class="sec">常用</div>
+  <div class="card">
+    <div class="fgrid">${common}</div>
+  </div>
   <div class="sec">Web Agent 显示</div>
   <div class="card">
     <div class="hint" style="margin:0 0 10px">选择要显示的预置站点；自定义站点始终显示。</div>
@@ -1332,10 +1570,35 @@ export class ConfigPanel {
       <button id="waAdd" class="secondary">添加</button>
     </div>
   </div>
-  <details><summary>高级</summary><div class="card" style="margin-top:8px"><div class="fgrid">${advanced}</div></div></details>
+  <div class="sec">Courier 网页站点</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">在浏览器 Courier 里用「检测此页面」接入的网页 AI，新会话可以选它们。删除后 Courier 会解除它的绑定、停止接管该网站并收回访问权限。</div>
+    <div id="cslist" style="display:grid;gap:8px"></div>
+  </div>
+  <div class="sec">局域网直连</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</div>
+    <div class="chrow"><span class="chst dim" id="lanst">…</span><span class="sp"></span><button id="lanToggle">开启直连</button></div>
+    <div class="f" style="margin-top:10px"><label for="lanPort">直连端口</label><input id="lanPort" type="number" min="1024" max="65535" spellcheck="false"><div class="hint">1024–65535，不能与主端口相同；修改后立即生效。</div></div>
+    <div class="f" style="margin-top:10px"><label for="lanUrl">直连域名（可选）</label><input id="lanUrl" type="text" spellcheck="false" placeholder="https://mcp.example.com 或 http://nas.lan:7307"><div class="hint" id="lanUrlHint">域名映射到这台电脑时填写，下面会列出域名链接。</div></div>
+    <div id="lanurls" style="display:grid;gap:8px;margin-top:10px"></div>
+  </div>
+  <div class="sec">授权管理</div>
+  <div class="card">
+    <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
+    <div id="aglist" style="display:grid;gap:8px"></div>
+    <div class="btnrow" style="margin-top:10px">
+      <button id="agClear" class="secondary">清除全部全局授权</button>
+    </div>
+  </div>
+  <details><summary>高级</summary><div class="card" style="margin-top:8px"><div class="fgrid">${advanced}</div>
+    <div class="subsec">已配对的手机</div>
+    <ul id="rmDevices" style="list-style:none;margin:0;padding:0"></ul>
+  </div></details>
   <div class="actions">
-    <button id="save">保存</button>
+    <button id="save" title="保存标有「需重启」的设置；其余设置修改后已自动保存">保存</button>
     <button id="restart" class="secondary">重启 daemon</button>
+    <span id="autoNote" class="hint" role="status" aria-live="polite">其余设置修改后自动保存；标有「需重启」的改完点保存。</span>
   </div>
   <script nonce="${nonce}">
     const vs = acquireVsCodeApi();
@@ -1364,6 +1627,59 @@ export class ConfigPanel {
       $('cloudRefresh').disabled=!loggedIn;$('cloudRedeem').disabled=!loggedIn;$('cloudPlan').disabled=!loggedIn;$('cloudBuyCard').disabled=!loggedIn;$('cloudOrders').disabled=!loggedIn;$('cloudRefund').disabled=!loggedIn;
     });
     const KEYS = ${JSON.stringify(KEYS)};
+    // 不触发 daemon 重启的设置：选中 / 离开输入框即自动保存（其余走「保存」按钮）。
+    const AUTO_KEYS = ${JSON.stringify([...AUTO_SAVE_KEYS])};
+    let autoNoteTimer;
+    function autosave(values, webAgents) {
+      vs.postMessage(Object.assign({ type: 'autosave', values: values || {} }, webAgents ? { webAgents } : {}));
+    }
+    function onAutosaved(m) {
+      const n = $('autoNote');
+      clearTimeout(autoNoteTimer);
+      if (!m.ok) { n.textContent = m.message; n.className = 'hint bad'; return; }
+      if (!m.message) return;
+      n.textContent = m.message; n.className = 'hint ok';
+      autoNoteTimer = setTimeout(() => { n.textContent = '其余设置修改后自动保存；标有「需重启」的改完点保存。'; n.className = 'hint'; }, 2500);
+    }
+    // 驾驶舱的渠道总开关：开 = 启动上次使用的渠道，关 = 停止所有渠道（daemon /channel）。
+    const SW_NAMES = { quick: '临时渠道', named: '持久渠道', openai: 'OpenAI 渠道' };
+    let swBusy = false;
+    function renderCockpitSwitch(c, daemon) {
+      const sw = $('ckSw');
+      sw.hidden = !c || daemon !== 'running';
+      if (sw.hidden) return;
+      sw.setAttribute('aria-checked', c.on ? 'true' : 'false');
+      sw.dataset.state = swBusy ? 'starting' : c.state;
+      sw.disabled = swBusy || c.state === 'starting';
+      sw.title = c.on
+        ? '关闭：停止' + c.running.map((x) => SW_NAMES[x] || x).join('、')
+        : '开启：' + (SW_NAMES[c.next] || c.next) + (c.last ? '（上次使用）' : '')
+          + (c.missing === 'cloudflared' ? ' · 需要先安装 cloudflared' : '')
+          + (c.state === 'error' && c.reason ? ' · 上次失败：' + c.reason : '');
+    }
+    $('ckSw').addEventListener('click', () => {
+      const sw = $('ckSw');
+      if (sw.disabled) return;
+      swBusy = true;
+      const on = sw.getAttribute('aria-checked') !== 'true';
+      sw.dataset.state = 'starting'; sw.disabled = true;
+      $('ckSwMsg').hidden = true;
+      vs.postMessage({ type: 'channelToggle', on });
+    });
+    function onChannelToggleResult(m) {
+      swBusy = false;
+      const box = $('ckSwMsg');
+      box.textContent = m.message || '';
+      box.hidden = !m.message;
+      // 缺前提时把「公网渠道」切到对应标签（只切显示，不保存），方便就地补上。
+      const tab = m.code === 'openai_setup' ? 'openai' : m.code === 'cloudflared' || m.code === 'named_url' ? 'cloudflare' : '';
+      if (tab) { renderChannelMode(tab); renderStatus(lastStatus || { overview: {} }); $('channelCloudflare').closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    }
+    for (const k of AUTO_KEYS) {
+      const input = document.getElementById(k);
+      // change 只在内容改过并离开输入框（或回车）时触发，不会逐字保存。
+      if (input) input.addEventListener('change', () => autosave({ [k]: input.value.trim() }));
+    }
     function esc(s) { return (s ?? '').replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';'); }
     const activityCells = new Map();
     let activitySignature = '', activityHovered = null;
@@ -1442,9 +1758,19 @@ export class ConfigPanel {
       const t = o.tunnel;
       const cmap = { online: ['ok', o.tunnel_mode === 'named' ? '持久在线' : '临时在线'], unverified: ['warn', '未验证'], starting: ['warn', '启动中…'], error: ['bad', '启动失败'], unavailable: ['bad', '不可用'], unreachable: ['', '未连接'] };
       const customMap = { idle: ['', '待检测'], probing: ['warn', '检测中…'], online: ['ok', '自定义在线'], error: ['bad', '自定义不可达'] };
-      const cm = channelMode === 'custom' ? (customMap[customProbe.state] || customMap.idle) : channelMode === 'openai' ? ((o.openai_tunnel && oaLabels[o.openai_tunnel.status]) || ['', '未启动']) : (cmap[t] || ['', '未启动']);
+      // Overview: every running channel in one line (持久 · gpt), not just the selected mode; same wording as Web channelSummary.
+      const kind = o.tunnel_mode === 'named' ? '持久' : '临时';
+      const cfSum = { online: ['ok', kind], unverified: ['warn', kind + '未验证'], starting: ['warn', 'Cloudflare 启动中…'], error: ['bad', 'Cloudflare 失败'], unavailable: ['bad', 'Cloudflare 不可用'] };
+      const gpSum = { ready: ['ok', 'gpt'], recovering: ['warn', 'gpt 恢复中'], starting: ['warn', 'gpt 启动中…'], stopping: ['warn', 'gpt 停止中…'], error: ['bad', 'gpt 失败'], unavailable: ['bad', 'gpt 不可用'] };
+      const parts = [];
+      if (channelMode === 'custom' && customProbe.state === 'online') parts.push(['ok', '自定义']);
+      if (cfSum[t]) parts.push(cfSum[t]);
+      if (o.openai_tunnel && gpSum[o.openai_tunnel.status]) parts.push(gpSum[o.openai_tunnel.status]);
+      const cm = t === 'unreachable' ? cmap.unreachable : !parts.length ? ['', '未启动'] : [parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn', parts.map((p) => p[1]).join(' · ')];
+      void customMap;
       $('ckCd').className = 'd ' + cm[0];
       $('ckCv').textContent = cm[1];
+      renderCockpitSwitch(o.channel, o.daemon);
       renderActivity(o.stats, o.activity_days);
       // 公网渠道卡片按钮可见性
       const hasNamed = !!o.public_base_url;
@@ -1501,16 +1827,32 @@ export class ConfigPanel {
         st.textContent = '未启动'; st.style.display = ''; st.className = 'chst dim';
       }
       }
+      if (channelMode === 'openai') {
+        // OpenAI 没有 URL：卡片显示并复制已保存的 Tunnel ID（离线也可），不提供重置 MCP 链接；连接器描述照常可复制给 ChatGPT 应用。
+        const tid = o.openai_tunnel_id || '';
+        $('mcpSec').textContent = 'OpenAI 连接';
+        $('mcpurl').dataset.url = '';
+        $('mcpurl').textContent = tid ? 'Tunnel ID：' + tid : '尚未保存 Tunnel ID';
+        $('mcpCopy').textContent = '复制 Tunnel ID';
+        $('mcpCopy').disabled = !tid;
+        $('mcpRotate').style.display = 'none';
+        $('mcpDesc').disabled = false;
+      } else {
       // 自定义渠道只有通过真实公网探测后才发布完整 MCP 链接。
       const customReady = channelMode === 'custom' && customProbe.state === 'online' && customProbe.url;
       const mcpValue = channelMode === 'custom' ? (customReady && o.mcp_path ? customProbe.url + o.mcp_path : '') : (o.mcp_url || '');
+      // 回环链接只有本机可用：照常允许复制，但不标成“已就绪”。
+      const mcpLocal = mcpValue.indexOf('://127.') > 0 || mcpValue.indexOf('://localhost') > 0 || mcpValue.indexOf('://[::1]') > 0;
+      $('mcpSec').textContent = 'MCP 连接';
       $('mcpurl').dataset.url = mcpValue;
-      $('mcpurl').textContent = mcpValue ? 'MCP 链接已就绪' : (channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪');
+      $('mcpurl').textContent = mcpValue ? (mcpLocal ? 'MCP 链接仅本机可用（公网渠道未启动）' : 'MCP 链接已就绪') : (channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪');
       $('mcpCopy').textContent = '复制 MCP 链接';
       $('mcpCopy').disabled = !mcpValue;
       // Reset stays clickable even while daemon state is stale/unreachable so the host can explain the failure instead of silently swallowing the click.
+      $('mcpRotate').style.display = '';
       $('mcpRotate').disabled = false;
       $('mcpDesc').disabled = !mcpValue;
+      }
       // semantic 字段只在整页刷新时携带（status 轮询不带，见 overview 注释）
       if (o.semantic !== undefined) renderSemantic(o.semantic ?? null);
     }
@@ -1580,8 +1922,8 @@ export class ConfigPanel {
       const live = !!v && (v.status === 'starting' || v.status === 'ready' || v.status === 'recovering');
       const ks = $('oaKeyState');
       if (!v) { ks.textContent = o.version ? '当前 daemon 不支持 OpenAI 渠道（请重启 daemon）' : 'daemon 未连接'; ks.className = 'chst dim'; }
-      else if (v.credential_configured === null) { ks.textContent = '系统钥匙串不可读'; ks.className = 'chst bad'; }
-      else if (v.credential_configured) { ks.textContent = v.pending_restart ? '已保存 · 重新启动渠道后生效' : '已保存到系统钥匙串'; ks.className = 'chst ' + (v.pending_restart ? 'warn' : 'ok'); }
+      else if (v.credential_configured === null) { ks.textContent = '无法读取已保存的密钥'; ks.className = 'chst bad'; }
+      else if (v.credential_configured) { ks.textContent = v.pending_restart ? '已保存 · 重新启动渠道后生效' : '已保存'; ks.className = 'chst ' + (v.pending_restart ? 'warn' : 'ok'); }
       else { ks.textContent = '未保存'; ks.className = 'chst dim'; }
       $('oaKeyClear').style.display = v && v.credential_configured ? '' : 'none';
       $('oaStart').style.display = live ? 'none' : '';
@@ -1664,7 +2006,13 @@ export class ConfigPanel {
       if (channelMode === 'custom' && custom && fixed) custom.value = fixed.value;
       if (channelMode !== 'custom' && custom && fixed) fixed.value = custom.value;
     }
-    for (const el of document.querySelectorAll('[data-channel-mode]')) el.addEventListener('click', () => { if (cloudflaredInstalling) return; resetCustomProbe(); renderChannelMode(el.getAttribute('data-channel-mode')); renderStatus(lastStatus || { overview: {} }); });
+    for (const el of document.querySelectorAll('[data-channel-mode]')) el.addEventListener('click', () => {
+      if (cloudflaredInstalling) return;
+      const before = channelMode;
+      resetCustomProbe(); renderChannelMode(el.getAttribute('data-channel-mode')); renderStatus(lastStatus || { overview: {} });
+      // 标签只是默认显示偏好，不开关通道：选中即保存。
+      if (channelMode !== before) autosave({ channelMode });
+    });
     $('customPublicBaseUrl').addEventListener('input', () => { resetCustomProbe(); renderStatus(lastStatus || { overview: {} }); });
     window.addEventListener('message', (e) => {
       const m = e.data;
@@ -1681,6 +2029,8 @@ export class ConfigPanel {
         renderWebAgents(m.agents ?? [], m.webAgents ?? []); renderCustom(m.custom ?? []); renderStatus(m);
       }
       else if (m.type === 'custom') renderCustom(m.custom ?? []);
+      else if (m.type === 'autosaved') onAutosaved(m);
+      else if (m.type === 'channelToggleResult') onChannelToggleResult(m);
       else if (m.type === 'status') renderStatus(m);
       else if (m.type === 'remote') renderRemote(m.view, m.paired);
       else if (m.type === 'remoteQr') showRemoteQr(m);
@@ -1696,6 +2046,8 @@ export class ConfigPanel {
       }
       else if (m.type === 'semantic') renderSemantic(m.info ?? null);
       else if (m.type === 'grants') renderGrants(m.grants ?? { always: [], sessions: [] });
+      else if (m.type === 'courierSites') renderCourierSites(Array.isArray(m.sites) ? m.sites : []);
+      else if (m.type === 'lan') renderLan(m);
       else if (m.type === 'proxies') { renderProxies(m.info); if (pxModalFor && pxData[pxModalFor]) renderPxTools(pxData[pxModalFor]); }
       else if (m.type === 'proxiesReport') renderProxiesReport(m.report);
       else if (m.type === 'proxiesEditResult') renderProxiesEditResult(m);
@@ -1710,6 +2062,57 @@ export class ConfigPanel {
     });
     // 授权按实际生效 scope 展示：全局（持久）+ 会话（进程内）。
     // pattern/path 键保持可读化；单条删除后对应操作恢复询问。
+    // 局域网直连：状态、开关、端口和可复制的直连 MCP 链接。
+    let lanOn = false;
+    function renderLan(m) {
+      lanOn = !!m.on;
+      const lan = m.lan || null;
+      const st = !lanOn ? ['dim', '未开启'] : lan && lan.error ? ['bad', lan.error] : lan && lan.listening ? ['ok', '正在监听 0.0.0.0:' + lan.port] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
+      $('lanst').className = 'chst ' + st[0];
+      $('lanst').textContent = st[1];
+      $('lanToggle').textContent = lanOn ? '关闭直连' : '开启直连';
+      $('lanToggle').className = lanOn ? 'secondary' : '';
+      if (document.activeElement !== $('lanPort')) $('lanPort').value = String(m.port);
+      if (document.activeElement !== $('lanUrl')) $('lanUrl').value = m.url || '';
+      // 填了直连域名时，域名链接排在最前面。
+      const urls = lanOn && lan && lan.listening
+        ? (m.url ? [m.url + lan.mcp_path] : []).concat((lan.addresses || []).map((a) => 'http://' + a + ':' + lan.port + lan.mcp_path))
+        : [];
+      const list = $('lanurls');
+      list.innerHTML = urls.map((u) => '<div class="ag-row"><span class="nm" style="flex:1" title="' + esc(u) + '">' + esc(u.replace(lan.mcp_path, '/mcp/…')) + '</span>'
+        + '<button class="secondary" data-url="' + esc(u) + '">复制 MCP 链接</button></div>').join('');
+      for (const el of list.querySelectorAll('button')) el.addEventListener('click', () => vs.postMessage({ type: 'lanCopy', url: el.dataset.url }));
+    }
+    $('lanToggle').addEventListener('click', () => vs.postMessage({ type: 'lanToggle', on: !lanOn }));
+    $('lanPort').addEventListener('change', () => {
+      const n = Number($('lanPort').value);
+      if (Number.isInteger(n) && n >= 1024 && n <= 65535) vs.postMessage({ type: 'lanPort', port: n });
+    });
+    $('lanUrl').addEventListener('change', () => {
+      let v = $('lanUrl').value.trim();
+      while (v.endsWith('/')) v = v.slice(0, -1);
+      const hint = $('lanUrlHint');
+      // 只接受 http(s)://主机[:端口]；不合法时就地提示，不提交。
+      // 这段脚本在 TS 模板字符串里，用 URL 解析而不用正则，避免反斜杠被吃掉。
+      let valid = !v;
+      if (v) { try { const u = new URL(v); valid = (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; } catch { valid = false; } }
+      if (!valid) { hint.textContent = '请填写 http(s)://域名[:端口]，不要带路径。'; hint.className = 'hint bad'; return; }
+      hint.textContent = '域名映射到这台电脑时填写，下面会列出域名链接。'; hint.className = 'hint';
+      vs.postMessage({ type: 'lanUrl', url: v });
+    });
+
+    // Courier 网页站点：浏览器 Courier「检测此页面」接入的网站；删除后 Courier 解除绑定并收回权限。
+    function renderCourierSites(sites) {
+      const list = $('cslist');
+      if (!list) return;
+      if (!sites.length) {
+        list.innerHTML = '<div class="hint" style="margin:0">还没有接入的网站。在浏览器里打开网页 AI 的聊天页，点工具栏 Courier 的「检测此页面」即可接入（最多 20 个）。</div>';
+        return;
+      }
+      list.innerHTML = sites.map((x) => '<div class="ag-row"><span class="nm" style="flex:1">' + esc(String(x.name)) + ' <span class="wa-host">' + esc(String(x.origin).replace('https://', '')) + '</span>'
+        + '</span><button class="del" data-id="' + esc(String(x.id)) + '" title="删除这个网站">删除</button></div>').join('');
+      for (const el of list.querySelectorAll('.del')) el.addEventListener('click', () => vs.postMessage({ type: 'courierSiteRemove', id: el.dataset.id }));
+    }
     function renderGrants(info) {
       const list = $('aglist');
       const always = Array.isArray(info && info.always) ? info.always : [];
@@ -1762,7 +2165,7 @@ export class ConfigPanel {
         '<button class="agchip' + (on.has(a.name) ? ' on' : '') + '" data-name="' + esc(a.name) + '" title="' + esc(a.description) + '"><span class="d"></span>' + esc(a.name) + '</button>'
       ).join('');
       for (const el of $('wagrid').querySelectorAll('.agchip')) {
-        el.addEventListener('click', () => el.classList.toggle('on'));
+        el.addEventListener('click', () => { el.classList.toggle('on'); autosave({}, collectWebAgents()); });
       }
     }
     function renderCustom(custom) {
@@ -2212,26 +2615,30 @@ export class ConfigPanel {
       vs.postMessage({ type: 'customProbe', url });
     });
     $('mcpCopy').addEventListener('click', () => {
+      if (channelMode === 'openai') { vs.postMessage({ type: 'copyTunnelId' }); return; }
       const url = $('mcpurl').dataset.url || '';
       if (url) vs.postMessage({ type: 'copyUrl', url });
     });
     $('mcpDesc').addEventListener('click', () => vs.postMessage({ type: 'copyConnectorDesc' }));
+    for (const id of ['oaLinkPlatform', 'oaLinkChatgpt']) $(id).addEventListener('click', (e) => { e.preventDefault(); vs.postMessage({ type: 'openLink', target: $(id).dataset.link }); });
     // Destructive confirmation lives in the extension host (rotateToken), not window.confirm:
     // host dialogs are reliable in VS Code webviews and keep one confirmation source of truth.
     $('mcpRotate').addEventListener('click', () => vs.postMessage({ type: 'rotateToken' }));
     $('agClear').addEventListener('click', () => vs.postMessage({ type: 'grantsClear' }));
     let rmTimer = null, rmDevices = [];
-    const rmReason = { off: '开启后可用手机查看会话、处理审批。', channel_offline: '请先启动上方的公网通道。', not_https: '手机访问需要 https 公网地址。', custom_not_https: '自定义地址需要使用 https。' };
+    const rmReason = { off: '手机访问暂不可用。', channel_offline: '手机扫码需要先启动公网渠道。', not_https: '手机扫码需要 https 公网地址。', custom_not_https: '手机扫码需要自定义地址使用 https。' };
     function fmtTime(s) { const d = new Date(s); return isNaN(d.getTime()) ? '—' : d.toLocaleString(); }
     function renderRemote(v, paired) {
-      const on = $('rmOn'), hint = $('rmHint'), list = $('rmDevices');
-      if (!v) { on.disabled = true; $('rmPair').disabled = true; hint.textContent = 'Daemon 未运行'; hint.className = 'hint bad'; list.replaceChildren(); return; }
-      on.disabled = false; on.checked = !!v.enabled;
+      const hint = $('rmHint'), list = $('rmDevices');
+      const empty = () => { const li = document.createElement('li'); li.className = 'hint'; li.style.margin = '0'; li.textContent = '还没有配对的手机。'; return li; };
+      if (!v) { $('rmPair').disabled = true; hint.textContent = ''; hint.style.display = 'none'; list.replaceChildren(empty()); return; }
       $('rmPair').disabled = !v.available;
-      if (v.available) { hint.textContent = v.kind === 'quick' ? '已开启。临时通道重启后需要重新扫码。' : '已开启。'; hint.className = 'hint ok'; }
-      else { hint.textContent = rmReason[v.reason] || rmReason.off; hint.className = v.enabled ? 'hint warn' : 'hint'; }
+      // Phone access is always on: say something only when scanning is blocked or needs a re-scan later.
+      const note = v.available ? (v.kind === 'quick' ? '临时渠道重启后，手机需要重新扫码。' : '') : (rmReason[v.reason] || rmReason.off);
+      hint.textContent = note; hint.className = v.available ? 'hint' : 'hint warn'; hint.style.display = note ? '' : 'none';
       rmDevices = v.devices || [];
-      list.replaceChildren(...rmDevices.map(d => {
+      if (!rmDevices.length) list.replaceChildren(empty());
+      else list.replaceChildren(...rmDevices.map(d => {
         const li = document.createElement('li');
         li.style.cssText = 'display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--vscode-panel-border)';
         const t = document.createElement('div'); t.style.flex = '1';
@@ -2242,7 +2649,8 @@ export class ConfigPanel {
         b.addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'revoke', id: d.id, name: d.name }));
         li.append(t, b); return li;
       }));
-      if (paired && $('rmModal').style.display !== 'none') closeRemoteQr();
+      // scanned (the 允许 / 拒绝 notification takes over) or paired: the QR code is used up
+      if ((paired || (v.requests && v.requests.length)) && $('rmModal').style.display !== 'none') closeRemoteQr();
     }
     function closeRemoteQr() { $('rmModal').style.display = 'none'; if (rmTimer) clearInterval(rmTimer); rmTimer = null; }
     function showRemoteQr(m) {
@@ -2253,7 +2661,7 @@ export class ConfigPanel {
       svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '配对二维码');
       const p = document.createElementNS(NS, 'path'); p.setAttribute('d', m.path); p.setAttribute('fill', '#000');
       svg.append(p); $('rmQr').replaceChildren(svg);
-      $('rmNote').textContent = m.kind === 'quick' ? '二维码仅可使用一次。临时通道重启后需要重新扫码。' : '二维码仅可使用一次。';
+      $('rmNote').textContent = '扫码后在 VS Code 右下角点「允许」。二维码仅可使用一次' + (m.kind === 'quick' ? '，临时通道重启后需要重新扫码。' : '。');
       $('rmModal').style.display = 'flex';
       const end = new Date(m.expiresAt).getTime();
       const tick = () => {
@@ -2265,7 +2673,6 @@ export class ConfigPanel {
       if (rmTimer) clearInterval(rmTimer);
       tick(); rmTimer = setInterval(tick, 1000);
     }
-    $('rmOn').addEventListener('change', e => vs.postMessage({ type: 'remote', action: 'toggle', on: e.target.checked }));
     $('rmPair').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
     $('rmAgain').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
     $('rmClose').addEventListener('click', closeRemoteQr);

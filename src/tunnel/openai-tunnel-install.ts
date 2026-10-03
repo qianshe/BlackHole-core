@@ -277,7 +277,7 @@ export async function initializeOpenAITunnelClient(
 
   const artifact = ARTIFACTS[`${env.platform}-${env.arch}`];
   if (!artifact) {
-    throw new Error(`暂不支持 ${env.platform}-${env.arch} 的 OpenAI tunnel-client 一键安装（该平台尚未完成原生验证）。请从官方 release 手动安装 tunnel-client-runtime 纯运行版并填写路径。`);
+    throw new Error(`暂不支持 ${env.platform}-${env.arch} 的 OpenAI tunnel-client 一键安装（该平台尚未完成原生验证）。请从 https://github.com/openai/tunnel-client/releases/tag/${VERSION} 下载 tunnel-client-runtime 纯运行版（不是 runtime-cloudflared），解压后在设置页填写可执行文件的完整路径。`);
   }
   // Filesystem locations use the host's path rules (env.platform only selects the artifact).
   const target = path.join(env.root, VERSION, `${env.platform}-${env.arch}`);

@@ -2,6 +2,8 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { courierRoutes } from '../courier/mount.js';
+import { mountFeedRoutes } from '../feed/routes.js';
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import type { DaemonDeps } from '../deps.js';
 import { VERSION } from '../version.js';
@@ -13,9 +15,13 @@ import { AccountError, accountErrorCode } from '../account/service.js';
 import { WebSessionStore, WEB_SESSION_TTL_MS } from './web-sessions.js';
 import type { MachineStateRepo } from '../storage/machineState.js';
 import { CloudflaredJob } from '../tunnel/cloudflared-job.js';
+import { initializeOpenAITunnelClient } from '../tunnel/openai-tunnel-install.js';
+import { loopbackPeer, openAITunnelRouter } from '../control/openai-tunnel-routes.js';
 import { restartSelf } from '../util/self-restart.js';
+import { pickFolder } from '../util/pick-folder.js';
 import { skillDirectoryStatus } from '../settings/skills-status.js';
 import { resolveConfirmation } from '../control/api.js';
+import { resumeChannel } from '../tunnel/resume.js';
 import { DEVICE_COOKIE, DEVICE_IDLE_MS, RateLimiter, RemoteAccess, deviceName, httpsOrigin, type PublicChannel } from './remote-access.js';
 import { INTEGRITY_MESSAGE, integrityFailures } from '../integrity.js';
 
@@ -39,6 +45,8 @@ const CLIENT_HEADER = 'x-blackhole-web';
 const CSRF_HEADER = 'x-blackhole-csrf';
 const PROJECTS_KEY = 'web.projects';
 const MAX_PROJECTS = 200;
+/** Keeps the /presence response alive through proxies and re-checks the session. */
+const PRESENCE_PING_MS = 20_000;
 const MAX_DIR_ENTRIES = 500;
 
 const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}))?$/;
@@ -171,14 +179,25 @@ export function isNativeLoopback(req: Request): boolean {
   );
 }
 
-function readCookie(req: Request, name: string): string | undefined {
+/**
+ * Every value sent under `name`, in the browser's order. Browsers also send same-named
+ * cookies from longer paths first (e.g. one left by an older build; cookies ignore the
+ * port, so anything on this host counts), and such a stale entry must not hide the
+ * valid session cookie.
+ */
+function readCookies(req: Request, name: string): string[] {
   const raw = req.headers.cookie;
-  if (!raw) return undefined;
+  if (!raw) return [];
+  const out: string[] = [];
   for (const part of raw.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+    if (i > 0 && part.slice(0, i).trim() === name) out.push(part.slice(i + 1).trim());
   }
-  return undefined;
+  return out;
+}
+
+function readCookie(req: Request, name: string): string | undefined {
+  return readCookies(req, name)[0];
 }
 
 /** Same-origin browser request from our own page (exact Origin when present, custom header always). */
@@ -194,7 +213,7 @@ function sameOriginClient(req: Request): boolean {
 function securityHeaders(_req: Request, res: Response, next: NextFunction): void {
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   );
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -297,7 +316,9 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     const origin = httpsOrigin(t.url);
     return origin ? { origin, kind: t.mode === 'quick' ? 'quick' : 'fixed' } : null;
   };
-  const remoteEnabled = () => deps.settings?.get().values.remoteAccess === true;
+  // Phone access is always on (pairing still needs 允许 on this computer). A stored
+  // remoteAccess=false from older builds must not lock it off with no switch left.
+  const remoteEnabled = () => true;
   const publicChannel = (): PublicChannel | null => (remoteEnabled() ? channelInfo() : null);
   /** The enabled channel when this request is addressed to it (Host = the public address). */
   const remoteChannel = (req: Request): PublicChannel | null => {
@@ -461,13 +482,25 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(403).json({ error: 'origin_rejected' });
       return;
     }
-    const checked = state.sessions.check(readCookie(req, WEB_COOKIE), accountUser());
+    // The first valid one of the same-named cookies wins (see readCookies).
+    const user = accountUser();
+    const cookies = readCookies(req, WEB_COOKIE);
+    let cookie = cookies[0];
+    let checked = state.sessions.check(cookie, user);
+    for (const other of cookies.slice(1)) {
+      if (checked.ok) break;
+      const next = state.sessions.check(other, user);
+      if (next.ok) {
+        checked = next;
+        cookie = other;
+      }
+    }
     if (!checked.ok) {
       res.status(401).json({ error: checked.error });
       return;
     }
     res.locals.webExpiresAt = checked.expiresAt;
-    res.locals.webCookie = readCookie(req, WEB_COOKIE);
+    res.locals.webCookie = cookie;
     next();
   });
 
@@ -483,7 +516,9 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(403).json({ error: 'csrf_rejected' });
       return;
     }
-    if (!req.is('application/json')) {
+    // JSON only, except a pasted image's raw bytes on the one upload route (CSRF checked above).
+    const imageUpload = req.method === 'POST' && req.path === '/courier/attachments' && !!req.is('image/*');
+    if (!imageUpload && !req.is('application/json')) {
       res.status(415).json({ error: 'json_required' });
       return;
     }
@@ -501,6 +536,37 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     next();
   });
 
+  // Presence: while this response stays open the page counts as an open window for
+  // the channel watchdog (the page elects one tab per browser). Local Web only; the
+  // phone surface has no such route. The session is re-checked on every ping.
+  api.get('/presence', (req, res) => {
+    const cookie = res.locals.webCookie as string;
+    const present = (deps.webPresence ??= new Set());
+    const entry = {};
+    present.add(entry);
+    deps.lastHeartbeatAt = Date.now();
+    resumeChannel(deps);
+    res.status(200).set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    res.write(': present\n\n');
+    const ping = setInterval(() => {
+      if (!state.sessions.check(cookie, accountUser()).ok) res.end();
+      else res.write(': ping\n\n');
+    }, PRESENCE_PING_MS);
+    let done = false;
+    const leave = () => {
+      if (done) return;
+      done = true;
+      clearInterval(ping);
+      present.delete(entry);
+      // The grace period (watchdog STALE_MS) starts when the last page goes away.
+      deps.lastHeartbeatAt = Date.now();
+    };
+    req.on('close', leave);
+    res.on('close', leave);
+    res.on('finish', leave);
+  });
+
   api.get('/auth/session', (_req, res) => {
     res.json({
       authenticated: true,
@@ -513,7 +579,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   });
 
   api.post('/auth/logout', (req, res) => {
-    state.sessions.revoke(readCookie(req, WEB_COOKIE));
+    state.sessions.revoke(res.locals.webCookie as string);
     res.setHeader('Set-Cookie', `${WEB_COOKIE}=; Path=/web-api; HttpOnly; SameSite=Strict; Max-Age=0`);
     res.json({ ok: true });
   });
@@ -529,19 +595,26 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       activity: deps.sessionActivity?.status(s.id) ?? null,
       permission_mode: s.permission_mode,
       auto_approve: String(s.auto_approve ?? '') === '1' || s.auto_approve === true,
+      draft: 'draft' in s && s.draft === true,
       created_at: iso(s.created_at),
       last_active_at: iso(s.last_active_at),
       calls_total: deps.toolCalls.countForSession(s.id),
       todos_total: board.items.length,
       todos_done: board.items.filter((t) => t.status === 'completed').length,
+      // Handoff summary only (no content): the console shows a bar and fetches the snapshot on demand.
+      pending_handoff: s.status === 'revoked' || s.status === 'archived' ? null : handoffSummary(s.id),
     };
+  };
+  const handoffSummary = (id: string): { id: string; created_at: string | null } | null => {
+    try { const h = deps.handoffs?.getSummary(id); return h ? { id: h.id, created_at: iso(h.created_at) } : null; } catch { return null; }
   };
 
   // Read routes shared with the phone surface (/remote-api/v1).
   const data = Router();
   api.use(data);
   data.get('/sessions', (_req, res) => {
-    res.json({ sessions: deps.sessions.list().map(sessionView), version: VERSION });
+    // Ended sessions are gone for users: never list them on any surface (phone included).
+    res.json({ sessions: deps.sessions.list().filter((s) => s.status !== 'revoked' && s.status !== 'archived').map(sessionView), version: VERSION });
   });
 
   data.get('/sessions/:id', (req, res) => {
@@ -553,6 +626,22 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     res.json(sessionView(s));
   });
 
+  // 会话时间线：feed（增量 + 长轮询）与 history（往上翻页）。Web 控制台与手机共用（remote.use(data)），
+  // VS Code 的 control API 挂的是同一份处理函数；见 src/feed/。
+  mountFeedRoutes(data, deps, {
+    mapCall: (c) => ({
+      id: c.id,
+      seq: c.seq,
+      tool: c.tool,
+      status: c.status,
+      args: projectArgs(c.args_json),
+      result_summary: c.result_summary,
+      approval_scope: c.approval_scope,
+      created_at: iso(c.created_at),
+      updated_at: iso(c.updated_at),
+    }),
+  });
+
   data.get('/sessions/:id/calls', (req, res) => {
     const id = String(req.params.id);
     if (!deps.sessions.get(id)) {
@@ -560,8 +649,11 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 200);
+    // page is 0-based (page 0 = newest), like the VS Code sidebar. Deep pages pass
+    // anchor = the max_seq seen on page 0 so calls written meanwhile never shift history.
     const page = Math.max(0, Math.floor(Number(req.query.page ?? 0) || 0));
-    const rows = deps.toolCalls.listForSessionWindow(id, 0, page, limit);
+    const anchor = Math.max(0, Math.floor(Number(req.query.anchor ?? 0) || 0));
+    const rows = deps.toolCalls.listForSessionWindow(id, anchor, page, limit);
     res.json({
       calls: rows.map((c) => ({
         id: c.id,
@@ -575,6 +667,8 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
         updated_at: iso(c.updated_at),
       })),
       total: deps.toolCalls.countForSession(id),
+      window_total: anchor > 0 ? deps.toolCalls.countForSession(id, anchor) : deps.toolCalls.countForSession(id),
+      max_seq: deps.toolCalls.maxSeqForSession(id),
       page,
       limit,
     });
@@ -591,7 +685,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   });
 
   // ─── new session ──────────────────────────────────────────
-  const SESSION_KEYS = new Set(['workspace_path', 'permission_mode', 'name', 'writable_dirs', 'auto_approve']);
+  const SESSION_KEYS = new Set(['workspace_path', 'permission_mode', 'name', 'writable_dirs', 'auto_approve', 'draft']);
   api.post('/sessions', (req, res) => {
     if (integrityFailures().length) { res.status(503).json({ error: 'install_corrupted', message: INTEGRITY_MESSAGE }); return; }
     const body = req.body as Record<string, unknown> | undefined;
@@ -600,7 +694,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     // Stricter than /api: no silent fallback for unknown modes or non-boolean flags.
-    if ((body.permission_mode !== undefined && !PERMISSION_MODES.includes(body.permission_mode as PermissionMode)) || (body.auto_approve !== undefined && typeof body.auto_approve !== 'boolean')) {
+    if ((body.permission_mode !== undefined && !PERMISSION_MODES.includes(body.permission_mode as PermissionMode)) || (body.auto_approve !== undefined && typeof body.auto_approve !== 'boolean') || (body.draft !== undefined && typeof body.draft !== 'boolean')) {
       res.status(400).json({ error: 'invalid_input', message: `permission_mode must be one of ${PERMISSION_MODES.join(', ')}` });
       return;
     }
@@ -609,7 +703,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(400).json({ error: 'invalid_input', message: created.error });
       return;
     }
-    deps.events.append(created.session.id, 'local_web_session_created', {});
+    if (!('draft' in created.session)) deps.events.append(created.session.id, 'local_web_session_created', {});
     // The numeric id is the credential the user hands to their AI; returned once, never listed.
     res.status(201).json({ session: sessionView(created.session), session_id: created.session.credential_id, mcp_url: mcpUrl(deps) });
   });
@@ -827,6 +921,17 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     res.json({ projects: projectList() });
   });
 
+  // 添加项目: the computer's own folder dialog (loopback-only router, like everything under api).
+  let picking = false;
+  api.post('/projects/pick', (_req, res) => {
+    if (picking) { res.status(409).json({ error: 'picker_busy', message: '电脑上已经打开了一个选择文件夹窗口。' }); return; }
+    picking = true;
+    void pickFolder().then(
+      (r) => res.json(r),
+      () => res.json({ unavailable: true }),
+    ).finally(() => { picking = false; });
+  });
+
   api.post('/projects', (req, res) => {
     const body = (req.body ?? {}) as { path?: unknown; label?: unknown };
     const dir = canonicalDir(body.path);
@@ -891,13 +996,17 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     ['POST', /^\/semantic\/(key|clear)$/],
     ['GET', /^\/tunnel$/],
     ['POST', /^\/tunnel\/(start|stop)$/],
+    ['GET', /^\/channel$/],
+    ['POST', /^\/channel$/],
     ['POST', /^\/token\/rotate$/],
     ['GET', /^\/approvals$/],
     ['POST', /^\/approvals\/(clear|session\/remove|[^/]+\/remove)$/],
     ['GET', /^\/proxies$/],
     // session controls in the Web console header (plan 6.15 W1)
     ['GET', /^\/sessions\/[^/]+$/],
+    ['GET', /^\/sessions\/[^/]+\/handoff$/],
     ['POST', /^\/sessions\/[^/]+\/(pause|resume|revoke|rotate)$/],
+    ['PATCH', /^\/sessions\/[^/]+\/(mode|name)$/],
     ['POST', /^\/proxies\/(revalidate|config\/fields|add|import|tools|remove)$/],
   ];
   api.use('/panel', (req, res, next) => {
@@ -925,7 +1034,32 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     res.status(202).json(cloudflared.view());
   });
 
+  // ─── OpenAI tunnel (web settings): the handlers VS Code's panel uses, behind this
+  // router's cookie, Origin, CSRF and account checks, and only from a loopback peer.
+  // Not mounted on the phone surface; request bodies (the API key) are never echoed.
+  const openaiLocal = (req: Request): string | null => (loopbackPeer(req) ? null : 'local_only');
+  const openaiInstall = new CloudflaredJob(initializeOpenAITunnelClient, deps.log, 'openai tunnel-client');
+  api.get('/openai-tunnel/install', (req, res) => {
+    const denied = openaiLocal(req);
+    if (denied) { res.status(403).json({ error: denied }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(openaiInstall.view());
+  });
+  // Pinned plain runtime, SHA-256 verified (src/tunnel/openai-tunnel-install.ts); saves nothing, starts nothing.
+  api.post('/openai-tunnel/install', (req, res) => {
+    const denied = openaiLocal(req);
+    if (denied) { res.status(403).json({ error: denied }); return; }
+    openaiInstall.start(deps.settings?.get().values.openaiTunnelClientPath ?? '');
+    res.status(202).json(openaiInstall.view());
+  });
+  api.use('/openai-tunnel', openAITunnelRouter(deps, () => deps.daemonId ?? '', openaiLocal));
+
   // ─── phone access: this computer's controls (plan 6.13 R4) ─────────────
+  const decidePair = (id: string, allow: boolean): boolean => {
+    const ok = remoteAccess.decide(id, allow);
+    if (ok) deps.events.append(null, allow ? 'remote_pair_allowed' : 'remote_pair_denied', {});
+    return ok;
+  };
   const remoteView = () => {
     const enabled = remoteEnabled();
     const ch = channelInfo();
@@ -937,7 +1071,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       : values?.channelMode === 'custom' ? 'custom_not_https'
       : deps.tunnel?.status === 'online' || deps.tunnel?.status === 'unverified' ? 'not_https'
       : 'channel_offline';
-    return { enabled, available: enabled && !!ch, reason, origin: ch?.origin ?? null, kind: ch?.kind ?? null, devices: enabled ? remoteAccess.list() : [] };
+    return { enabled, available: enabled && !!ch, reason, origin: ch?.origin ?? null, kind: ch?.kind ?? null, devices: enabled ? remoteAccess.list() : [], requests: enabled ? remoteAccess.pending(ch) : [] };
   };
   deps.remote = {
     view: remoteView,
@@ -952,6 +1086,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       if (ok) deps.events.append(null, 'remote_device_revoked', {});
       return ok;
     },
+    decide: (id, allow) => decidePair(id, allow),
   };
   api.get('/remote', (_req, res) => { res.json(remoteView()); });
   api.post('/remote/pair', (_req, res) => {
@@ -968,12 +1103,26 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     if (ok) deps.events.append(null, 'remote_device_revoked', {});
     res.status(ok ? 200 : 404).json(ok ? remoteView() : { error: 'device_not_found' });
   });
+  // 允许 / 拒绝 a phone that just scanned the code
+  api.post('/remote/requests/:id', (req, res) => {
+    const allow = (req.body as { allow?: unknown } | undefined)?.allow;
+    if (typeof allow !== 'boolean') {
+      res.status(400).json({ error: 'invalid_body' });
+      return;
+    }
+    if (!decidePair(String(req.params.id), allow)) {
+      res.status(404).json({ error: 'request_not_found', ...remoteView() });
+      return;
+    }
+    res.json(remoteView());
+  });
   api.post('/remote/revoke-all', (_req, res) => {
     const n = remoteAccess.revokeAll();
     if (n) deps.events.append(null, 'remote_device_revoked', { count: n });
     res.json(remoteView());
   });
 
+  if (deps.courier) api.use('/courier', courierRoutes(deps.courier, (d) => deps.events.append(null, 'courier_send', { ...d, via: 'web' }), { images: true }));
   api.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });
@@ -1039,14 +1188,30 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     const name = deviceName(req.headers['user-agent']);
-    const paired = remoteAccess.pair((req.body as { code?: unknown } | undefined)?.code, res.locals.channel as PublicChannel, name, user);
-    if (!paired) {
+    // The code alone grants nothing: it files a request someone on the computer must allow.
+    const pending = remoteAccess.requestPair((req.body as { code?: unknown } | undefined)?.code, res.locals.channel as PublicChannel, name, user);
+    if (!pending) {
       res.status(401).json({ error: 'pair_invalid' });
       return;
     }
-    res.setHeader('Set-Cookie', deviceCookie(paired.secret, Math.floor(DEVICE_IDLE_MS / 1000)));
-    deps.events.append(null, 'remote_device_paired', { name, kind: paired.device.kind });
-    res.json({ ok: true, device: name });
+    deps.events.append(null, 'remote_pair_requested', { name });
+    res.status(202).json({ state: 'pending', token: pending.token, device: name, expires_at: iso(pending.expiresAt) });
+  });
+
+  // The phone polls here until the computer answers.
+  remote.post('/pair/claim', (req, res) => {
+    const r = remoteAccess.claim((req.body as { token?: unknown } | undefined)?.token, res.locals.channel as PublicChannel);
+    if (r.state === 'approved') {
+      res.setHeader('Set-Cookie', deviceCookie(r.secret, Math.floor(DEVICE_IDLE_MS / 1000)));
+      deps.events.append(null, 'remote_device_paired', { name: r.device.name, kind: r.device.kind });
+      res.json({ state: 'approved', device: r.device.name });
+      return;
+    }
+    if (r.state === 'pending') {
+      res.json({ state: 'pending' });
+      return;
+    }
+    res.status(r.state === 'denied' ? 403 : 401).json({ error: r.state === 'denied' ? 'pair_denied' : 'pair_expired' });
   });
 
   // Everything below needs a paired device on this origin.
@@ -1124,7 +1289,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   remote.post('/sessions', (req, res) => {
     if (integrityFailures().length) { res.status(503).json({ error: 'install_corrupted', message: INTEGRITY_MESSAGE }); return; }
     const body = req.body as Record<string, unknown> | undefined;
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((k) => !['project_id', 'permission_mode', 'name'].includes(k))) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((k) => !['project_id', 'permission_mode', 'name', 'draft'].includes(k))) {
       res.status(400).json({ error: 'invalid_body' });
       return;
     }
@@ -1137,14 +1302,34 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(400).json({ error: 'invalid_input', message: `permission_mode must be one of ${PERMISSION_MODES.join(', ')}` });
       return;
     }
-    const created = createWorkspaceSession(deps, { workspace_path: project.path, permission_mode: body.permission_mode, name: body.name });
+    const created = createWorkspaceSession(deps, { workspace_path: project.path, permission_mode: body.permission_mode, name: body.name, draft: body.draft === true });
     if ('error' in created) {
       res.status(400).json({ error: 'invalid_input', message: created.error });
       return;
     }
+    // A draft (new chat page) needs no credential on the phone: the daemon renders the
+    // connector prompt when its first message is sent (/courier/start template=connector).
+    if (body.draft === true) { res.status(201).json({ session: sessionView(created.session) }); return; }
     deps.events.append(created.session.id, 'remote_session_created', { device: (res.locals.device as { name: string }).name });
     res.status(201).json({ session: sessionView(created.session), session_id: created.session.credential_id, mcp_url: mcpUrl(deps) });
   });
+  // Rename from the phone session menu (empty = back to the default title).
+  remote.post('/sessions/:id/rename', (req, res) => {
+    const id = req.params.id as string;
+    const existing = deps.sessions.get(id);
+    const name = (req.body as { name?: unknown } | undefined)?.name;
+    if (!existing) { res.status(404).json({ error: 'not_found' }); return; }
+    if (typeof name !== 'string') { res.status(400).json({ error: 'invalid_body' }); return; }
+    const updated = deps.sessions.setName(id, name);
+    if (!('draft' in existing)) deps.events.append(id, 'session_renamed', { name: updated?.name ?? null, device: (res.locals.device as { name: string }).name });
+    deps.changes.bump();
+    res.json({ session: sessionView(updated as NonNullable<typeof updated>) });
+  });
+  // A new-chat draft whose first message did not go out: forget it (stored sessions are untouched).
+  remote.post('/sessions/:id/discard', (req, res) => {
+    res.json({ discarded: deps.sessions.discardDraft(req.params.id as string) });
+  });
+  if (deps.courier) remote.use('/courier', courierRoutes(deps.courier, (d) => deps.events.append(null, 'courier_send', { ...d, via: 'phone' })));
   remote.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });

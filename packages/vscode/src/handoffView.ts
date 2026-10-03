@@ -12,6 +12,11 @@ export const handoffStyles = `
      Outer tracks include row padding; subgrid preserves the existing hit targets. */
   #list[data-mode="sessions"] { display:grid; grid-template-columns:28px minmax(0,1fr) max-content 32px; column-gap:6px; align-content:start; }
   #list[data-mode="sessions"] > .row { display:grid; grid-column:1/-1; grid-template-columns:subgrid; }
+  /* Explicit tracks: a row without a status must leave column 3 empty, not move ⋯ into it. */
+  #list[data-mode="sessions"] > .row > .drag { grid-column:1; }
+  #list[data-mode="sessions"] > .row > .main { grid-column:2; }
+  #list[data-mode="sessions"] > .row > .st { grid-column:3; }
+  #list[data-mode="sessions"] > .row > .ract { grid-column:4; }
   #list[data-mode="sessions"] > .empty { grid-column:1/-1; }
   #list[data-mode="sessions"] .row .st { text-align:right; }
   .row .handoffBar { margin-left:auto; border-left:1px solid var(--vscode-panel-border); padding-left:4px; }

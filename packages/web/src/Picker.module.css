@@ -1,0 +1,22 @@
+/* Compact picker: text + chevron, a small menu (the send-method choice in composers). */
+.pick { position: relative; display: inline-flex; flex: none; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; max-width: 200px; padding: 0 8px 0 10px; font: inherit; font-size: var(--fs-sm); font-weight: 600; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+.btn::after { content: ''; flex: none; width: 5px; height: 5px; margin-top: -3px; border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3); transform: rotate(45deg); }
+.btn:hover, .open .btn { background: var(--surface-hover); border-color: var(--border); }
+.btn:disabled { opacity: .5; cursor: default; background: transparent; border-color: transparent; }
+.cur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu { position: absolute; right: 0; z-index: var(--z-header); min-width: 176px; max-width: 280px; max-height: min(320px, 50vh); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 4px; list-style: none; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-pop); }
+.down { top: calc(100% + 4px); }
+.start { right: auto; left: 0; }
+.up { bottom: calc(100% + 4px); }
+.item { display: grid; grid-template-columns: 14px minmax(0, 1fr) minmax(0, max-content); align-items: center; gap: 8px; height: 28px; padding: 0 10px 0 6px; font-size: var(--fs-sm); color: var(--text); border-radius: var(--r-sm); cursor: pointer; white-space: nowrap; }
+.ck { font-size: var(--fs-xs); color: var(--accent-text); text-align: center; opacity: 0; }
+.item[aria-selected="true"] .ck { opacity: 1; }
+.item[aria-selected="true"] .lb { font-weight: 600; }
+.lb { overflow: hidden; text-overflow: ellipsis; }
+.tg { overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--text-3); }
+.sep { position: relative; margin-top: 9px; }
+.sep::before { content: ''; position: absolute; left: 4px; right: 4px; top: -5px; border-top: 1px solid var(--border); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.act { background: var(--surface-hover); }
+@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }

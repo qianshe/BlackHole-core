@@ -181,6 +181,39 @@ if (process.argv.includes('--fixture-daemon')) {
     const calls = await (await web(`/sessions/${session.id}/calls?limit=10`, { cookie })).json();
     assert.ok(calls.calls.some((c) => c.tool === 'todo'));
     assert.ok(!JSON.stringify(calls).includes(sid), 'recorded args drop the credential');
+    // page is 0-based (0 = newest, same as the VS Code sidebar); an anchor freezes deep pages.
+    const p0 = await (await web(`/sessions/${session.id}/calls?page=0&limit=1`, { cookie })).json();
+    assert.equal(p0.calls.length, 1);
+    assert.equal(p0.calls[0].id, calls.calls[0].id, 'page 0 is the newest call');
+    assert.ok(p0.max_seq > 0);
+    assert.equal(p0.window_total, p0.total);
+    const p1 = await (await web(`/sessions/${session.id}/calls?page=1&limit=1&anchor=${p0.max_seq}`, { cookie })).json();
+    assert.equal(p1.calls[0].id, calls.calls[1].id, 'page 1 continues right after page 0');
+    const below = await (await web(`/sessions/${session.id}/calls?page=0&limit=1&anchor=${p0.max_seq - 1}`, { cookie })).json();
+    assert.equal(below.calls[0].id, calls.calls[1].id, 'rows newer than the anchor are left out');
+    assert.equal(below.window_total, p0.total - 1);
+
+    // 会话时间线（session-feed 计划）：feed（full + 增量 + 长轮询）与 history 在同一个登录后的 data 路由上。
+    const feed = await (await web(`/sessions/${session.id}/feed?limit=10`, { cookie })).json();
+    assert.equal(feed.full, true);
+    assert.equal(typeof feed.boot, 'string');
+    assert.ok(feed.offset > 0);
+    assert.deepEqual(feed.calls.map((c) => c.id), calls.calls.map((c) => c.id).reverse(), 'feed 的头部窗口与 /calls 同一批调用（时间线升序）');
+    assert.ok(feed.calls.every((c) => typeof c.created_at === 'string' && 'args' in c), 'Web 与 /calls 同样的投影字段');
+    assert.ok(!JSON.stringify(feed).includes(sid), 'recorded args drop the credential');
+    assert.equal(feed.state.name, 'local web fixture');
+    const hist = await (await web(`/sessions/${session.id}/history?limit=10`, { cookie })).json();
+    assert.deepEqual(hist.items.calls.map((c) => c.id), feed.calls.map((c) => c.id), 'history 从最新开始，与 feed 头部同一批');
+    assert.equal(hist.older, null);
+    assert.equal((await web(`/sessions/nope/feed`, { cookie })).status, 404);
+    // 增量：再调一次工具，带着 offset/boot 只拿到新的那一条；空闲时长轮询在 wait 秒后返回空
+    const quiet = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}&wait=1`, { cookie })).json();
+    assert.deepEqual([quiet.full, quiet.calls, quiet.messages], [false, [], []]);
+    await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+    const inc = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}`, { cookie })).json();
+    assert.equal(inc.full, false);
+    assert.ok(inc.calls.length >= 1 && inc.calls.every((c) => c.tool === 'guide'));
+    assert.ok(inc.offset > feed.offset);
     const todos = await (await web(`/sessions/${session.id}/todos`, { cookie })).json();
     assert.deepEqual(todos.items.map((i) => i.content), ['first step', 'second step']);
     assert.equal((await web('/sessions/nope/todos', { cookie })).status, 404);
@@ -200,6 +233,13 @@ if (process.argv.includes('--fixture-daemon')) {
     const exBody = me; // /auth/session echoes the token for page reloads
     const csrf = exBody.csrf;
     assert.match(csrf, /^[A-Za-z0-9_-]{43}$/);
+    // A stale same-named cookie sent first (longer path, older build, another port on
+    // this host) must not hide the valid one; the CSRF token stays bound to the valid one.
+    const staleFirst = `bh_web=${'A'.repeat(43)}; ${cookie}`;
+    const staleSession = await web('/auth/session', { cookie: staleFirst });
+    assert.equal(staleSession.status, 200, 'stale cookie first still signs in');
+    assert.equal((await staleSession.json()).csrf, csrf);
+    assert.equal((await web('/auth/session', { cookie: `bh_web=${'A'.repeat(43)}; bh_web=${'B'.repeat(43)}` })).status, 401, 'only stale cookies');
     const write = (route, body, { method = 'POST', headers = {} } = {}) => web(route, { cookie, method, body, headers: { 'x-blackhole-csrf': csrf, ...headers } });
     const fsTmp = await import('node:fs');
     const wsDir = path.join(iso.home, 'proj Ü space');
@@ -211,6 +251,45 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await write('/sessions', { workspace_path: wsDir }, { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
     const textBody = await fetch(base + '/web-api/v1/sessions', { method: 'POST', headers: { 'x-blackhole-web': '1', cookie, origin, 'x-blackhole-csrf': csrf, 'content-type': 'text/plain' }, body: 'x' });
     assert.equal(textBody.status, 415);
+
+    // OpenAI tunnel in the web settings: VS Code's handlers behind cookie + CSRF (loopback peer only).
+    const oaRes = await web('/openai-tunnel', { cookie });
+    assert.equal(oaRes.status, 200);
+    const oaView = await oaRes.json();
+    assert.equal(typeof oaView.status, 'string');
+    assert.equal(typeof oaView.credential_revision, 'number');
+    assert.equal((await web('/openai-tunnel', {})).status, 401, 'openai view needs the session cookie');
+    assert.deepEqual(await (await web('/openai-tunnel/install', { cookie })).json(), { state: 'idle' }, 'install job idle (never started here)');
+    assert.equal((await web('/openai-tunnel/stop', { cookie, method: 'POST', body: { daemon_id: 'x', run_id: null } })).status, 403, 'openai writes need csrf');
+    assert.equal((await write('/openai-tunnel/stop', { daemon_id: 'not-this-daemon', run_id: null })).status, 409, 'stale daemon id');
+    const daemonId = (await control('/health')).daemon_id;
+    const badKey = await write('/openai-tunnel/credential', { daemon_id: daemonId, credential_revision: oaView.credential_revision, api_key: 'sk web secret' }, { method: 'PUT' });
+    assert.equal(badKey.status, 400);
+    const badKeyText = await badKey.text();
+    assert.match(badKeyText, /invalid_api_key/);
+    assert.ok(!badKeyText.includes('sk web secret'), 'the key is never echoed');
+    assert.equal((await fetch(base + '/remote-api/v1/openai-tunnel')).ok, false, 'not on the phone surface');
+
+    // Presence: an open Local Web page holds one long-lived response; the watchdog counts it
+    // like a VS Code window, while tray quit (/clients others_active) still ignores it.
+    assert.equal(typeof (await control('/health')).settings_revision, 'number', 'health carries the settings revision');
+    assert.equal((await web('/presence')).status, 401, 'presence needs the session cookie');
+    assert.equal((await fetch(base + '/remote-api/v1/presence')).ok, false, 'no presence on the phone surface');
+    assert.equal((await control('/clients')).web_present, false);
+    const presenceStop = new AbortController();
+    const presence = await fetch(base + '/web-api/v1/presence', { headers: { 'x-blackhole-web': '1', cookie }, signal: presenceStop.signal });
+    assert.equal(presence.status, 200);
+    assert.match(presence.headers.get('content-type') ?? '', /^text\/event-stream/);
+    const firstChunk = await presence.body.getReader().read();
+    assert.equal(firstChunk.done, false, 'the stream stays open');
+    assert.equal((await control('/clients')).web_present, true);
+    presenceStop.abort();
+    let present = true;
+    for (let i = 0; i < 40 && present; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      present = (await control('/clients')).web_present;
+    }
+    assert.equal(present, false, 'closing the page ends its presence');
     assert.equal((await write('/sessions', { workspace_path: 'x'.repeat(70 * 1024) })).status, 413);
     assert.equal((await write('/sessions', { workspace_path: wsDir, role: 'admin' })).status, 400, 'unknown keys rejected');
     assert.equal((await write('/sessions', { workspace_path: path.join(iso.home, 'missing') })).status, 400);
@@ -331,7 +410,32 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await write(`/sessions/${session.id}/pause`, {})).status, 404);
 
     // Logout revokes the session.
-    assert.equal((await web('/auth/logout', { cookie, method: 'POST', body: {} })).status, 200);
+    // Sent behind a stale same-named cookie: the valid session is the one revoked.
+    assert.equal((await web('/auth/logout', { cookie: staleFirst, method: 'POST', body: {} })).status, 200);
     assert.equal((await web('/sessions', { cookie })).status, 401);
+  });
+
+  test('channel watchdog: an open Local Web page counts as present; the grace period starts when it closes', async (t) => {
+    const { startChannelWatchdog, STALE_MS } = await import('../dist/tunnel/watchdog.js');
+    t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 1_000_000 });
+    let stops = 0;
+    const deps = {
+      lastHeartbeatAt: Date.now(),
+      tunnel: { status: 'online', stop: async () => { stops++; } },
+      log: () => {},
+      webPresence: new Set([{}]),
+    };
+    const dog = startChannelWatchdog(deps);
+    t.after(() => dog.stop());
+    // One watchdog tick (15 s) per step, so Date moves with each check.
+    const advance = (ms) => { for (let left = ms; left > 0; left -= 15_000) t.mock.timers.tick(Math.min(15_000, left)); };
+    advance(STALE_MS * 4);
+    assert.equal(stops, 0, 'no VS Code heartbeat, but a page is open');
+    deps.webPresence.clear();
+    deps.lastHeartbeatAt = Date.now(); // what the presence route does when the page goes away
+    advance(STALE_MS);
+    assert.equal(stops, 0, 'grace period after the page closed');
+    advance(15_000);
+    assert.equal(stops, 1, 'stale without any window or page');
   });
 }

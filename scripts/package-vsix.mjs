@@ -20,6 +20,21 @@ const { build, out: requestedOut } = parseBuildArgs(process.argv.slice(2), { pac
 const suffix = build.environment === 'test' ? '-test' : '';
 const out = requestedOut ? path.resolve(requestedOut) : path.join(EXT, `blackhole-vscode-${version}${suffix}.vsix`);
 if (path.extname(out).toLowerCase() !== '.vsix') throw new Error('--out must name a .vsix file.');
+// Never rebuild the version VS Code already has installed (2026-10-02 incident): reinstalling the same version over the
+// running extension made VS Code delete the in-use folder and leave a broken, half-extracted install. Alternate versions.
+{
+  const id = `${manifest.publisher}.${manifest.name}`.toLowerCase();
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  for (const dir of ['.vscode', '.vscode-insiders']) {
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(path.join(home, dir, 'extensions', 'extensions.json'), 'utf8')); } catch { continue; }
+    const installed = Array.isArray(list) ? list.find(e => String(e?.identifier?.id).toLowerCase() === id)?.version : undefined;
+    if (installed === version && process.env.BH_ALLOW_INSTALLED_VERSION !== '1') {
+      console.error(`package-vsix: ${id} ${version} is already installed in ~/${dir}. Bump the version first (installing the same version over a running extension breaks it). Override: BH_ALLOW_INSTALLED_VERSION=1.`);
+      process.exit(2);
+    }
+  }
+}
 // No ambient environment selection and no reuse of a previous flavor's build.
 execSync('pnpm build', { cwd: ROOT, stdio: 'inherit' });
 // Local Web page, copied beside the daemon bundle by esbuild.mjs.

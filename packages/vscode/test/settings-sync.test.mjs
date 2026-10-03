@@ -29,17 +29,21 @@ function setup(daemon) {
   const api = {
     settings: async () => { calls.push(['get']); return structuredClone(daemon); },
     migrateSettings: async (values) => { calls.push(['migrate', values]); Object.assign(daemon, { migrated: true, revision: 1, values: { ...daemon.values, ...values } }); if (daemon.unseeded) daemon.unseeded = daemon.unseeded.filter((k) => !(k in values)); return structuredClone(daemon); },
-    patchSettings: async (values) => {
-      calls.push(['patch', values]);
+    patchSettings: async (values, revision) => {
+      calls.push(['patch', values, revision]);
+      if (revision !== undefined && revision !== daemon.revision) throw Object.assign(new Error('revision_conflict'), { status: 409 });
       if (values.publicBaseUrl === 'bad') throw new Error('invalid_input');
       Object.assign(daemon, { revision: daemon.revision + 1, values: { ...daemon.values, ...values } });
       return structuredClone(daemon);
     },
+    onHealth: (fn) => { healthWatchers.push(fn); return { dispose() {} }; },
   };
+  const healthWatchers = [];
+  const health = (h) => healthWatchers.forEach((fn) => fn(h));
   const module = { exports: {} };
   vm.runInNewContext(js, { module, exports: module.exports, setInterval: () => 0, clearInterval() {}, require: (n) => (n === 'vscode' ? vscode : require(n)) });
   const sync = new module.exports.SettingsSync(api, { appendLine() {} });
-  return { sync, conf, calls, warnings, fire, daemon, mod: module.exports };
+  return { sync, conf, calls, warnings, fire, daemon, health, mod: module.exports };
 }
 const flush = () => new Promise((r) => setTimeout(r, 20));
 const defaults = { connectorName: '', publicBaseUrl: '', cloudflaredPath: '', skillsDir: '', channelMode: 'cloudflare', semanticMode: 'explicit' };
@@ -88,6 +92,54 @@ test('unrelated settings are ignored', async () => {
   t.fire('pollIntervalMs');
   await flush();
   assert.equal(t.calls.filter((c) => c[0] === 'patch').length, 0);
+});
+
+test('a push is bound to its base revision; a conflict resends only the keys edited here', async () => {
+  const t = setup({ revision: 1, migrated: true, values: { ...defaults, openaiTunnelId: '' }, pending_restart: [] });
+  await t.sync.sync();
+  // Web settings saved a Tunnel ID after this window's last pull.
+  Object.assign(t.daemon, { revision: 2, values: { ...t.daemon.values, openaiTunnelId: 'tunnel_web' } });
+  t.conf.set('connectorName', 'Team');
+  t.fire('connectorName');
+  await t.sync.flush();
+  const patches = t.calls.filter((c) => c[0] === 'patch');
+  assert.equal(patches.length, 2);
+  assert.equal(patches[0][2], 1, 'first attempt carries the base revision');
+  assert.equal(JSON.stringify(patches[1][1]), JSON.stringify({ connectorName: 'Team' }), 'retry sends only the edited key');
+  assert.equal(patches[1][2], 2, 'retry is bound to the fresh revision');
+  assert.equal(t.daemon.values.openaiTunnelId, 'tunnel_web', 'the Web value is not overwritten');
+  assert.equal(t.daemon.values.connectorName, 'Team');
+  assert.equal(t.conf.get('openaiTunnelId'), 'tunnel_web', 'and it is mirrored into VS Code');
+  assert.equal(t.warnings.length, 0);
+  assert.equal(t.sync.baseline().openaiTunnelId, 'tunnel_web');
+});
+
+test('a health answer with a new settings revision pulls at once; the same revision does not', async () => {
+  const t = setup({ revision: 3, migrated: true, values: { ...defaults }, pending_restart: [] });
+  await t.sync.sync();
+  const gets = () => t.calls.filter((c) => c[0] === 'get').length;
+  const before = gets();
+  t.health({ ok: true, settings_revision: 3 });
+  t.health({ ok: true }); // an older daemon reports no revision
+  await flush();
+  assert.equal(gets(), before);
+  Object.assign(t.daemon, { revision: 4, values: { ...t.daemon.values, skillsDir: '/web' } });
+  t.health({ ok: true, settings_revision: 4 });
+  await t.sync.flush();
+  assert.equal(gets(), before + 1);
+  assert.equal(t.conf.get('skillsDir'), '/web');
+  assert.equal(t.calls.filter((c) => c[0] === 'patch').length, 0, 'mirroring never echoes back');
+});
+
+test('flush waits for an in-flight push', async () => {
+  const t = setup({ revision: 1, migrated: true, values: { ...defaults }, pending_restart: [] });
+  assert.equal(t.sync.baseline(), null, 'no baseline before first contact');
+  await t.sync.sync();
+  t.conf.set('skillsDir', '/vs');
+  t.fire('skillsDir');
+  await t.sync.flush();
+  assert.equal(t.daemon.values.skillsDir, '/vs');
+  assert.equal(t.sync.baseline().skillsDir, '/vs');
 });
 
 const newKeys = { gitUsrBinPath: '', namedTunnelName: 'blackhole', tunnelProbeProxy: '', webAgents: ['ChatGPT', 'WorkBuddy', 'Manus', 'Trae CN', 'Trae AI', 'Arena'], customWebAgents: [] };

@@ -1,6 +1,7 @@
 import type { MachineStateRepo } from '../storage/machineState.js';
 import type { Config } from '../config.js';
 import { SEMANTIC_MODES, type SemanticMode } from '../config.js';
+import { DEFAULT_LAN_PORT } from '../lan/listener.js';
 
 /**
  * Daemon-owned user settings. The daemon is the source of truth; the VS Code
@@ -19,6 +20,22 @@ export const SETTINGS_KEY = 'settings.v1';
 export interface CustomWebAgent {
   name: string;
   url: string;
+}
+
+/**
+ * A web agent site added in the Courier extension (检测此页面). Courier owns the shape; the daemon
+ * keeps the list so every UI can offer the site for a new chat and delete it (Courier then
+ * unregisters its page scripts and gives the host permission back).
+ */
+export interface CourierSite {
+  id: string;
+  name: string;
+  origin: string;
+  newChatPath: string;
+  dom: { editor: string; send: string; stop: string | null; model: null };
+  key: { prefix: string } | null;
+  detectedAt: number;
+  v: 1;
 }
 
 export interface Settings {
@@ -40,6 +57,14 @@ export interface Settings {
   openaiTunnelClientPath: string;
   /** Saved OpenAI Tunnel ID: not a URL and not a secret. */
   openaiTunnelId: string;
+  /** Courier sites added by detection (daemon-owned, not a VS Code setting). */
+  courierSites: CourierSite[];
+  /** 局域网直连：另开一个 0.0.0.0 监听器，只开放 MCP；默认关闭，由用户决定。改动即时生效。 */
+  lanAccess: boolean;
+  /** 局域网直连监听的端口（不能与主端口相同）。 */
+  lanPort: number;
+  /** 可选：映射到直连端口的域名地址（如 https://mcp.example.com），只用于显示链接和生成面板地址。 */
+  lanUrl: string;
 }
 
 export interface SettingsRecord {
@@ -52,7 +77,7 @@ export interface SettingsRecord {
 
 /** The first six keys (0.3.174). Records written before `seeded` existed had all of them. */
 export const V1_SETTING_KEYS = ['connectorName', 'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'channelMode', 'semanticMode'] as const;
-export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId'] as const;
+export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /**
@@ -80,14 +105,55 @@ export const DEFAULT_SETTINGS: Settings = {
   tunnelProbeProxy: '',
   webAgents: [...DEFAULT_WEB_AGENTS],
   customWebAgents: [],
-  remoteAccess: false,
+  remoteAccess: true,
   openaiTunnelClientPath: '',
   openaiTunnelId: '',
+  courierSites: [],
+  lanAccess: false,
+  lanPort: DEFAULT_LAN_PORT,
+  lanUrl: '',
 };
 
 const MAX_TEXT = 1000;
 const MAX_AGENTS = 50;
 const MAX_AGENT_NAME = 64;
+export const MAX_COURIER_SITES = 20;
+/** Sites the Courier extension supports without detection. */
+export const BUILTIN_COURIER_SITES = [{ id: 'arena', name: 'Arena', origin: 'https://arena.ai' }, { id: 'chatgpt', name: 'ChatGPT', origin: 'https://chatgpt.com' }] as const;
+const COURIER_SITE_ID = /^c-[a-z0-9-]{1,30}$/;
+const MAX_SELECTOR = 300;
+
+function courierPath(v: unknown): string | null {
+  return typeof v === 'string' && v.startsWith('/') && !v.startsWith('//') && v.length <= 200 && !/[\s?#]/.test(v) ? v : null;
+}
+function selector(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() && v.length <= MAX_SELECTOR && !/[\u0000-\u001f]/.test(v) ? v.trim() : null;
+}
+/** One Courier site profile (same rules as the extension's sites.js cleanProfile), or an error. */
+export function normalizeCourierSite(raw: unknown): { value: CourierSite } | { error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'courierSites items must be objects' };
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.id === 'string' && COURIER_SITE_ID.test(r.id) ? r.id : null;
+  if (!id) return { error: 'courierSites id must look like c-example-com' };
+  const name = typeof r.name === 'string' ? r.name.trim() : '';
+  if (!name || name.length > 40 || /[\u0000-\u001f]/.test(name)) return { error: 'courierSites name must be 1-40 characters' };
+  let origin: URL | null = null;
+  try { origin = new URL(String(r.origin)); } catch { /* invalid */ }
+  if (!origin || origin.protocol !== 'https:' || origin.origin !== r.origin) return { error: 'courierSites origin must be a bare https origin' };
+  if (BUILTIN_COURIER_SITES.some((b) => b.origin === origin!.origin)) return { error: 'courierSites cannot replace a built-in site' };
+  const newChatPath = courierPath(r.newChatPath);
+  if (!newChatPath) return { error: 'courierSites newChatPath must be a path such as /' };
+  const dom = (r.dom && typeof r.dom === 'object' ? r.dom : {}) as Record<string, unknown>;
+  const editor = selector(dom.editor);
+  const send = selector(dom.send);
+  if (!editor || !send) return { error: 'courierSites dom.editor and dom.send are required selectors' };
+  const stop = dom.stop == null ? null : selector(dom.stop);
+  if (dom.stop != null && !stop) return { error: 'courierSites dom.stop must be a selector or null' };
+  const prefix = r.key == null ? null : courierPath((r.key as { prefix?: unknown }).prefix);
+  if (r.key != null && (!prefix || !prefix.endsWith('/'))) return { error: 'courierSites key.prefix must be a path ending in /' };
+  const detectedAt = typeof r.detectedAt === 'number' && Number.isFinite(r.detectedAt) && r.detectedAt >= 0 ? Math.floor(r.detectedAt) : 0;
+  return { value: { id, name, origin: origin.origin, newChatPath, dom: { editor, send, stop, model: null }, key: prefix ? { prefix } : null, detectedAt, v: 1 } };
+}
 
 export function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -139,7 +205,23 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
     }
     return { value: out };
   }
+  if (key === 'courierSites') {
+    if (!Array.isArray(raw)) return { error: 'courierSites must be an array' };
+    if (raw.length > MAX_COURIER_SITES) return { error: `at most ${MAX_COURIER_SITES} courierSites` };
+    const out: CourierSite[] = [];
+    for (const item of raw) {
+      const n = normalizeCourierSite(item);
+      if ('error' in n) return n;
+      if (out.some((x) => x.id === n.value.id || x.origin === n.value.origin)) return { error: `courierSites has ${n.value.origin} twice` };
+      out.push(n.value);
+    }
+    return { value: out };
+  }
   if (key === 'remoteAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'remoteAccess must be true or false' };
+  if (key === 'lanAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'lanAccess must be true or false' };
+  if (key === 'lanPort') {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1024 && raw <= 65535 ? { value: raw } : { error: 'lanPort must be an integer between 1024 and 65535' };
+  }
   const t = text(key, raw);
   if ('error' in t) return t;
   const v = t.value;
@@ -152,6 +234,13 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
       if (!u) return { error: 'publicBaseUrl must be a full http(s) URL' };
       if (u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'publicBaseUrl must be a bare origin such as https://example.com' };
       return { value: v.replace(/\/+$/, '') };
+    }
+    case 'lanUrl': {
+      // 与 publicBaseUrl 同规则：只接受 http(s)://主机[:端口]，不带路径和凭据。
+      if (!v) return { value: '' };
+      const u = httpUrl(v);
+      if (!u || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'lanUrl must be a bare origin such as https://mcp.example.com or http://nas.lan:7307' };
+      return { value: u.origin };
     }
     case 'tunnelProbeProxy': {
       if (!v) return { value: '' };
@@ -248,7 +337,7 @@ export function unseededKeys(record: SettingsRecord): SettingKey[] {
 }
 
 /** Owned by the daemon from the start: never handed over by the extension. */
-export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess'];
+export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'];
 
 /**
  * Startup overlay: seeded daemon-owned settings win over the launcher's

@@ -1,6 +1,7 @@
 {
   "name": "@blackhole/contracts",
   "version": "0.0.0",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "Data-only protocol contracts shared by the daemon, host runtime and Web UI. No Node, VS Code or browser runtime imports.",

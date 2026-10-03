@@ -1,10 +1,10 @@
 # Third-Party Notices
 
-BlackHole — Web Agent Bridge includes or bundles third-party components. Their licenses remain independent from the Apache-2.0 license covering the BlackHole VS Code extension source.
+BlackHole — Web Agent Bridge includes or bundles third-party components. Their licenses remain independent from the Apache-2.0 license covering BlackHole. The npm packages bundled into the extension, background service and Local Web UI, with their license texts, are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Koffi
 
-- Component: `koffi` and its platform runtime package
+- Component: `koffi` and its per-platform native packages (`@koromix/koffi-<platform>-<arch>`)
 - Version in the current build: 3.2.1
 - License: MIT
 - Project: https://koffi.dev/
@@ -37,4 +37,5 @@ This attribution does not imply affiliation or endorsement.
 
 ## Scope
 
-BlackHole Cloud, authentication, account/subscription services, payment integrations, administrator services and deployment configuration are separate server-side components and are not licensed by the VS Code extension's Apache-2.0 license unless explicitly stated otherwise.
+BlackHole Cloud, authentication, account/subscription services, payment integrations, administrator services and deployment configuration are separate server-side components. They are not in this repository and are not covered by its Apache-2.0 license.
+

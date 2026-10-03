@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "environment": "test",
+  "clientTarget": "test",
+  "origin": "https://blackhole-build-fixture.example.org",
+  "entitlementPublicKey": "MCowBQYDK2VwAyEALlwA8WacXutuxBJ7hA4ISMQ6hDPw1QoI0ydHBKFuHYA="
+}

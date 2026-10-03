@@ -22,6 +22,12 @@ import type { ProxyRuntime } from './proxy/tool.js';
 
 export interface DaemonDeps {
   daemonId?: string;
+  /** Browser Courier extension connection (sends text into bound web chats). */
+  courier?: import('./courier/hub.js').CourierHub;
+  /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
+  feed?: import('./storage/feedLog.js').FeedLog;
+  /** 局域网直连监听器（设置 lanAccess 打开时才真正监听）。 */
+  lan?: import('./lan/listener.js').LanListener;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
@@ -79,8 +85,16 @@ export interface DaemonDeps {
   lastHeartbeatAt: number;
   /** Last heartbeat per client kind ('tray', or 'other' for VS Code and unmarked callers). */
   clientBeats?: Map<string, number>;
+  /**
+   * Open Local Web pages: one entry per live GET /web-api/v1/presence response.
+   * While non-empty the channel watchdog treats an operator as present (like a
+   * VS Code window). Not a tray "other": /api/clients others_active ignores it.
+   */
+  webPresence?: Set<object>;
   /** The public channel the operator started; resumed after restarts and watchdog stops. */
   channelIntent?: import('./tunnel/resume.js').ChannelIntent;
+  /** 上次手动启动的渠道（停止不清除），渠道总开关用它决定打开哪个渠道。 */
+  lastChannel?: import('./tunnel/switch.js').LastChannel;
   /** Ends every paired phone; set by the Local Web mount (plan 6.13 R). */
   revokeRemoteDevices?: () => void;
   /** Phone access controls for the VS Code panel (plan 6.13 R4); set by mountLocalWeb. */
@@ -88,6 +102,8 @@ export interface DaemonDeps {
     view(): unknown;
     pair(): { url: string; expires_at: string | null; kind: string } | null;
     revoke(id: string): boolean;
+    /** 允许 / 拒绝 a phone that scanned the code; false when the request is gone */
+    decide(id: string, allow: boolean): boolean;
   };
   /** wired by daemon.ts once the graceful stop path exists (POST /api/shutdown) */
   shutdown?: () => Promise<void>;
@@ -128,4 +144,25 @@ export function mcpUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string {
 export function publicBaseUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string {
   const channelUrl = deps.tunnel.status === 'online' || deps.tunnel.status === 'unverified' ? deps.tunnel.url : undefined;
   return (channelUrl ?? deps.cfg.publicBaseUrl ?? `http://${deps.cfg.host}:${deps.cfg.port}`).replace(/\/+$/, '');
+}
+
+/**
+ * Credential-free source URL for the optional Sandbox client recommendation.
+ * Only an explicitly public HTTP route qualifies; connector-only/OpenAI and
+ * loopback addresses must never leak into Sandbox guidance.
+ */
+export function bhClientSourceUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string | null {
+  const raw = (deps.tunnel.status === 'online' && deps.tunnel.url) || deps.cfg.publicBaseUrl;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (/^(localhost|0\.0\.0\.0|127\..*|\[?::1\]?)$/i.test(url.hostname)) return null;
+    url.pathname = url.pathname.replace(/\/+$/, '') + '/bh.py';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
 }

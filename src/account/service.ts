@@ -3,7 +3,6 @@ import path from 'node:path';
 import type { EntitlementGate } from '../cloud/entitlement-gate.js';
 import type { MachineStateRepo } from '../storage/machineState.js';
 import { CloudAuthClient, CloudAuthError, credentialKey, parseCredential, type AuthView } from './cloud-auth-client.js';
-import { cloudAuthPrefix } from './cloud-origin.js';
 import { fileReceiptPort } from './receipts.js';
 import type { SecretBackend } from './secret-store.js';
 
@@ -132,7 +131,7 @@ export class AccountService {
   async start(): Promise<void> {
     const c = this.maybeClient();
     if (!c) {
-      this.deps.log(`account: OS credential store unavailable (${this.deps.secrets.kind === 'unavailable' ? this.deps.secrets.reason : ''}); VS Code keeps its own login`);
+      this.deps.log(`account: cannot keep credentials (${this.deps.secrets.kind === 'unavailable' ? this.deps.secrets.reason : ''}); signing in is unavailable`);
       return;
     }
     await c.restore().catch(() => undefined);
@@ -248,11 +247,7 @@ export class AccountService {
       return { migrated: true };
     });
   }
-
-  /** Keyring service name, separated per cloud origin so test and production builds never share credentials. */
-  static serviceName(origin: string): string {
-    return `BlackHole ${cloudAuthPrefix(origin).slice(-16)}`;
-  }
 }
 
 export { errorCode as accountErrorCode };
+

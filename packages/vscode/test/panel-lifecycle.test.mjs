@@ -530,3 +530,145 @@ test('OpenAI runtime controls: key goes to the daemon only, start is bound to sa
   assert.match(result().message,/重启 daemon/);
   assert.equal(h.restarts,0,'OpenAI controls never restart the daemon');
 });
+
+test('OpenAI start: a Tunnel ID changed in Web settings is never overwritten by the stale VS Code copy', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const OLD='tunnel_'+'a'.repeat(32),NEW='tunnel_'+'b'.repeat(32),CLIENT='C:\\bin\\tunnel-client-runtime.exe',EDIT='D:\\rt\\tunnel-client-runtime.exe';
+  const calls=[];const view={status:'off',run_id:null,credential_configured:true,credential_revision:4,pending_restart:false,reason_code:null,reason:null};
+  const daemonSettings={revision:9,values:{openaiTunnelId:NEW,openaiTunnelClientPath:CLIENT}};
+  h.health.openai_tunnel_api_version=1;h.health.openai_tunnel=view;
+  Object.assign(h.api,{
+    openaiTunnel:async()=>view,
+    settings:async()=>daemonSettings,
+    patchSettings:async(values,rev)=>{calls.push(['patch',values,rev]);return daemonSettings;},
+    openaiTunnelStart:async(...a)=>{calls.push(['start',...a]);return {...view};},
+  });
+  // What this window last pulled from the daemon, before Web settings saved NEW.
+  const baseline={openaiTunnelId:OLD,openaiTunnelClientPath:CLIENT};
+  h.instance.settingsSync={
+    flush:async()=>{calls.push(['flush']);},
+    baseline:()=>baseline,
+    sync:async()=>{calls.push(['sync']);Object.assign(baseline,daemonSettings.values);Object.assign(h.settings,daemonSettings.values);},
+  };
+  h.settings.openaiTunnelId=OLD;h.settings.openaiTunnelClientPath=CLIENT;
+  const result=()=>h.panels[0].messages.findLast(m=>m.type==='openaiTunnelResult');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:OLD,clientPath:CLIENT});
+  assert.equal(result().ok,false);assert.match(result().message,/别处/);
+  assert.deepEqual(calls.map(c=>c[0]),['flush','sync'],'stale copy: no patch, no start');
+  assert.equal(h.settings.openaiTunnelId,NEW,'the daemon value is taken into VS Code');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:CLIENT});
+  assert.equal(result().ok,true);
+  assert.deepEqual(calls.at(-1),['start','fixture',9,4],'confirmed value starts on the daemon revision');
+  assert.ok(!calls.some(c=>c[0]==='patch'));
+  // A real edit made in this window (differs from the baseline) is still written, bound to the revision checked.
+  h.settings.openaiTunnelClientPath=EDIT;
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:EDIT});
+  const patch=calls.find(c=>c[0]==='patch');
+  assert.deepEqual([patch[0],{...patch[1]},patch[2]],['patch',{openaiTunnelClientPath:EDIT},9]);
+});
+
+test('OpenAI connection card: saved Tunnel ID shown and copied offline, fixed onboarding links only', async t => {
+  const h=harness();t.after(()=>h.panels[0]?.close());const opened=[],TID='tunnel_0123456789abcdef0123456789abcdef';
+  h.vscode.env.openExternal=async u=>{opened.push(u);return true;};h.vscode.Uri={parse:s=>({href:s})};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[]);assert.match(h.warnings.at(-1),/尚未保存 Tunnel ID/);
+  h.settings.openaiTunnelId=TID;h.api.health=async()=>{throw Error('offline');};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[TID],'copy works while the daemon is unreachable');
+  await h.instance.dispatch({type:'ready'});await settle();await settle();
+  const overview=h.panels[0].messages.map(m=>m.overview).filter(Boolean).at(-1);
+  assert.equal(overview.openai_tunnel_id,TID);
+  for(const target of ['platform','chatgpt','constructor','__proto__','https://evil.example'])await h.instance.dispatch({type:'openLink',target});
+  assert.deepEqual(opened.map(u=>u.href),['https://platform.openai.com/settings/organization/tunnels','https://chatgpt.com/plugins']);
+  const html=h.panels[0].webview.html;
+  for(const id of ['mcpSec','oaLinkPlatform','oaLinkChatgpt'])assert.ok(html.includes('id="'+id+'"'),id);
+  const card=html.slice(html.indexOf('id="channelOpenai"'),html.indexOf('id="channelCustom"'));
+  assert.match(card,/Tunnels Read\/Use/);assert.match(card,/不支持沙箱直连/);
+});
+
+// 用户 2026-10-03：不需要重启 daemon 的设置自动保存，会重启的仍由「保存」按钮提交。
+test('autosave writes only no-restart settings, quietly, without re-sending the form', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const before=h.panels[0].messages.length;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare',connectorName:' Mine ',pollIntervalMs:'1500',publicBaseUrl:'https://evil.example',cloudflaredPath:'/x',port:'9'}});
+  assert.deepEqual(h.settingsWrites,[['channelMode','cloudflare',1],['connectorName','Mine',1],['pollIntervalMs',1500,1]]);
+  assert.equal(h.restarts,0);assert.deepEqual(h.notices,[]);assert.deepEqual(h.errors,[]);
+  const sent=h.panels[0].messages.slice(before);
+  assert.equal(sent.some(m=>m.type==='init'),false,'other fields being edited are not overwritten');
+  // 面板代码跑在 vm 沙箱里，数组原型不同：经 JSON 比较结构。
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))),{type:'autosaved',ok:true,keys:['channelMode','connectorName','pollIntervalMs'],message:'已自动保存'});
+  h.settingsWrites.length=0;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare'}});
+  assert.equal(h.settingsWrites.length,0,'unchanged values are not rewritten');
+  assert.equal(h.panels[0].messages.at(-1).message,'');
+});
+
+test('autosave rejects invalid values with an inline message and writes nothing for them', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  await h.instance.dispatch({type:'autosave',values:{openaiTunnelId:'https://platform.openai.com/x',openaiTunnelClientPath:'relative/tunnel.exe',pollIntervalMs:'10'}});
+  assert.equal(h.settingsWrites.length,0);
+  const last=h.panels[0].messages.at(-1);
+  assert.equal(last.type,'autosaved');assert.equal(last.ok,false);assert.match(last.message,/未保存/);
+  await h.instance.dispatch({type:'autosave',values:{},webAgents:['ChatGPT']});
+  assert.equal(h.panels[0].messages.at(-1).ok,true);
+});
+
+test('auto-saved settings never restart the daemon; restart settings are marked and stay on the Save button', t => {
+  const source=fs.readFileSync(new URL('../src/configPanel.ts',import.meta.url),'utf8');
+  const auto=JSON.parse(source.match(/const AUTO_SAVE_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  const restart=JSON.parse(source.match(/const RESTART_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  assert.deepEqual(auto.filter(k=>restart.includes(k)),[]);
+  // daemon 启动指纹里的设置一变就会自动重启 daemon：自动保存的设置一个都不能在里面。
+  const dm=fs.readFileSync(new URL('../src/daemonManager.ts',import.meta.url),'utf8');
+  const fp=dm.slice(dm.indexOf('private fingerprint('),dm.indexOf('private async liveFingerprintMatches'));
+  for(const k of auto)assert.doesNotMatch(fp,new RegExp('\\bc\\.'+k+'\\b'),k);
+  const h=harness();t.after(()=>h.panels[0].close());
+  const html=h.panels[0].webview.html;
+  for(const k of ['cloudflaredPath','publicBaseUrl','skillsDir'])assert.match(html,new RegExp('<label>[^<]+<span class="rs"[^>]*>需重启</span></label><input id="'+k+'"'),k);
+  assert.doesNotMatch(html,/<label>连接器名称<span class="rs"/);
+  assert.match(html,/id="autoNote"/);
+  assert.match(html,/if \(channelMode !== before\) autosave\(\{ channelMode \}\)/);
+  assert.match(html,/el\.classList\.toggle\('on'\); autosave\(\{\}, collectWebAgents\(\)\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});
+
+// 用户 2026-10-03：局域网直连可填直连域名，填了就把域名链接排在最前面。
+test('LAN domain is saved to the daemon and listed first among the direct MCP links', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const patches=[];let values={lanAccess:true,lanPort:7307,lanUrl:''};
+  h.api.settings=async()=>({revision:3,values});
+  h.api.patchSettings=async(v,rev)=>{patches.push([JSON.parse(JSON.stringify(v)),rev]);values={...values,...v};};
+  h.health.lan_access={listening:true,port:7307,addresses:['192.168.1.5'],mcp_path:'/mcp/tok'};
+  await h.instance.dispatch({type:'lanUrl',url:' https://mcp.example.test '});
+  assert.deepEqual(patches,[[{lanUrl:'https://mcp.example.test'},3]]);
+  const lan=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='lan')));
+  assert.equal(lan.url,'https://mcp.example.test');
+  const html=h.panels[0].webview.html;
+  assert.match(html,/<input id="lanUrl" type="text"/);
+  assert.match(html,/\(m\.url \? \[m\.url \+ lan\.mcp_path\] : \[\]\)\.concat\(/);
+  // 页面脚本在 TS 模板字符串里：校验用 URL 解析而不是正则，反斜杠不会被吃掉。
+  assert.match(html,/const u = new URL\(v\); valid = /);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});
+
+// 用户 2026-10-03：设置页顶部「渠道」格里的总开关，和侧边栏共用 daemon 的 /channel。
+test('cockpit channel switch calls the daemon and reports a missing prerequisite with its code', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());
+  const view={on:false,state:'off',running:[],next:'quick',last:'quick',missing:null,reason:null};
+  const calls=[];h.api.channel=async()=>view;
+  h.api.channelSwitch=async(on)=>{calls.push(on);return calls.length===1?{ok:true,view:{...view,on:true,state:'starting',running:['quick']}}:{ok:false,error:'cloudflared'};};
+  await h.instance.dispatch({type:'ready'});
+  const status=h.panels[0].messages.findLast(m=>m.type==='status'||m.type==='init');
+  assert.equal(JSON.parse(JSON.stringify(status.overview.channel)).next,'quick');
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  let r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.deepEqual(r,{type:'channelToggleResult',ok:true,code:'',message:''});
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.equal(r.ok,false);assert.equal(r.code,'cloudflared');assert.match(r.message,/一键初始化安装/);
+  assert.deepEqual(calls,[true,true]);
+  const html=h.panels[0].webview.html;
+  assert.match(html,/<button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false"/);
+  assert.match(html,/renderCockpitSwitch\(o\.channel, o\.daemon\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});

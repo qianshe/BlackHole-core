@@ -24,7 +24,7 @@ BlackHole connects web-based AI agents to a local MCP daemon. Keep your real wor
 
 Use a configured connector or an agent environment that can reach your public endpoint. Cloudflare quick tunnels are temporary and do not support SSE; choose a persistent named tunnel when the host needs SSE or a stable URL. BlackHole does not automatically expose the daemon publicly.
 
-Open **Settings → BlackHole** for channel, Web Agent, skills and other options. Most defaults can stay unchanged. See the [connection guide](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/README.md#connections-and-channels) for details.
+Open **Settings → BlackHole** for channel, Web Agent, skills and other options. Most defaults can stay unchanged. See the [connection guide](https://github.com/qianshe/BlackHole-core/blob/main/README.md#connections-and-channels) for details.
 
 ## Skills and project instructions
 
@@ -61,14 +61,15 @@ Refund requests show an amount preview for the selected order before confirmatio
 - Login, subscription and payment operations do not upload workspace files by themselves. Authorized agents can receive requested files and tool results; commands, upstreams and optional `context_search` may send data to external services. Semantic search requires credentials, and automatic credential discovery is opt-in.
 - Treat connection URLs, session keys and generated prompts as credentials. Do not share tokens, cookies, card codes or unredacted logs in chats or issue reports.
 
-Read the full [security boundaries](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/README.md#security-boundaries), [privacy policy](https://blackhole.stellarbridge.dpdns.org/privacy) and [terms](https://blackhole.stellarbridge.dpdns.org/terms).
+Read the full [security boundaries](https://github.com/qianshe/BlackHole-core/blob/main/README.md#security-boundaries), [privacy policy](https://blackhole.stellarbridge.dpdns.org/privacy) and [terms](https://blackhole.stellarbridge.dpdns.org/terms).
 
 ## Community & Feedback
 
 Join the **[QQ group](https://qm.qq.com/q/k2BaemO1Es)** or **[Telegram group](https://t.me/+Wj0geSQ71qcyYzc1)** to discuss BlackHole and get help from the community.
 
-Use **[GitHub Issues](https://github.com/qianshe/BlackHole-core/issues)** for trackable bugs and feature requests. Include your installed BlackHole version, VS Code version, OS/architecture and reproduction steps; attach only minimal, redacted logs. Versioned updates are in the [changelog](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/packages/vscode/CHANGELOG.md).
+Use **[GitHub Issues](https://github.com/qianshe/BlackHole-core/issues)** for trackable bugs and feature requests. Include your installed BlackHole version, VS Code version, OS/architecture and reproduction steps; attach only minimal, redacted logs. Versioned updates are in the [changelog](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/CHANGELOG.md).
 
 ## License
 
-The extension source under `packages/vscode` uses **Apache-2.0**, except separately licensed components. This does not automatically cover cloud services or components outside that directory. See [LICENSE](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/packages/vscode/LICENSE), [NOTICE](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/packages/vscode/NOTICE) and [third-party notices](https://github.com/qianshe/BlackHole-core/blob/migration/initial-import/packages/vscode/THIRD_PARTY_NOTICES.md).
+BlackHole is licensed under **Apache-2.0**. See [LICENSE](https://github.com/qianshe/BlackHole-core/blob/main/LICENSE), [NOTICE](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/NOTICE), [third-party notices](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/THIRD_PARTY_NOTICES.md) and [bundled npm package licenses](https://github.com/qianshe/BlackHole-core/blob/main/packages/vscode/THIRD_PARTY_LICENSES.md). The hosted BlackHole Cloud service is not covered.
+

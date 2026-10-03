@@ -1,14 +1,11 @@
+import { renderBootstrap } from './courier/prompt.js';
+
 /** CLI adapter for the public control API response (session_id, not its internal row id). */
 export function buildConnectorPrompt(session: { session_id?: string; name?: string | null }): string {
   if (typeof session.session_id !== 'string' || !session.session_id.trim()) {
     throw new Error('Cannot build a prompt: create response is missing session_id');
   }
-  return [
-    '@BlackHole',
-    `sessionId: ${session.session_id}`,
-    'Read guide with this sessionId. Comply with its instructions throughout the session.',
-    `Task: ${session.name?.trim() || '<paste your task here>'}`,
-  ].join('\n');
+  return renderBootstrap('connector', '', session.session_id);
 }
 
 /** Connection-local presentation hint, not a workspace authorization. */

@@ -1,7 +1,7 @@
 import { ProcessTerminalController } from './processTerminals';
 import path from 'node:path';
 import { registerCloudAccount } from './cloudAccount';
-import { commands, ProgressLocation, workspace, window, type ExtensionContext } from 'vscode';
+import { commands, ConfigurationTarget, ProgressLocation, workspace, window, type ExtensionContext } from 'vscode';
 import { ApprovalsWatcher } from './approvals';
 import { ConfigPanel } from './configPanel';
 import { getConfig } from './config';
@@ -9,6 +9,7 @@ import { ControlApi, type SessionInfo } from './controlApi';
 import { DaemonManager } from './daemonManager';
 import { Poller } from './poller';
 import { copySessionUrl, copyTemplateSession, createSession, sessionAction } from './sessionActions';
+import { chatSend, chatStop } from './courierChat';
 import { SidebarProvider } from './sidebar';
 import { StatusBarController } from './statusbar';
 import { openWebAgent } from './webAgents';
@@ -23,11 +24,43 @@ export function activate(context: ExtensionContext): void {
   const daemon = new DaemonManager(context, cfg, api, log);
   const poller = new Poller(() => cfg().pollIntervalMs);
   const sidebar = new SidebarProvider(api, daemon, poller, {
-    create: () => void createSession(api, daemon, refresh),
+    // 首次引导的渠道卡片：用户点过「稍后」就不再弹出（所有窗口共用）。
+    setupDismissed: () => context.globalState?.get<boolean>('blackhole.setupDismissed') === true,
+    dismissSetup: (dismissed) => void context.globalState?.update('blackhole.setupDismissed', dismissed || undefined),
+    installCloudflared: async () => {
+      // 用到时才加载安装程序：启动插件时不必载入。
+      const { initializeCloudflared } = await import('./cloudflaredInstall');
+      const c = workspace.getConfiguration('blackhole');
+      const result = await initializeCloudflared(c.get<string>('cloudflaredPath') ?? '');
+      if ((c.get<string>('cloudflaredPath') ?? '') !== result.path) await c.update('cloudflaredPath', result.path, ConfigurationTarget.Global);
+    },
+    create: () => void createSession(api, daemon, openCreated),
     act: (s, a) => void sessionAction(api, s, a, refresh),
-    copyTemplate: (s, kind) => void copyTemplateSession(api, s, kind),
+    copyTemplate: (s, kind, message) => void copyTemplateSession(api, s, kind, message),
+    chatSend: (s, targetId, text, site) => chatSend(api, s, targetId, text, site),
+    chatStop: (s, targetId) => chatStop(api, s, targetId),
+      chatCard: async (s, targetId) => {
+        try { return await api.courierCard({ sessionId: s.id, ...(targetId ? { targetId } : {}) }); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : String(e) }; }
+      },
+      chatReload: async (s) => {
+        try {
+          const r = await api.courierReload(s.id);
+          if (r.ok) window.setStatusBarMessage(`BlackHole: ${r.message}`, 4000);
+          else void window.showWarningMessage(`BlackHole: 刷新网页失败 — ${r.message}`);
+        } catch (e) { void window.showErrorMessage(`BlackHole: 刷新网页失败 — ${e instanceof Error ? e.message : String(e)}`); }
+      },
+      unpair: async (s) => {
+        try { await api.courierUnpair(s.id); } catch (e) { void window.showErrorMessage(`BlackHole: 解除配对失败 — ${e instanceof Error ? e.message : String(e)}`); }
+      },
+      rename: async (s) => {
+        const name = await window.showInputBox({ title: '重命名会话', value: s.name ?? '', prompt: '留空则恢复默认名称', ignoreFocusOut: false });
+        if (name === undefined) return;
+        try { await api.renameSession(s.id, name); } catch (e) { void window.showErrorMessage(`BlackHole: 重命名失败 — ${e instanceof Error ? e.message : String(e)}`); }
+      },
   });
   const refresh = (): void => void sidebar.refresh();
+  // A new (draft) session opens straight into its chat page, where the prompts are offered.
+  const openCreated = (s?: SessionInfo): void => { if (s) sidebar.showCalls(s); else refresh(); };
 
   // Channel watchdog feed is independent from the configurable UI poller:
   // it backs off while unfocused and users can raise its interval above the
@@ -52,7 +85,7 @@ export function activate(context: ExtensionContext): void {
     });
   });
   context.subscriptions.push(
-    registerCloudAccount(context, view => statusBar.updateAccount(view), api),
+    registerCloudAccount(context, view => { statusBar.updateAccount(view); sidebar.updateAccount(view); }, api),
     log,
     daemon,
     poller,
@@ -63,13 +96,13 @@ export function activate(context: ExtensionContext): void {
     window.registerWebviewViewProvider(SidebarProvider.viewId, sidebar, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    commands.registerCommand('blackhole.createSession', () => void createSession(api, daemon, refresh)),
+    commands.registerCommand('blackhole.createSession', () => void createSession(api, daemon, openCreated)),
     commands.registerCommand('blackhole.refreshSessions', refresh),
     processTerminals,
     commands.registerCommand('blackhole.showProcesses', () => processTerminals.show()),
     commands.registerCommand('blackhole.stopProcess', () => processTerminals.stopSelected()),
     commands.registerCommand('blackhole.stopAndCloseProcess', () => processTerminals.stopAndCloseSelected()),
-    commands.registerCommand('blackhole.openSettings', () => ConfigPanel.open(api, daemon, poller)),
+    commands.registerCommand('blackhole.openSettings', () => ConfigPanel.open(api, daemon, poller, settingsSync)),
     commands.registerCommand('blackhole.openSession', (s?: SessionInfo) => void withSession(api, s, (x) => sidebar.showCalls(x))),
     commands.registerCommand('blackhole.pauseSession', (s?: SessionInfo) =>
       void withSession(api, s, (x) => sessionAction(api, x, 'pause', refresh)),

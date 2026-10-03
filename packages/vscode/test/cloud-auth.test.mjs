@@ -386,7 +386,7 @@ test('actual VS Code adapter uses system browser, secure slots, nonsecret receip
 });
 test('extension activation and command contributions are wired without exposing backend secrets',()=>{
  const extension=readFileSync(new URL('../src/extension.ts',import.meta.url),'utf8'),pkg=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
- assert.match(extension,/registerCloudAccount\(context, view => statusBar\.updateAccount\(view\), api\)/);
+ assert.match(extension,/registerCloudAccount\(context, view => \{ statusBar\.updateAccount\(view\); sidebar\.updateAccount\(view\); \}, api\)/);
  assert.equal((extension.match(/new StatusBarController\(/g)||[]).length,1);
  assert.ok(!readFileSync(new URL('../src/cloudAccount.ts',import.meta.url),'utf8').includes('createStatusBarItem'));
  const ignores=readFileSync(new URL('../.vscodeignore',import.meta.url),'utf8');for(const rule of ['test/**','**/.dev.vars*','**/.env*'])assert.ok(ignores.includes(rule));

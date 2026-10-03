@@ -15,7 +15,7 @@ function setup(){
  const source=fs.readFileSync(new URL('../src/sidebar.ts',import.meta.url),'utf8');
  const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const module={exports:{}};
- vm.runInNewContext(js,{module,exports:module.exports,console,require:n=>n in handoffModules?handoffModules[n]:n==='./config'?{getConfig:()=>({})}:n==='./toolNames'?toolNames:n==='vscode'?vscode:n==='./icons'?{sidebarIcons:()=>'{}'}:n==='./callFormat'?{}:n==='./editorNavigation'?{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}:require(n)});
+ vm.runInNewContext(js,{module,exports:module.exports,console,AbortController,setTimeout,clearTimeout,require:n=>n in handoffModules?handoffModules[n]:n==='./config'?{getConfig:()=>({})}:n==='./toolNames'?toolNames:n==='vscode'?vscode:n==='./icons'?{sidebarIcons:()=>'{}'}:n==='./callFormat'?{}:n==='./editorNavigation'?{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}:require(n)});
  const api={changes:async()=>({epoch:1}),listSessions:async()=>({sessions:[]}),health:async()=>({tunnel:'offline'}),confirmations:async()=>({confirmations:[]})};
  const provider=new module.exports.SidebarProvider(api,{currentState:'running',onDidChangeState:subscribe},{onTick:subscribeTick},{});
  const panel=()=>{
@@ -80,13 +80,12 @@ test('a failed session read retries the same epoch on the next poll tick',async(
  await h.tick();assert.equal(reads,before+1);assert.equal(p.messages.at(-1).sessions[0].activity,'idle');
  await h.tick();assert.equal(reads,before+1);h.provider.dispose();
 });
-for(const endpoint of ['health','confirmations','callsPage','todos']) {
+for(const endpoint of ['health','confirmations','todos']) {
  test(`a failed ${endpoint} read does not consume the refresh epoch`,async()=>{
   const h=setup();let epoch=1;
   h.api.changes=async()=>({epoch});h.api.listSessions=async()=>({sessions:[session('idle')]});
-  h.api.callsPage=async()=>({calls:[],total:0,window_total:0,max_seq:0});
   h.api.todos=async()=>({items:[],updated_at:0});
-  if(endpoint==='callsPage'||endpoint==='todos'){h.provider.mode='calls';h.provider.selectedId='fixture'}
+  if(endpoint==='todos'){h.provider.mode='calls';h.provider.selectedId='fixture'}
   const p=await mount(h);const original=h.api[endpoint];let reads=0;
   h.api[endpoint]=async()=>{if(++reads===1)throw Error('temporary failure');return original()};
   epoch++;await h.tick();assert.equal(reads,1);

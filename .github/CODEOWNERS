@@ -1,0 +1,8 @@
+# Ownership routes review; branch rules decide whether approval is mandatory.
+/.github/ @qianshe
+/SECURITY.md @qianshe
+/CONTRIBUTING.md @qianshe
+/LICENSE @qianshe
+/NOTICE @qianshe
+/src/environments/ @qianshe
+/scripts/environment-config.mjs @qianshe

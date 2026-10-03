@@ -1,8 +1,11 @@
-import { useState } from 'react';
-import type { AccountView, ProjectView, SessionView } from '../api';
-import { groupSessions, relativeTime, sessionTitle, sessionTone, SESSION_STATUS_LABEL } from '../format';
+import { useEffect, useState } from 'react';
+import type { AccountView, ChannelSwitchView, ProjectView, SessionView } from '../api';
+import { ChannelSwitch } from './ChannelSwitch';
+import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
 import { Icon } from '../ui';
 import { useMenu } from './common';
+import { subscribeCourier } from './courierFeed';
+import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
 
 export interface ChannelSummary {
@@ -18,9 +21,14 @@ interface Props {
   current: string | null;
   view: 'session' | 'channels';
   channel: ChannelSummary;
+  /** 渠道总开关；旧版 daemon 没有 /channel 时为 null（不显示）。 */
+  channelSwitch?: ChannelSwitchView | null;
+  channelBusy?: boolean;
+  onChannelToggle?: (on: boolean) => void;
   account: AccountView | null;
   now: number;
   collapsed: boolean;
+  actions: SessionActions;
   onToggle: () => void;
   onSelect: (id: string) => void;
   onNew: (path?: string) => void;
@@ -33,17 +41,70 @@ interface Props {
   onAccount: (action: 'buy' | 'orders' | 'settings' | 'signout') => void;
 }
 
-function SessionItem({ x, current, pending, now, onSelect }: { x: SessionView; current: boolean; pending: number; now: number; onSelect: () => void }) {
-  const running = x.status === 'active' && x.activity === 'running';
-  const tone = pending ? 'warn' : sessionTone(x.status, running);
-  const state = pending ? `${pending} 待审批` : running ? '运行中' : SESSION_STATUS_LABEL[x.status] ?? x.status;
+/** Web agent state per session (Courier's last pushed list, cached: cheap to poll). */
+interface WebFlags { busy: Set<string>; asking: Set<string> }
+const NO_FLAGS: WebFlags = { busy: new Set(), asking: new Set() };
+function useWebFlags(): WebFlags {
+  const [f, setF] = useState<WebFlags>(NO_FLAGS);
+  useEffect(() => {
+    // Shared Courier poll; daemon away (null): keep the last flags.
+    return subscribeCourier((j) => {
+      if (!j) return;
+      const busy = new Set((j.targets ?? []).filter((t) => t.busy && t.sessionId).map((t) => t.sessionId!));
+      const asking = new Set(j.asking ?? []);
+      setF((o) => (same(o.busy, busy) && same(o.asking, asking) ? o : { busy, asking }));
+    });
+  }, []);
+  return f;
+}
+const same = (a: Set<string>, b: Set<string>): boolean => a.size === b.size && [...a].every((x) => b.has(x));
+
+/**
+ * One status at the end of the row, most urgent first (color + text); idle shows nothing.
+ * 待审批 / 待回答 need you; 生成中 / 运行中 are working; the rest is quiet progress.
+ */
+function rowState(x: SessionView, pending: number, web: WebFlags): { text: string; tone: 'warn' | 'run' | 'muted'; title?: string } | null {
+  if (pending) return { text: `${pending} 待审批`, tone: 'warn' };
+  if (web.asking.has(x.id)) return { text: '待回答', tone: 'warn', title: '网页 AI 发来了提问' };
+  if (web.busy.has(x.id)) return { text: '生成中', tone: 'run', title: '网页 AI 正在回复' };
+  if (x.status === 'active' && x.activity === 'running') return { text: '运行中', tone: 'run', title: '正在调用工具' };
+  if (x.todos_total > 0 && x.todos_done < x.todos_total) return { text: `${x.todos_done}/${x.todos_total}`, tone: 'muted', title: 'Todo 进度' };
+  if (x.pending_handoff) return { text: 'Handoff', tone: 'muted', title: '有待接手的 Handoff' };
+  if (x.status === 'paused') return { text: SESSION_STATUS_LABEL.paused ?? '已暂停', tone: 'muted' };
+  return null;
+}
+
+function SessionItem({ x, current, pending, web, onSelect, actions }: { x: SessionView; current: boolean; pending: number; web: WebFlags; onSelect: () => void; actions: SessionActions }) {
+  const st = rowState(x, pending, web);
+  const state = st?.text ?? SESSION_STATUS_LABEL[x.status] ?? x.status;
+  const m = useMenu();
+  const [up, setUp] = useState(false);
+  const pick = (fn: () => void) => () => {
+    m.close();
+    fn();
+  };
+  const toggle = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    // open upward near the bottom so the menu is not cut off by the scroll area
+    setUp(e.currentTarget.getBoundingClientRect().bottom + 360 > window.innerHeight);
+    m.toggle();
+  };
   return (
-    <li>
+    <li className={c.sessionItem}>
       <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} · ${state}`}>
-        <span className={c[`dot_${tone}`]} aria-hidden="true" />
         <span className={c.rowLabel}>{sessionTitle(x)}</span>
-        {pending ? <span className={c.rowMetaWarn}>{pending} 待审批</span> : <span className={c.rowMeta}>{running ? '运行中' : relativeTime(x.last_active_at ?? x.created_at, now)}</span>}
+        {st && <span className={st.tone === 'warn' ? c.rowMetaWarn : st.tone === 'run' ? c.rowMetaRun : c.rowMeta} title={st.title}>{st.text}</span>}
       </button>
+      {/* sibling of the row button: a button inside a button is invalid */}
+      <div ref={m.wrapRef} onKeyDown={m.onKeyDown}>
+        <button type="button" className={c.sessionMore} aria-label={`${sessionTitle(x)} 更多操作`} aria-haspopup="menu" aria-expanded={m.open} onClick={toggle}>
+          <Icon name="more" size={14} />
+        </button>
+        {m.open && (
+          <div className={c.rowMenu} role="menu" style={up ? { top: 'auto', bottom: 36 } : undefined}>
+            <SessionMenuItems s={x} actions={actions} pick={pick} withPause />
+          </div>
+        )}
+      </div>
     </li>
   );
 }
@@ -143,7 +204,8 @@ function AccountButton({ account, onAction }: { account: AccountView | null; onA
 
 export function Sidebar(p: Props) {
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
-  const { groups, recent, loose } = groupSessions(p.projects, p.sessions);
+  // ended sessions are not listed: they are cheap and get deleted, not archived
+  const { groups, loose } = groupSessions(p.projects, p.sessions);
   const toggleGroup = (id: string): void =>
     setClosed((s) => {
       const n = new Set(s);
@@ -151,18 +213,32 @@ export function Sidebar(p: Props) {
       else n.add(id);
       return n;
     });
-  const item = (x: SessionView) => <SessionItem key={x.id} x={x} current={p.view === 'session' && p.current === x.id} pending={p.pending.get(x.id) ?? 0} now={p.now} onSelect={() => p.onSelect(x.id)} />;
+  const web = useWebFlags();
+  const item = (x: SessionView) => <SessionItem key={x.id} x={x} current={p.view === 'session' && p.current === x.id} pending={p.pending.get(x.id) ?? 0} web={web} onSelect={() => p.onSelect(x.id)} actions={p.actions} />;
 
   return (
     <aside className={c.sidebar} aria-label="导航">
       <div className={c.sideTop}>
-        <span className={c.brand} aria-hidden="true">
-          BH
-        </span>
-        <span className={c.brandName}>BlackHole</span>
-        <button type="button" className={c.collapse} aria-label={p.collapsed ? '展开侧栏' : '收起侧栏'} aria-expanded={!p.collapsed} onClick={p.onToggle}>
-          <Icon name="sidebar" />
-        </button>
+        {/* The brand icon keeps its size and place in both states. Collapsed, it is the expand
+            button (hover shows the sidebar icon in the same 32px box); expanded, the toggle sits right. */}
+        {p.collapsed ? (
+          <button type="button" className={`${c.brand} ${c.brandBtn}`} aria-label="展开侧栏" aria-expanded={false} title="展开侧栏" onClick={p.onToggle}>
+            <span className={c.brandText}>BH</span>
+            <span className={c.brandHover}>
+              <Icon name="sidebar" />
+            </span>
+          </button>
+        ) : (
+          <>
+            <span className={c.brand} aria-hidden="true">
+              BH
+            </span>
+            <span className={c.brandName}>BlackHole</span>
+            <button type="button" className={c.collapse} aria-label="收起侧栏" aria-expanded title="收起侧栏" onClick={p.onToggle}>
+              <Icon name="sidebar" />
+            </button>
+          </>
+        )}
       </div>
 
       <button type="button" className={c.primaryNav} onClick={() => p.onNew()} title="新建会话">
@@ -178,13 +254,16 @@ export function Sidebar(p: Props) {
         <span className={c.navLabel}>搜索</span>
         <span className={c.kbd}>Ctrl K</span>
       </button>
-      <button type="button" className={c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
-        <span className={c.navIcon}>
-          <Icon name="globe" />
-        </span>
-        <span className={c.navLabel}>公网渠道</span>
-        <span className={p.channel.ok ? c.navSummaryOk : c.navSummary}>{p.channel.text}</span>
-      </button>
+      <div className={c.navRow}>
+        <button type="button" className={p.channelSwitch ? `${c.navBtn} ${c.navBtnWithSwitch}` : c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
+          <span className={c.navIcon}>
+            <Icon name="globe" />
+          </span>
+          <span className={c.navLabel}>公网渠道</span>
+          <span className={p.channel.ok ? c.navSummaryOk : c.navSummary}>{p.channel.text}</span>
+        </button>
+        <ChannelSwitch view={p.channelSwitch ?? null} busy={!!p.channelBusy} onToggle={(on) => p.onChannelToggle?.(on)} className={c.navRowSwitch} />
+      </div>
 
       <nav className={c.sideScroll} aria-label="项目与会话">
         <div className={c.sectionLabel}>
@@ -210,7 +289,6 @@ export function Sidebar(p: Props) {
                   </span>
                 )}
                 {waiting > 0 ? <span className={c.dot_warn} aria-label={`${waiting} 个待审批`} /> : <span className={c.projectCount}>{sessions.length || ''}</span>}
-                <span style={{ width: 22 }} aria-hidden="true" />
               </button>
               <ProjectMenu p={project} onNew={() => p.onNew(project.path)} onRename={() => p.onRenameProject(project)} onPin={() => p.onPinProject(project)} onRemove={() => p.onRemoveProject(project)} />
               {open && sessions.length > 0 && <ul className={c.projectSessions}>{sessions.map(item)}</ul>}
@@ -221,12 +299,6 @@ export function Sidebar(p: Props) {
           <>
             <div className={c.sectionLabel}>其他会话</div>
             <ul className={c.recentList}>{loose.map(item)}</ul>
-          </>
-        )}
-        {recent.length > 0 && (
-          <>
-            <div className={c.sectionLabel}>最近结束</div>
-            <ul className={c.recentList}>{recent.map(item)}</ul>
           </>
         )}
       </nav>

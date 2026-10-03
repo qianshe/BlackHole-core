@@ -191,7 +191,7 @@ test('base guide requires explicit keywords and retains routing boundaries', asy
     const tools = (await fixture.client.listTools()).tools;
     const guide = tools.find(tool => tool.name === 'guide');
     assert.ok(guide);
-    assert.deepEqual(Object.keys(guide.inputSchema.properties).sort(), ['content', 'sessionId', 'tool', 'workflow']);
+    assert.deepEqual(Object.keys(guide.inputSchema.properties).sort(), ['content', 'entry', 'sessionId', 'tool', 'workflow']);
     assert.deepEqual(guide.inputSchema.properties.workflow.enum, WORKFLOW_NAMES);
 
     const response = await fixture.client.callTool({ name: 'guide', arguments: {} });
@@ -280,6 +280,10 @@ test('invalid selectors are rejected through the public MCP boundary', async () 
     for (const workflow of ['unknown', 'PLAN', '计划', '', 'constructor', '__proto__', null, 1, {}, []]) {
       const reply = await f.client.callTool({ name: 'guide', arguments: { workflow } });
       assert.equal(reply.isError, true, `must reject ${JSON.stringify(workflow)}`);
+    }
+    for (const entry of ['connector', 'apps', '', null, 1, {}, []]) {
+      const reply = await f.client.callTool({ name: 'guide', arguments: { entry } });
+      assert.equal(reply.isError, true, `must reject entry ${JSON.stringify(entry)}`);
     }
     for (const workflow of WORKFLOW_NAMES) for (const tool of ['exec', 'process']) {
       const reply = await f.client.callTool({ name: 'guide', arguments: { workflow, tool } });

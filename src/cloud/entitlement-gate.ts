@@ -11,8 +11,22 @@ export class EntitlementGate {
  private lease?:{wall:number;mono:number;duration:number};
  private lastCall?:number; private observed?:{wall:number;mono:number};
  private prover?:(challenge:string,sessionId:string)=>Promise<Ticket|null>;
+ private readonly listeners=new Set<()=>void>(); private expiryTimer?:ReturnType<typeof setTimeout>;
  constructor(spki:string,private readonly origin:string,private readonly clock={wall:Date.now,mono:()=>performance.now()}) {
   this.key=createPublicKey({key:Buffer.from(spki,'base64'),format:'der',type:'spki'});
+ }
+ /** Called when the local ticket may have changed (login/logout, new ticket, invalidated, expired). */
+ onChange(fn:()=>void):()=>void {this.listeners.add(fn);return ()=>{this.listeners.delete(fn);};}
+ private notify():void {for(const fn of this.listeners){try{fn();}catch{/* listener errors never reach the gate */}}}
+ /** Read-only: is there a verified, unexpired ticket right now? No network, no challenge. */
+ valid():boolean {return this.fresh();}
+ /**
+  * For feature gates outside tool calls (Courier): a valid local ticket is enough; only without one
+  * is a new ticket requested. Unlike beforeToolCall, idle time never forces a new challenge.
+  */
+ async access():Promise<boolean> {
+  if(this.fresh())return true;
+  try{await this.ensure(true);return true;}catch{return false;}
  }
  /** Public build identity; never a credential or authorization decision. */
  get cloudOrigin():string {return this.origin;}
@@ -25,12 +39,12 @@ export class EntitlementGate {
   if(this.identity&&(i.loginOrder<this.identity.loginOrder||(i.loginOrder===this.identity.loginOrder&&this.identity.kind==='logout'&&i.kind==='login')))return;
   const next={userId:i.userId,clientId:i.clientId,sessionId:i.sessionId,loginOrder:i.loginOrder,expiresAt:i.expiresAt,kind:i.kind};
   if(JSON.stringify(next)===JSON.stringify(this.identity))return;
-  this.invalidate();this.identity=next;this.lastCall=undefined;
+  this.invalidate();this.identity=next;this.lastCall=undefined;this.notify();
   if(i.kind==='login')void this.ensure(true).catch(()=>undefined); // credential/startup event, never a timer
  }
  /** The daemon's own account answers challenges first; null leaves the challenge for the extension bridge. */
  setProver(fn:(challenge:string,sessionId:string)=>Promise<Ticket|null>):void {this.prover=fn;}
- invalidate():void {this.lease=undefined;const p=this.pending;this.pending=undefined;if(p){clearTimeout(p.timer);p.reject(denied());}}
+ invalidate():void {const had=!!this.lease;this.lease=undefined;const p=this.pending;this.pending=undefined;if(p){clearTimeout(p.timer);p.reject(denied());}if(had)this.notify();}
  private fresh():boolean {
   const wall=this.clock.wall(),mono=this.clock.mono(),old=this.observed;this.observed={wall,mono};
   if(old&&(mono<old.mono||Math.abs((wall-old.wall)-(mono-old.mono))>5000)){this.invalidate();return false;}
@@ -85,6 +99,9 @@ export class EntitlementGate {
    const duration=(expiresAt-issuedAt)*1000-1000;
    if(this.clock.mono()-p.mono>=duration)throw denied();
    this.lease={wall:p.wall,mono:p.mono,duration};this.pending=undefined;clearTimeout(p.timer);p.resolve();
+   // A local timer only tells listeners the ticket ran out; it never contacts the cloud.
+   clearTimeout(this.expiryTimer);this.expiryTimer=setTimeout(()=>this.notify(),Math.max(0,duration-(this.clock.mono()-p.mono))+50);this.expiryTimer.unref?.();
+   this.notify();
   }catch{this.invalidate();throw denied();}
  }
  fail(challenge:string):void {if(this.pending?.challenge===challenge)this.invalidate();}

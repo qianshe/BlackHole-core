@@ -45,6 +45,18 @@ function unit(t) {
   return { clock, changes, activity };
 }
 
+test('endTurn ends the window at once, but never under a tool call still being handled', t => {
+  const { activity } = unit(t);
+  const done = activity.begin('a');
+  activity.endTurn('a');
+  assert.equal(activity.status('a'), 'running', 'a pending call keeps it running');
+  done();
+  assert.equal(activity.status('a'), 'running', 'finished calls keep the 60 s window');
+  activity.endTurn('a');
+  assert.equal(activity.status('a'), 'idle');
+  activity.endTurn('unknown');
+});
+
 test('health counts only running active sessions, excluding idle and paused sessions', t => {
  const {activity,clock}=unit(t);
  const source=fs.readFileSync(new URL('../src/control/api.ts',import.meta.url),'utf8');
