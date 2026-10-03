@@ -48,7 +48,12 @@ test('sandbox prompt is never copied with a loopback bootstrap URL; a public URL
   }
   const both = actions({ ...oaOnly, mcp_url: PUB, tunnel: 'online', tunnel_url: 'https://pub.example' });
   await both.mod.copyTemplateSession(both.api, both.node, 'sandbox');
-  assert.match(both.clipboard[0], /BlackHole MCP: https:\/\/pub\.example\/mcp\/token/); assert.match(both.clipboard[0], /entry: "sandbox"/); assert.doesNotMatch(both.clipboard[0], /bh\.py|curl|python|Task:/); assert.deepEqual(both.warnings, []);
+  assert.match(both.clipboard[0], /^Download https:\/\/pub\.example\/bh\.py\?sessionid=000000000000000000000000000000000000123/);
+  assert.match(both.clipboard[0], /current sandbox root as `bh\.py`/);
+  assert.match(both.clipboard[0], /Read `bh\.py`, then use it to read `guide`/);
+  assert.match(both.clipboard[0], /familiarize yourself with the connected BlackHole MCP/); assert.match(both.clipboard[0], /`BLACKHOLE\.md` for reuse/);
+  assert.doesNotMatch(both.clipboard[0], /Task:|BlackHole MCP:|curl|python3|preflight/);
+  assert.deepEqual(both.warnings, []);
 });
 
 test('no channel: connector prompt still copies but asks to start Cloudflare or OpenAI', async () => {

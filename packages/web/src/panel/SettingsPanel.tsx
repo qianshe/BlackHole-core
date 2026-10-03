@@ -165,7 +165,7 @@ function Activity({ health }: { health: Health | null }) {
 
 // ─── the panel ─────────────────────────────────────────────────────────────
 type Draft = Record<TextKey, string>;
-type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites' | 'lanAccess' | 'lanPort';
+type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites' | 'lanAccess' | 'lanPort' | 'lanUrl';
 type FieldState = { state: 'saving' | 'saved' | 'error'; msg?: string };
 const draftOf = (v: SettingsValues): Draft => Object.fromEntries(TEXT_KEYS.map((k) => [k, String((v as unknown as Record<string, unknown>)[k] ?? '')])) as Draft;
 const serverText = (v: SettingsValues, k: TextKey) => String((v as unknown as Record<string, unknown>)[k] ?? '');
@@ -677,15 +677,17 @@ export function SettingsPanel() {
         </>
       )}
 
-      <div className="sec" id="set-lan">局域网直连<small>让另一台服务器上的 agent 直接用 MCP 连到这台电脑，不经过公网渠道。默认关闭。</small></div>
+      <div className="sec" id="set-lan">局域网直连<small>监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</small></div>
       <LanAccess
         on={!!server?.values.lanAccess}
         port={server?.values.lanPort ?? 7307}
+        url={server?.values.lanUrl ?? ''}
         lan={reachable ? health?.lan_access ?? null : null}
-        status={<>{fieldStatus('lanAccess')}{fieldStatus('lanPort')}</>}
-        error={<>{fieldError('lanAccess')}{fieldError('lanPort')}</>}
+        status={<>{fieldStatus('lanAccess')}{fieldStatus('lanPort')}{fieldStatus('lanUrl')}</>}
+        error={<>{fieldError('lanAccess')}{fieldError('lanPort')}{fieldError('lanUrl')}</>}
         onToggle={(on) => void toggleLan(on)}
         onPort={(p) => void commit({ lanPort: p }, ['lanPort']).then((ok) => { if (ok) setTimeout(refreshHealth, 500); })}
+        onUrl={(u) => void commit({ lanUrl: u }, ['lanUrl'])}
         onCopy={(u) => void copy(u).then(() => ui.toast('BlackHole：直连 MCP 链接已复制。'))}
       />
 
@@ -759,9 +761,9 @@ export function SettingsPanel() {
 }
 
 /** 局域网直连：开关、端口、监听状态和可复制的直连 MCP 链接。 */
-function LanAccess({ on, port, lan, status, error, onToggle, onPort, onCopy }: {
-  on: boolean; port: number; lan: LanAccessView | null; status: ReactNode; error: ReactNode;
-  onToggle: (on: boolean) => void; onPort: (port: number) => void; onCopy: (url: string) => void;
+function LanAccess({ on, port, url, lan, status, error, onToggle, onPort, onUrl, onCopy }: {
+  on: boolean; port: number; url: string; lan: LanAccessView | null; status: ReactNode; error: ReactNode;
+  onToggle: (on: boolean) => void; onPort: (port: number) => void; onUrl: (url: string) => void; onCopy: (url: string) => void;
 }) {
   const [portText, setPortText] = useState(String(port));
   useEffect(() => { setPortText(String(port)); }, [port]);
@@ -770,7 +772,17 @@ function LanAccess({ on, port, lan, status, error, onToggle, onPort, onCopy }: {
     if (!Number.isInteger(n) || n < 1024 || n > 65535) { setPortText(String(port)); return; }
     if (n !== port) onPort(n);
   };
-  const urls = on && lan?.listening ? lan.addresses.map((a) => `http://${a}:${lan.port}${lan.mcp_path}`) : [];
+  const [urlText, setUrlText] = useState(url);
+  useEffect(() => { setUrlText(url); }, [url]);
+  // 格式由守护进程校验（只接受 http(s)://主机[:端口]），错误显示在卡片里。
+  const saveUrl = () => {
+    const next = urlText.trim().replace(/\/+$/, '');
+    if (next !== url) onUrl(next);
+  };
+  // 填了直连域名时，域名链接排在最前面。
+  const urls = on && lan?.listening
+    ? [...(url ? [`${url}${lan.mcp_path}`] : []), ...lan.addresses.map((a) => `http://${a}:${lan.port}${lan.mcp_path}`)]
+    : [];
   const [cls, text] = !on ? ['', '未开启'] : lan?.error ? ['bad', lan.error] : lan?.listening ? ['ok', `正在监听 0.0.0.0:${lan.port}`] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
   return (
     <div className="card">
@@ -784,6 +796,11 @@ function LanAccess({ on, port, lan, status, error, onToggle, onPort, onCopy }: {
             onChange={(e) => setPortText(e.target.value)} onBlur={savePort} onKeyDown={(e) => { if (e.key === 'Enter') savePort(); }} />
           <div className="d">1024–65535，不能与主端口相同；修改后立即生效。</div>
         </div>
+        <div className="f"><label htmlFor="lanUrl">直连域名（可选）</label>
+          <input id="lanUrl" name="lanUrl" type="text" spellCheck={false} autoComplete="off" placeholder="https://mcp.example.com 或 http://nas.lan:7307" value={urlText}
+            onChange={(e) => setUrlText(e.target.value)} onBlur={saveUrl} onKeyDown={(e) => { if (e.key === 'Enter') saveUrl(); }} />
+          <div className="d">域名映射到这台电脑时填写，下面会列出域名链接。</div>
+        </div>
       </div>
       {error}
       {urls.map((u) => (
@@ -792,7 +809,6 @@ function LanAccess({ on, port, lan, status, error, onToggle, onPort, onCopy }: {
         </div>
       ))}
       {on && lan?.listening && !urls.length && <div className="d">没有找到可用的本机地址：请用这台电脑在局域网里的 IP 加上端口 {lan.port} 连接。</div>}
-      <div className="d">只开放 MCP 端点；控制接口、本地 Web 和面板不会对外开放。连接时仍需要 MCP 链接里的令牌和会话 ID。数据经明文 HTTP 传输，建议只在可信内网或 Tailscale / WireGuard 等组网中使用；Windows 首次开启时可能弹出防火墙提示。</div>
     </div>
   );
 }

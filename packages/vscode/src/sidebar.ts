@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { commands, env, Position, Range, Selection, TextEditorRevealType, Uri, window, workspace, WebviewView, type Disposable, type WebviewViewProvider } from 'vscode';
+import type { AuthView } from './cloudAuthClient';
 import { argumentDetails, commandSummary, pendingConfirmationFor, resultBody, resultDiff } from './callFormat';
 import { editorNavigationPreview, resolveEditorNavigation } from './editorNavigation';
 import { isWorkspaceFileTool, displayToolName } from './toolNames';
@@ -21,11 +22,24 @@ function mermaidAsset(): string {
   mermaidAssetPath = name ? path.join(dir, name) : '';
   return mermaidAssetPath;
 }
-import type { CallRow, ControlApi, CourierMessageView, CourierSendResult, CourierSiteChoice, CourierStopResult, CourierTargetView, PendingHandoff, PermissionMode, SessionAction, SessionInfo, SessionLink, TodoItem, TunnelState } from './controlApi';
+import type { CallRow, ChannelSwitchView, ControlApi, CourierMessageView, CourierSendResult, CourierSiteChoice, CourierStopResult, CourierTargetView, PendingHandoff, PermissionMode, SessionAction, SessionInfo, SessionLink, TodoItem, TunnelState } from './controlApi';
 import type { DaemonManager } from './daemonManager';
 import type { Poller } from './poller';
 
+/** 渠道总开关缺前提时的提示（cloudflared 另有引导卡片）。 */
+const CHANNEL_MISSING: Record<string, string> = {
+  named_url: '持久渠道还没有配置公网地址，已打开设置页。',
+  openai_setup: 'OpenAI 渠道还没配置完（Tunnel ID、tunnel-client 或密钥），已打开设置页。',
+  openai_unavailable: '当前 daemon 不支持 OpenAI 渠道。',
+  start_failed: '渠道没有启动，原因见鼠标悬停提示。',
+};
+
 export interface SidebarHooks {
+  /** 首次引导的渠道卡片是否已被用户点过「稍后」（存在 globalState，跨窗口保留）。 */
+  setupDismissed?(): boolean;
+  dismissSetup?(dismissed: boolean): void;
+  /** 下载并验证 cloudflared，把路径存进设置（和设置页的一键安装是同一个安装程序）。 */
+  installCloudflared?(): Promise<void>;
   create(): void;
   act(session: SessionInfo, action: SessionAction): void;
   copyTemplate(session: SessionInfo, kind: 'connector' | 'sandbox', message?: string): void;
@@ -44,7 +58,10 @@ export interface SidebarHooks {
 }
 
 interface ViewMessage {
-  type: 'ready' | 'create' | 'refresh' | 'settings' | 'open' | 'back' | 'action' | 'copyTemplate' | 'approve' | 'deny' | 'webAgent' | 'callOlder' | 'mode' | 'cancel' | 'reorder' | 'openCallResource' | 'copyHandoff' | 'previewHandoff' | 'cancelHandoffPreview' | 'chatSend' | 'chatStop' | 'openLink' | 'unpair' | 'rename' | 'chatReload' | 'chatCard' | 'copyText' | 'courierImages';
+  type: 'ready' | 'create' | 'refresh' | 'settings' | 'open' | 'back' | 'action' | 'copyTemplate' | 'approve' | 'deny' | 'webAgent' | 'callOlder' | 'mode' | 'cancel' | 'reorder' | 'openCallResource' | 'copyHandoff' | 'previewHandoff' | 'cancelHandoffPreview' | 'chatSend' | 'chatStop' | 'openLink' | 'unpair' | 'rename' | 'chatReload' | 'chatCard' | 'copyText' | 'courierImages'
+    | 'signIn' | 'channelToggle' | 'setupStart' | 'setupDismiss' | 'setupResume';
+  /** channelToggle：打开还是关闭渠道总开关。 */
+  on?: boolean;
   /** courierImages: how many images the sent message carries. */
   count?: number;
   id?: string;
@@ -136,6 +153,15 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   private tunnel: TunnelState | null = null;
   /** OpenAI tunnel status for the channel pill; runs in parallel with Cloudflare. */
   private openai: string | null = null;
+  /** 云端账号状态：只用来决定是否显示登录卡片；null = 还没收到。 */
+  private account: AuthView['state'] | null = null;
+  /** 渠道总开关；旧版 daemon 没有这个接口时为 null（不显示开关和引导）。 */
+  private channel: ChannelSwitchView | null = null;
+  private channelBusy = false;
+  /** 首次引导：一键安装 cloudflared 并启动临时渠道的进度（null = 没在进行）。 */
+  private setup: { step: 'install' | 'restart' | 'start' | 'failed'; failedAt?: 'install' | 'restart' | 'start'; error?: string } | null = null;
+  /** 开关缺前提时给用户的一句话（下次刷新清掉）。 */
+  private channelNote: string | null = null;
   private disposed = false;
   private viewGeneration = 0;
   private subscriptions: Disposable[] = [];
@@ -369,13 +395,17 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     let complete = true;
     const failed = <T>(fallback: T): T => { complete = false; return fallback; };
     // 全量拉取待审批确认：审批条在列表/详情两种模式下都要渲染（样式与内联框一致）
-    const [sessions, health, pendingAll] = await Promise.all([
+    const [sessions, health, pendingAll, channel] = await Promise.all([
       this.api.listSessions().then((r) => r.sessions).catch(() => failed(undefined)),
       this.api.health().catch(() => failed(undefined)),
       this.api.confirmations().then((r) => r.confirmations.filter((c) => c.status === 'pending')).catch(() => failed([])),
       // 拉取失败即清空：daemon 不可达时没有可处理的审批，徽标绝不残留旧数字
+      // 渠道总开关是可选的：旧版 daemon 没有这个接口，不影响列表。
+      Promise.resolve().then(() => this.api.channel()).catch(() => null),
     ]);
     if (!current()) return;
+    this.channel = channel;
+    if (channel?.on) this.channelNote = null;
     if (sessions !== undefined) {
       this.sessions = sessions.filter((s) => s.status !== 'revoked' && s.status !== 'archived');
     }
@@ -438,6 +468,73 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     this.postUpdate();
   }
 
+  /** 云端账号状态变化（登录、退出、刷新）：侧边栏据此显示或收起登录卡片。 */
+  updateAccount(view: AuthView): void {
+    if (this.account === view.state) return;
+    this.account = view.state;
+    this.postUpdate();
+  }
+
+  /** 侧边栏标题里的渠道总开关。缺 cloudflared 时展开引导卡片（下载要用户在卡片里确认），其他前提打开设置页。 */
+  private async toggleChannel(on: boolean): Promise<void> {
+    if (this.channelBusy || this.setup) return;
+    this.channelBusy = true;
+    this.channelNote = null;
+    this.postUpdate();
+    try {
+      const r = await this.api.channelSwitch(on);
+      if (!r.ok) {
+        if (r.error === 'cloudflared') {
+          this.hooks.dismissSetup?.(false);
+          this.channelNote = '还没有 cloudflared：用下面的「一键安装并启动」。';
+        } else {
+          this.channelNote = CHANNEL_MISSING[r.error] ?? `渠道没有启动（${r.error}）。`;
+          if (r.error === 'named_url' || r.error === 'openai_setup') void commands.executeCommand('blackhole.openSettings');
+        }
+      }
+    } catch (e) {
+      this.channelNote = `操作失败：${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      this.channelBusy = false;
+    }
+    await this.refresh(true);
+  }
+
+  /**
+   * 首次引导：下载并验证 cloudflared → 保存路径并重启 daemon（路径只在启动时读取）→ 启动临时渠道。
+   * 只由卡片上的按钮触发；任何一步失败都停在那里，可以重试。
+   */
+  private async runSetup(): Promise<void> {
+    if (this.setup && this.setup.step !== 'failed') return;
+    const step = (s: 'install' | 'restart' | 'start') => { this.setup = { step: s }; this.postUpdate(); };
+    const fail = (at: 'install' | 'restart' | 'start', e: unknown) => {
+      const message = (e as { message?: unknown } | null)?.message;
+      this.setup = { step: 'failed', failedAt: at, error: typeof message === 'string' ? message : String(e) };
+      this.postUpdate();
+    };
+    step('install');
+    try {
+      if (!this.hooks.installCloudflared) throw new Error('当前版本不支持一键安装，请在设置页配置。');
+      await this.hooks.installCloudflared();
+    } catch (e) { fail('install', e); return; }
+    if (this.disposed) return;
+    step('restart');
+    try {
+      // restart() 会合并配置变化触发的那次重启，不会重启两次。
+      if (!(await this.daemon.restart())) throw new Error('本地服务重启失败，请稍后重试。');
+    } catch (e) { fail('restart', e); return; }
+    if (this.disposed) return;
+    step('start');
+    try {
+      // 引导固定启动临时渠道（即使配过持久地址），并记为「上次使用」。
+      const t = await this.api.tunnelStart('quick');
+      if (t.status !== 'starting' && t.status !== 'online' && t.status !== 'unverified') throw new Error(t.reason || '临时渠道没有启动。');
+    } catch (e) { fail('start', e); return; }
+    this.setup = null;
+    if (!this.disposed) void window.showInformationMessage('BlackHole：已提交临时渠道启动请求，连接状态将在侧栏更新。');
+    await this.refresh(true);
+  }
+
   /** 详情页往上翻：由 feed 读下一页更早的调用与回复（/history），状态变化经 onFeed 推给页面。 */
   private async loadOlder(): Promise<void> {
     const slot = this.mode === 'calls' ? this.feed : null;
@@ -468,6 +565,12 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       currentRoot: currentWorkspaceRoot(),
       tunnel: this.tunnel,
       openai: this.openai,
+      account: this.account,
+      channel: this.channel,
+      channelBusy: this.channelBusy,
+      channelNote: this.channelNote,
+      setup: this.setup,
+      setupDismissed: this.hooks.setupDismissed?.() ?? false,
       selected: this.mode === 'calls' ? this.selected() : undefined,
       // 只送当前页：旧会话几百条记录时不再每轮全量展开+解析+过桥大 payload
       calls:
@@ -681,6 +784,26 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       case 'settings':
         await commands.executeCommand('blackhole.openSettings');
         return;
+      case 'signIn':
+        // 和设置页同一个登录命令：在浏览器里完成，账号状态变化经 updateAccount 推回来。
+        await commands.executeCommand('blackhole.accountSignIn');
+        return;
+      case 'channelToggle':
+        if (typeof m.on === 'boolean') await this.toggleChannel(m.on);
+        return;
+      case 'setupStart':
+        await this.runSetup();
+        return;
+      case 'setupDismiss':
+        this.hooks.dismissSetup?.(true);
+        if (this.setup?.step === 'failed') this.setup = null;
+        this.postUpdate();
+        return;
+      case 'setupResume':
+        // Reveal the existing setup UI only; never install or start a channel implicitly.
+        this.hooks.dismissSetup?.(false);
+        this.postUpdate();
+        return;
       case 'webAgent':
         await commands.executeCommand('blackhole.openLocalWeb');
         return;
@@ -855,6 +978,10 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     const mermaidFile = webview?.asWebviewUri ? mermaidAsset() : '';
     const mermaidSrc = mermaidFile ? webview!.asWebviewUri(Uri.file(mermaidFile)).toString() : '';
     const scriptSrc = webview?.cspSource ? ` ${webview.cspSource}` : '';
+    // Reuse the shipped brand asset; a data URI keeps the existing image CSP unchanged.
+    let brandIcon = '';
+    try { brandIcon = 'data:image/svg+xml;base64,' + readFileSync(path.join(__dirname, '..', 'media', 'icon.svg')).toString('base64'); }
+    catch { /* Non-packaged test fixtures may not have extension assets. */ }
     const mermaidConfigs = JSON.stringify({ dark: mermaidConfig(true), default: mermaidConfig(false) });
     const csp = `default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'${scriptSrc};`;
     return `<!DOCTYPE html>
@@ -891,7 +1018,82 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .chanpill.warn { color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
   .chanpill.bad { color: var(--vscode-charts-red); background: color-mix(in srgb, var(--vscode-charts-red) 12%, transparent); }
   .chanpill:hover { filter: brightness(1.15); }
-  .err { color: var(--vscode-errorForeground); font-size: 11px; padding: 6px 12px 0; word-break: break-all; }
+  /* 渠道总开关：26x14 胶囊，状态色和渠道胶囊一致（绿=开、黄=启动中/未验证、红描边=失败）。 */
+  .chsw { position: relative; width: 26px; height: 14px; flex-shrink: 0; padding: 0; border-radius: 999px; cursor: pointer; border: 1px solid var(--vscode-checkbox-border, var(--vscode-panel-border)); background: color-mix(in srgb, var(--vscode-descriptionForeground) 22%, transparent); transition: background .15s, border-color .15s; }
+  .chsw::after { content: ''; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--vscode-foreground); opacity: .8; transition: transform .15s; }
+  .chsw[aria-checked="true"]::after { transform: translateX(12px); background: #fff; opacity: 1; }
+  .chsw[data-state="on"] { background: var(--vscode-charts-green); border-color: transparent; }
+  .chsw[data-state="warn"], .chsw[data-state="starting"] { background: var(--vscode-charts-yellow); border-color: transparent; }
+  .chsw[data-state="starting"]::after { animation: bhPulse 1s ease-in-out infinite; }
+  .chsw[data-state="error"] { border-color: var(--vscode-charts-red); }
+  .chsw:disabled { cursor: progress; }
+  .chsw:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  /* B / focused welcome. The session list is a four-column grid owned by Handoff. */
+  #list[data-mode="sessions"] > .bh-onboard { grid-column: 1 / -1; min-width: 0; }
+  .bh-onboard, .bh-onboard * { box-sizing: border-box; }
+  .bh-onboard { width: 100%; padding: 30px 24px 26px; color: var(--vscode-foreground); text-align: center; }
+  .bh-onboard-body { width: 100%; max-width: 320px; margin: 0 auto; }
+  .bh-onboard-progress { display: flex; align-items: center; justify-content: center; list-style: none; padding: 0; margin: 0 0 30px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-progress li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .bh-onboard-progress li:not(:last-child)::after { content: ''; width: 16px; height: 1px; background: var(--vscode-panel-border); margin: 0 9px; }
+  .bh-onboard-progress .num { font-family: var(--vscode-editor-font-family); }
+  .bh-onboard-progress .current { color: var(--vscode-foreground); }
+  .bh-onboard-progress .current .num { color: var(--vscode-textLink-foreground); }
+  .bh-onboard-progress .done .num { color: var(--vscode-charts-green); }
+  .bh-onboard-mark { display: block; width: 37px; height: 37px; margin: 0 auto 23px; background: var(--vscode-foreground); mask: url('${brandIcon}') center / contain no-repeat; }
+  .bh-onboard h2 { margin: 0 0 12px; font-size: 21px; font-weight: 500; line-height: 1.4; letter-spacing: -.4px; text-wrap: balance; }
+  .bh-onboard p { margin: 0; font-size: 12px; line-height: 1.8; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+  .bh-onboard-actions { display: flex; flex-direction: column; align-items: center; gap: 7px; margin-top: 23px; }
+  .bh-onboard button, .bh-onboard summary { font: inherit; font-size: 12px; cursor: pointer; }
+  .bh-onboard button { border: 0; border-radius: 4px; line-height: 1.6; }
+  .bh-onboard .primary { width: 100%; min-height: 34px; padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .bh-onboard .primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+  .bh-onboard .primary:disabled { opacity: .7; cursor: progress; }
+  .bh-onboard .link { padding: 3px 2px; min-height: 28px; background: transparent; color: var(--vscode-descriptionForeground); }
+  .bh-onboard .link:hover { color: var(--vscode-textLink-foreground); text-decoration: underline; }
+  .bh-onboard button:focus-visible, .bh-onboard summary:focus-visible, .bh-onboard h2:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; }
+  .bh-onboard-helper { border-top: 1px solid var(--vscode-panel-border); padding-top: 14px; margin-top: 24px; text-align: left; }
+  .bh-onboard-helper p { font-size: 11px; }
+  .bh-onboard details { margin-top: 15px; min-width: 0; text-align: left; color: var(--vscode-descriptionForeground); }
+  .bh-onboard summary { min-height: 26px; line-height: 1.7; font-size: 11px; }
+  .bh-onboard details p { font-size: 11px; padding-top: 8px; }
+  .bh-onboard details .link { color: var(--vscode-textLink-foreground); font-size: 11px; }
+  .bh-onboard pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.7 var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background)); padding: 9px 10px; margin: 8px 0 0; max-height: 160px; overflow-y: auto; }
+  .bh-onboard-status { margin-top: 16px; font-size: 11px; line-height: 1.7; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-failure { color: var(--vscode-errorForeground); font-size: 11px; margin-bottom: 8px; }
+  .bh-onboard[data-state="unverified"] .bh-onboard-failure { color: var(--vscode-descriptionForeground); }
+  .bh-onboard-steps { padding: 0; margin: 22px 0 0; list-style: none; display: grid; gap: 10px; text-align: left; font-size: 12px; }
+  .bh-onboard-steps li { display: flex; align-items: center; gap: 9px; line-height: 1.7; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-steps .mk { width: 12px; height: 12px; flex: none; display: grid; place-items: center; border: 1px solid var(--vscode-panel-border); border-radius: 50%; font-size: 10px; line-height: 1; }
+  .bh-onboard-steps .active { color: var(--vscode-foreground); }
+  .bh-onboard-steps .active .mk { border-color: var(--vscode-progressBar-background); border-top-color: transparent; animation: bhGuideSpin 1s linear infinite; }
+  .bh-onboard-steps .done .mk { border: 0; color: var(--vscode-charts-green); }
+  .bh-onboard-steps .failed, .bh-onboard-steps .failed .mk { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+  .bh-onboard-facts { padding: 0; margin: 20px 0 0; text-align: left; font-size: 11px; }
+  .bh-onboard-facts div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--vscode-panel-border); }
+  .bh-onboard-facts dd { margin: 0; color: var(--vscode-charts-green); }
+  .bh-onboard.is-collapsed { padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border); }
+  .bh-onboard-resume { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-resume .link { color: var(--vscode-textLink-foreground); white-space: nowrap; }
+  .bh-onboard [hidden] { display: none !important; }
+  .hdr .ttl { min-width: 0; white-space: nowrap; }
+  .hdr .ib { flex-shrink: 0; }
+  .chanpill { min-width: 0; overflow: hidden; }
+  .chanpill .d { flex-shrink: 0; }
+  #chtxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hdr[data-onboarding="true"] #create, .hdr[data-onboarding="true"] #webagent, .hdr[data-onboarding="true"] #chsw { display: none; }
+  @keyframes bhGuideSpin { to { transform: rotate(360deg); } }
+  @media (max-width: 280px) {
+    .bh-onboard { padding: 24px 18px; }
+    .bh-onboard-progress li:not(:last-child)::after { width: 12px; margin-inline: 7px; }
+    .hdr { gap: 4px; padding-inline: 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chsw, .chsw::after { transition: none; }
+    .chsw[data-state="starting"]::after, .bh-onboard-steps .active .mk { animation: none; }
+  }
+  .err { color: var(--vscode-errorForeground); font-size: 11px; padding: 6px 12px 0; overflow-wrap: anywhere; }
+  #cherr { box-sizing: border-box; margin: 8px 10px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 28%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--vscode-errorForeground) 7%, transparent); line-height: 1.4; }
   /* 会话行：账本式 —— 全宽、发丝线分隔、更密 */
   .row { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent); }
   .row:hover { background: var(--vscode-list-hoverBackground); }
@@ -1310,6 +1512,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         return;
       }
       hdr.innerHTML = '<span class="ttl">BlackHole</span>'
+        + '<button class="chsw" id="chsw" role="switch" aria-checked="false" aria-label="公网渠道开关" hidden></button>'
         + '<button class="chanpill" id="chpill" title="渠道：点击打开设置页管理"><span class="d"></span><span id="chtxt">…</span></button>'
         + '<span class="sp"></span>'
         + '<button class="ib" id="create" title="创建会话">' + IC.plus + '</button>'
@@ -1317,6 +1520,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         + '<button class="ib" id="settings" title="设置">' + IC.gear + '</button>'
         + '<button class="ib" id="refresh" title="刷新">' + IC.refresh + '</button>';
       $('chpill').addEventListener('click', () => vs.postMessage({ type: 'settings' }));
+      // 开关是 button：空格和回车都会触发 click。
+      $('chsw').addEventListener('click', () => {
+        const sw = $('chsw');
+        if (sw.disabled) return;
+        const on = sw.getAttribute('aria-checked') !== 'true';
+        sw.dataset.state = 'starting'; sw.disabled = true;
+        vs.postMessage({ type: 'channelToggle', on });
+      });
       $('create').addEventListener('click', () => vs.postMessage({ type: 'create' }));
       $('webagent').addEventListener('click', () => vs.postMessage({ type: 'webAgent' })); // opens the local Web console
       $('settings').addEventListener('click', () => vs.postMessage({ type: 'settings' }));
@@ -1339,9 +1550,133 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         cls = parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn';
         label = parts.map((p) => p[1]).join(' · ');
       }
+      const onboarding = onboardingState(d);
+      // Missing prerequisites are setup states; only actual failures use error styling.
+      if (onboarding === 'login') { cls = ''; label = '待登录'; }
+      else if (onboarding === 'setup' || onboarding === 'configure' || onboarding === 'dismissed') { cls = ''; label = '待设置'; }
+      else if (onboarding === 'install' || onboarding === 'restart' || onboarding === 'start') { cls = 'warn'; label = '准备中'; }
+      else if (onboarding === 'failed') { cls = 'bad'; label = '待重试'; }
+      else if (onboarding === 'unverified') { cls = 'warn'; label = '待验证'; }
       pill.className = 'chanpill ' + cls;
       $('chtxt').textContent = label;
-      if (cherr && t && t.reason && (t.status === 'starting' || t.status === 'error' || t.status === 'unavailable')) { cherr.style.display = 'block'; cherr.textContent = t.reason; }
+      $('hdr').dataset.onboarding = String(!!onboarding && onboarding !== 'dismissed');
+      if (!onboarding && cherr && t && t.reason && (t.status === 'starting' || t.status === 'error' || t.status === 'unavailable')) { cherr.style.display = 'block'; cherr.textContent = t.reason; }
+      if (!onboarding && cherr && d.channelNote) { cherr.style.display = 'block'; cherr.textContent = d.channelNote; }
+      renderSwitch(d);
+    }
+
+    const CHANNEL_NAMES = { quick: '临时渠道', named: '持久渠道', openai: 'OpenAI 渠道' };
+    // 渠道总开关：旧版 daemon（没有 /channel）、未连接或未登录时不显示。
+    function renderSwitch(d) {
+      const sw = $('chsw');
+      if (!sw) return;
+      const c = d.channel;
+      sw.hidden = !c || d.daemon !== 'running' || d.account === 'logged_out';
+      if (sw.hidden) return;
+      const busy = !!(d.channelBusy || d.setup);
+      sw.setAttribute('aria-checked', c.on ? 'true' : 'false');
+      sw.dataset.state = busy ? 'starting' : c.state;
+      sw.disabled = busy || c.state === 'starting';
+      sw.title = c.on
+        ? '关闭：停止' + c.running.map((x) => CHANNEL_NAMES[x] || x).join('、')
+        : '开启：' + (CHANNEL_NAMES[c.next] || c.next) + (c.last ? '（上次使用）' : '')
+          + (c.missing === 'cloudflared' ? ' · 需要先安装 cloudflared' : '')
+          + (c.state === 'error' && c.reason ? ' · 上次失败：' + c.reason : '');
+    }
+
+    // B / focused welcome: presentation only. Account and channel facts still come from the host.
+    let signInOpened = false, onboardEngaged = false, onboardNode = null, onboardKey = '';
+    const SETUP_STEPS = [['install', '安装并验证 cloudflared'], ['restart', '重启本地服务'], ['start', '启动临时公网渠道']];
+    function onboardingState(d) {
+      const c = d.channel, s = d.setup, empty = !(d.sessions || []).some(x => !x.draft);
+      if (d.daemon === 'running' && d.account === 'logged_out') return 'login';
+      // Keep real progress visible while the daemon is restarting.
+      if (s) return s.step;
+      if (d.daemon !== 'running' || !c) return null;
+      const candidate = empty || onboardEngaged || !c.last || c.missing === 'cloudflared';
+      if (!candidate) return null;
+      if (d.setupDismissed && c.state !== 'on' && !d.channelBusy) return 'dismissed';
+      if (d.channelBusy || c.state === 'starting') return 'start';
+      if (c.state === 'warn') return 'unverified';
+      if (c.on && c.state === 'on') return empty && d.account === 'verified' ? 'ready' : null;
+      if ((c.state === 'error' && c.missing !== 'cloudflared') || (onboardEngaged && d.channelNote)) return 'failed';
+      if (c.missing && c.missing !== 'cloudflared') return 'configure';
+      return 'setup';
+    }
+    function onboardProgress(state, account) {
+      const step = state === 'login' ? 0 : state === 'ready' ? 2 : 1;
+      return '<ol class="bh-onboard-progress" aria-label="准备进度">' + ['登录', '连接', '开始'].map((label, i) => {
+        const done = i < step && (i !== 0 || account === 'verified');
+        return '<li class="' + (done ? 'done' : i === step ? 'current' : '') + '"' + (i === step ? ' aria-current="step"' : '') + '><span class="num">' + (done ? '✓' : '0' + (i + 1)) + '</span>' + label + '</li>';
+      }).join('') + '</ol>';
+    }
+    function onboardSteps(state, failedAt) {
+      const at = SETUP_STEPS.findIndex(x => x[0] === (state === 'failed' ? failedAt : state));
+      return '<ol class="bh-onboard-steps" aria-label="安装进度">' + SETUP_STEPS.map((x, i) => '<li class="' + (i < at ? 'done' : i === at ? (state === 'failed' ? 'failed' : 'active') : '') + '"' + (i === at ? ' aria-current="step"' : '') + '><span class="mk" aria-hidden="true">' + (i < at ? '✓' : i === at && state === 'failed' ? '!' : '') + '</span>' + x[1] + '</li>').join('') + '</ol>';
+    }
+    function onboardButton(id, text, disabled = false) {
+      return '<button type="button" class="primary" id="' + id + '"' + (disabled ? ' disabled' : '') + '>' + esc(text) + '</button>';
+    }
+    function onboardOther() {
+      return '<details id="guideOther"><summary id="guideOtherToggle">已有通道或其它连接方式</summary><p>也可使用 OpenAI 通道或自定义地址，无需走这条安装流程。</p><button type="button" class="link" id="guideSettings">打开连接设置 →</button></details>';
+    }
+    function renderOnboarding(d) {
+      if (!d.setup && d.channel?.on && d.channel.state === 'on') onboardEngaged = false;
+      const state = onboardingState(d), c = d.channel || {}, s = d.setup;
+      if (!state) { onboardNode = null; onboardKey = ''; return null; }
+      const key = JSON.stringify([state, d.account, c.next, c.running, c.reason, c.missing, s, d.channelNote, d.tunnel?.reason, signInOpened]);
+      if (onboardNode && key === onboardKey) return onboardNode;
+      const openDetails = onboardNode ? [...onboardNode.querySelectorAll('details[open]')].map(x => x.id) : [];
+      const el = document.createElement('section');
+      el.className = 'bh-onboard' + (state === 'dismissed' ? ' is-collapsed' : '');
+      el.dataset.state = state;
+      el.setAttribute('aria-labelledby', 'guideTitle');
+      const later = '<button type="button" class="link" id="guideLater">稍后设置</button>';
+      const helper = text => '<div class="bh-onboard-helper"><p>' + text + '</p></div>';
+      let body = '';
+      if (state === 'dismissed') {
+        body = '<div class="bh-onboard-resume"><span id="guideTitle">连接尚未完成</span><button type="button" class="link" id="guideResume">继续设置 →</button></div>';
+      } else if (state === 'login') {
+        body = '<h2 id="guideTitle" tabindex="-1">连接你的工作区</h2><p>先登录 BlackHole，再选择连接方式。<br>让网页 AI 使用你选定的本地工作区。</p><div class="bh-onboard-actions">' + onboardButton('guideSignIn', signInOpened ? '重新打开登录页' : '在浏览器中登录 ↗') + '</div><div class="bh-onboard-status" id="guideSignInNote" role="status"' + (signInOpened ? '' : ' hidden') + '>等待登录完成，随后自动继续</div>' + helper('登录在浏览器中完成。<br>此步骤不会启动公网渠道。');
+      } else if (state === 'ready') {
+        const names = (c.running || []).map(x => CHANNEL_NAMES[x] || x).join('、');
+        body = '<h2 id="guideTitle" tabindex="-1">连接已就绪</h2><p>接下来创建会话，选择 AI 可以使用的工作区和权限。</p><dl class="bh-onboard-facts"><div><dt>登录状态</dt><dd>已登录</dd></div><div><dt>当前渠道</dt><dd>' + esc(names || '已连接') + '</dd></div></dl><div class="bh-onboard-actions">' + onboardButton('guideCreate', '创建会话 →') + '</div>' + helper('会话权限可随时在 BlackHole 中调整。');
+      } else if (state === 'install' || state === 'restart' || state === 'start') {
+        const label = { install: '安装并验证中…', restart: '重启服务中…', start: '等待渠道启动…' }[state];
+        body = '<h2 id="guideTitle" tabindex="-1">正在准备连接</h2><p>完成准备后，即可接入网页 AI。</p>' + (s ? onboardSteps(state) : '<div class="bh-onboard-status" role="status">正在等待渠道返回连接状态</div>') + '<div class="bh-onboard-actions">' + onboardButton('guideGo', label, true) + '</div>' + helper('无需重复操作。<br>若准备失败，可在这里查看原因并重试。');
+      } else if (state === 'failed' || state === 'unverified') {
+        const at = s?.failedAt || 'start';
+        const copy = state === 'unverified' ? '渠道进程已启动，但公网连接尚未验证。暂不视为连接就绪。' : { install: '下载未完成。检查网络后重试，或在设置中指定已安装的程序。', restart: '本地服务未能重启。查看错误详情后重试。', start: '渠道未能启动。查看错误详情，或使用其它连接方式。' }[at];
+        const error = s?.error || d.channelNote || c.reason || d.tunnel?.reason || '没有更多诊断信息。请打开设置检查渠道状态。';
+        body = '<div class="bh-onboard-failure" role="status">' + (state === 'failed' ? '准备未完成' : '等待验证') + '</div><h2 id="guideTitle" tabindex="-1">连接还差一步</h2><p>' + copy + '</p>' + (s ? onboardSteps(state, at) : '') + '<div class="bh-onboard-actions">' + onboardButton(state === 'unverified' ? 'guideRefresh' : 'guideGo', state === 'unverified' ? '刷新连接状态' : '重新准备') + later + '</div><details id="guideDetails"><summary id="guideDetailsToggle">查看错误详情</summary><pre>' + esc(error) + '</pre></details>' + onboardOther();
+      } else if (state === 'configure') {
+        body = '<h2 id="guideTitle" tabindex="-1">选择连接方式</h2><p>' + esc(CHANNEL_NAMES[c.next] || '当前渠道') + '还需要完成配置。</p><div class="bh-onboard-actions">' + onboardButton('guideSettings', '打开连接设置 →') + later + '</div>' + helper('使用已有通道或自定义地址，不会自动安装其它程序。');
+      } else {
+        const install = c.missing === 'cloudflared', name = CHANNEL_NAMES[c.next] || '渠道';
+        body = '<h2 id="guideTitle" tabindex="-1">让网页 AI 连进来</h2><p>' + (install ? '用临时渠道快速开始，无需准备域名。' : esc(name) + '已配置，启动后即可接入网页 AI。') + '</p><div class="bh-onboard-actions">' + onboardButton('guideGo', install ? '安装并连接 →' : '启动' + name + ' →') + later + '</div>' + helper(install ? '将安装并验证 cloudflared、重启本地服务，<br>然后启动临时公网渠道。<br>临时地址在重启渠道后会变化。' : '渠道只会在你确认后启动。') + onboardOther();
+      }
+      el.innerHTML = state === 'dismissed' ? body : '<div class="bh-onboard-body">' + onboardProgress(state, d.account) + '<span class="bh-onboard-mark" aria-hidden="true"></span>' + body + '</div>';
+      for (const id of openDetails) { const node = el.querySelector('#' + id); if (node) node.open = true; }
+      el.addEventListener('click', event => {
+        const button = event.target.closest('button');
+        if (!button || button.disabled) return;
+        const id = button.id;
+        if (id === 'guideSignIn') {
+          signInOpened = true;
+          button.textContent = '重新打开登录页';
+          el.querySelector('#guideSignInNote').hidden = false;
+          vs.postMessage({ type: 'signIn' });
+        } else if (id === 'guideGo') {
+          button.disabled = true; onboardEngaged = true;
+          vs.postMessage(s || c.missing === 'cloudflared' ? { type: 'setupStart' } : { type: 'channelToggle', on: true });
+        } else if (id === 'guideSettings') vs.postMessage({ type: 'settings' });
+        else if (id === 'guideLater') vs.postMessage({ type: 'setupDismiss' });
+        else if (id === 'guideResume') vs.postMessage({ type: 'setupResume' });
+        else if (id === 'guideRefresh') vs.postMessage({ type: 'refresh' });
+        else if (id === 'guideCreate') vs.postMessage({ type: 'create' });
+      });
+      onboardKey = key; onboardNode = el;
+      return el;
     }
 
     // 列表节点常驻，任务区和分页均不参与它的滚动。
@@ -1353,14 +1688,29 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     function renderSessions(d) {
       const scrollY = saveScroll();
       const list = scroller;
+      const active = document.activeElement;
+      const focusId = active?.closest('.bh-onboard') ? active.id : null;
+      // Polling may rebuild the list, but must not close disclosures or strand keyboard focus.
+      const restoreScroll = y => {
+        list.scrollTop = y;
+        if (focusId) {
+          const target = $(focusId) || $('guideTitle');
+          if (target && !target.disabled) target.focus({ preventScroll: true });
+        }
+      };
+      const guide = renderOnboarding(d);
       list.innerHTML = '';
       list.dataset.mode = 'sessions';
       renderChannel(d);
+      if (guide) list.appendChild(guide);
+      // Focused onboarding owns the list area. Historical sessions return only
+      // after the user dismisses setup or onboarding no longer applies.
+      if (guide && guide.dataset.state !== 'dismissed') { restoreScroll(scrollY); return; }
       // Drafts are not listed (same as the Web console): a session shows up once it really started.
       const listed = d.sessions.filter((s) => !s.draft);
 
       if (listed.length === 0) {
-        list.innerHTML = '<div class="empty">还没有会话。<br>创建一个，把整理好的提示词粘给网页 AI。<br></div>';
+        list.insertAdjacentHTML('beforeend', '<div class="empty">还没有会话。<br>创建一个，把整理好的提示词粘给网页 AI。<br></div>');
         const b = document.createElement('button');
         b.textContent = '+ 创建会话';
         b.addEventListener('click', () => vs.postMessage({ type: 'create' }));

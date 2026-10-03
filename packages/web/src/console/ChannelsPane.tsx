@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { api, panel, remoteAdmin, type Health, type RemoteView, type SettingsValues } from '../api';
+import { api, panel, remoteAdmin, type ChannelSwitchView, type Health, type RemoteView, type SettingsValues } from '../api';
 import { Icon } from '../ui';
+import { ChannelSwitch } from './ChannelSwitch';
 import { copyText, failText, useToast } from './common';
 import c from './console.module.css';
 
@@ -64,12 +65,19 @@ export function ChannelsPane({
   remote,
   onRefresh,
   onSettings,
+  channelSwitch = null,
+  channelBusy = false,
+  onChannelToggle,
 }: {
   health: Health | null;
   values: SettingsValues | null;
   remote: RemoteView | null;
   onRefresh: () => void;
   onSettings: (section: string) => void;
+  /** 渠道总开关（与侧栏同一个）；旧版 daemon 没有 /channel 时为 null。 */
+  channelSwitch?: ChannelSwitchView | null;
+  channelBusy?: boolean;
+  onChannelToggle?: (on: boolean) => void;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -124,8 +132,9 @@ export function ChannelsPane({
           </button>
         </header>
         <div className={c.channelSummary}>
-          <span>
-            状态 <b className={c[`stateText_${st.tone}`]}>{st.text}</b>
+          <span className={c.channelSummarySwitch}>
+            状态 <ChannelSwitch view={channelSwitch} busy={channelBusy} onToggle={(on) => onChannelToggle?.(on)} />
+            <b className={c[`stateText_${st.tone}`]}>{st.text}</b>
           </span>
           <span>
             默认 <b>{MODE_LABEL[mode][0]}</b>

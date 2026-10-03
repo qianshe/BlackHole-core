@@ -353,7 +353,17 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
     // 经局域网直连监听器进来的请求：链接用对方实际访问的地址，而不是对方机器上的 127.0.0.1
     const lanPort = deps.lan?.localPort();
     if (lanPort && req.socket?.localPort === lanPort) {
-      try { return new URL(`http://${rawHost}`).origin; } catch { /* 地址不合法就走默认 */ }
+      // 访问的正是设置里的直连域名：用配置的地址（含 https），反向代理不传协议头也对。
+      const lanUrl = deps.settings?.get().values.lanUrl;
+      if (lanUrl) {
+        try {
+          const url = new URL(lanUrl);
+          if (url.hostname.toLowerCase() === hostname) return url.origin;
+        } catch { /* 设置已校验过，这里只是兜底 */ }
+      }
+      // 否则按反向代理传来的协议（只认 http / https），默认 http。
+      const scheme = firstHeaderValue(req.headers['x-forwarded-proto'])?.trim().toLowerCase() === 'https' ? 'https' : 'http';
+      try { return new URL(`${scheme}://${rawHost}`).origin; } catch { /* 地址不合法就走默认 */ }
     }
     return fallback;
   };

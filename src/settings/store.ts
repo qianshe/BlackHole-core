@@ -63,6 +63,8 @@ export interface Settings {
   lanAccess: boolean;
   /** 局域网直连监听的端口（不能与主端口相同）。 */
   lanPort: number;
+  /** 可选：映射到直连端口的域名地址（如 https://mcp.example.com），只用于显示链接和生成面板地址。 */
+  lanUrl: string;
 }
 
 export interface SettingsRecord {
@@ -75,7 +77,7 @@ export interface SettingsRecord {
 
 /** The first six keys (0.3.174). Records written before `seeded` existed had all of them. */
 export const V1_SETTING_KEYS = ['connectorName', 'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'channelMode', 'semanticMode'] as const;
-export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'lanAccess', 'lanPort'] as const;
+export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /**
@@ -109,6 +111,7 @@ export const DEFAULT_SETTINGS: Settings = {
   courierSites: [],
   lanAccess: false,
   lanPort: DEFAULT_LAN_PORT,
+  lanUrl: '',
 };
 
 const MAX_TEXT = 1000;
@@ -232,6 +235,13 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
       if (u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'publicBaseUrl must be a bare origin such as https://example.com' };
       return { value: v.replace(/\/+$/, '') };
     }
+    case 'lanUrl': {
+      // 与 publicBaseUrl 同规则：只接受 http(s)://主机[:端口]，不带路径和凭据。
+      if (!v) return { value: '' };
+      const u = httpUrl(v);
+      if (!u || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'lanUrl must be a bare origin such as https://mcp.example.com or http://nas.lan:7307' };
+      return { value: u.origin };
+    }
     case 'tunnelProbeProxy': {
       if (!v) return { value: '' };
       const u = httpUrl(v);
@@ -327,7 +337,7 @@ export function unseededKeys(record: SettingsRecord): SettingKey[] {
 }
 
 /** Owned by the daemon from the start: never handed over by the extension. */
-export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'lanAccess', 'lanPort'];
+export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'];
 
 /**
  * Startup overlay: seeded daemon-owned settings win over the launcher's

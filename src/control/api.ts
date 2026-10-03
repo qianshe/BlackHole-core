@@ -26,6 +26,7 @@ import { migrateSettings, patchSettings, settingsView } from '../settings/servic
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
 import { loopbackPeer, mountOpenAITunnel } from './openai-tunnel-routes.js';
 import { mountFeedRoutes } from '../feed/routes.js';
+import { cloudflaredOnDisk, LastChannel, switchOff, switchOn, switchView, type SwitchDeps } from '../tunnel/switch.js';
 
 /**
  * 设置页「查看工具列表」拉取用的专用 session 键（v2.6）。与 verifyServer 的
@@ -303,6 +304,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     const mode = (req.body as { mode?: string } | undefined)?.mode === 'named' ? 'named' : 'quick';
     await deps.tunnel.start(mode);
     deps.channelIntent?.set(mode);
+    deps.lastChannel?.set(mode);
     // a heartbeat sender asked for the channel: keep the watchdog fed from now
     deps.lastHeartbeatAt = Date.now();
     res.json({ status: deps.tunnel.status, url: deps.tunnel.url ?? null, mode: deps.tunnel.mode ?? null });
@@ -312,6 +314,30 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     deps.channelIntent?.clear();
     await deps.tunnel.stop();
     res.json({ status: deps.tunnel.status, url: deps.tunnel.url ?? null, mode: deps.tunnel.mode ?? null, reason: deps.tunnel.reason ?? null });
+  });
+
+  // 渠道总开关：VS Code 侧边栏、设置页和本地 Web（经 /panel 白名单）共用。
+  // 开 = 启动上次使用的渠道，关 = 停止所有渠道；缺前提时返回 409 和缺少的那一项。
+  const channelSwitch = (): SwitchDeps => ({
+    tunnel: deps.tunnel,
+    ...(deps.openaiTunnel ? { openai: deps.openaiTunnel } : {}),
+    ...(deps.settings ? { settings: deps.settings } : {}),
+    namedUrl: () => deps.cfg.publicBaseUrl || undefined,
+    cloudflaredReady: () => cloudflaredOnDisk(deps.cfg.cloudflaredBin ?? 'cloudflared'),
+    last: deps.lastChannel ?? new LastChannel(deps.machineState),
+    ...(deps.channelIntent ? { intent: deps.channelIntent } : {}),
+    heartbeat: () => { deps.lastHeartbeatAt = Date.now(); },
+  });
+  app.get('/channel', (_req, res) => {
+    res.json(switchView(channelSwitch()));
+  });
+  app.post('/channel', async (req, res) => {
+    const on = (req.body as { on?: unknown } | undefined)?.on;
+    if (typeof on !== 'boolean') { res.status(400).json({ error: 'invalid_input', message: 'on must be true or false' }); return; }
+    if (!on) { res.json({ ok: true, view: await switchOff(channelSwitch()) }); return; }
+    const r = await switchOn(channelSwitch());
+    if (r.ok) res.json({ ok: true, view: r.view });
+    else res.status(409).json({ ok: false, error: r.code, view: r.view });
   });
 
   // Rotate the machine-level MCP token (settings page "刷新" button). The new

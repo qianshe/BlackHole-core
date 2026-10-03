@@ -13,8 +13,8 @@ export interface ConnectionHealth {
 /**
  * One pure decision shared by create-session, copy, handoff and the sidebar
  * (plan section 6). Connector prompts carry no URL, so a public URL or a
- * serving OpenAI tunnel both qualify. Sandbox prompts carry the public MCP URL
- * directly and need a public URL; a Tunnel ID never substitutes for one. Nothing
+ * serving OpenAI tunnel both qualify. Sandbox bootstrap downloads bh.py over
+ * HTTP and needs a public URL; a Tunnel ID never substitutes for one. Nothing
  * here starts, stops or switches a channel.
  */
 export interface ConnectionTarget {
@@ -41,11 +41,13 @@ export type PromptPayload =
   | { kind: 'user'; text: string }
   | { kind: 'handoff'; text: string };
 
-function checkedMcpUrl(mcpUrl: string): string {
+function scriptUrl(mcpUrl: string, sessionId: string): string {
   const url = new URL(mcpUrl);
   if (!['http:', 'https:'].includes(url.protocol) || !/\/mcp\/[^/]+\/?$/.test(url.pathname)) {
     throw new Error('Expected an HTTP(S) MCP URL ending in /mcp/<token>');
   }
+  url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/mcp/')) + '/bh.py';
+  url.search = new URLSearchParams({ sessionid: sessionId }).toString();
   url.hash = '';
   return url.href;
 }
@@ -68,9 +70,9 @@ export function renderBootstrap(
     ].join('\n');
   }
   return [
-    `BlackHole MCP: ${checkedMcpUrl(mcpUrl)}`,
-    `sessionId: ${sessionId}`,
-    'Call `guide` with this sessionId and `entry: "sandbox"` before workspace work and follow it.',
+    `Download ${scriptUrl(mcpUrl, sessionId)} to the current sandbox root as \`bh.py\`.`,
+    '',
+    'Read `bh.py`, then use it to read `guide` and familiarize yourself with the connected BlackHole MCP. Save concise practical usage notes beside `bh.py` as `BLACKHOLE.md` for reuse; do not copy the current task into it.',
   ].join('\n');
 }
 

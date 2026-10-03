@@ -52,20 +52,28 @@ await check('empty connector names fall back without inventing a task', () => {
   assert.ok(text.startsWith('@BlackHole\n'));
   assert.doesNotMatch(text, /Task:|paste your task/i);
 });
-await check('sandbox bootstrap exposes only MCP, session and the sandbox guide selector', () => {
+await check('sandbox bootstrap starts with download, then client and MCP familiarization', () => {
   const text = renderPrompt('sandbox', url, sid);
   assert.equal(text, [
-    'BlackHole MCP: ' + url,
-    'sessionId: ' + sid,
-    'Call `guide` with this sessionId and `entry: "sandbox"` before workspace work and follow it.',
+    'Download https://example.invalid/bridge/bh.py?sessionid=' + sid + ' to the current sandbox root as `bh.py`.',
+    '',
+    'Read `bh.py`, then use it to read `guide` and familiarize yourself with the connected BlackHole MCP. Save concise practical usage notes beside `bh.py` as `BLACKHOLE.md` for reuse; do not copy the current task into it.',
   ].join('\n'));
-  assert.doesNotMatch(text, /curl|wget|python|bh\.py|Task:|paste your task/i);
+  assert.match(text, /Save concise practical usage notes beside `bh\.py` as `BLACKHOLE\.md` for reuse/);
+  assert.match(text, /do not copy the current task into it/);
+  assert.doesNotMatch(text, /Task:|paste your task|BlackHole MCP:|^sessionId:|curl|wget|python3|python\s|chmod|bash|preflight|continue with the user request/i);
 });
-await check('sandbox explicit user payload is appended raw after bootstrap', () => {
+await check('sandbox explicit user payload is appended raw after the inspection bootstrap', () => {
   const task = 'Review the diff\n保留换行';
   const text = renderPrompt('sandbox', url, sid, { kind: 'user', text: task });
   assert.ok(text.endsWith('\n\n' + task));
-  assert.doesNotMatch(text, /Task:/);
+  assert.match(text, /bh\.py\?sessionid=/);
+  assert.doesNotMatch(text, /Task:|curl|python3/i);
+});
+await check('sandbox client URL preserves the public base path without shell syntax', () => {
+  const text = renderPrompt('sandbox', "https://example.invalid/team's/mcp/token", sid);
+  assert.match(text, /^Download https:\/\/example\.invalid\/team's\/bh\.py\?sessionid=/);
+  assert.doesNotMatch(text, /curl|python3|&&/);
 });
 await check('bad sandbox endpoints fail before producing a misleading bootstrap', () => {
   assert.throws(() => renderPrompt('sandbox', 'https://example.invalid/not-mcp', sid), /MCP URL/);
@@ -77,18 +85,19 @@ await check('CLI uses the public API session_id and ignores session names as tas
   assert.doesNotMatch(text, /internal-row|wrong|Review the diff|Task:/);
   assert.throws(() => prompt.buildConnectorPrompt({ credential_id: sid }), /session_id/);
 });
-await check('access resource points to guide without prescribing a Sandbox client', () => {
+await check('access resource keeps the original connector/script entry guidance', () => {
   const text = buildAccessRules();
   assert.match(text, /Read `guide`.*before the first workspace operation/s);
-  assert.doesNotMatch(text, /bh\.py|python|curl|wget|\bshow\b/i);
+  assert.match(text, /Native connector: call `guide` directly/);
+  assert.match(text, /Script entry: use[\s\S]*python3 bh\.py call guide '\{\}'/);
+  assert.doesNotMatch(text, /curl|wget|\bshow\b/i);
   assert.doesNotMatch(text, /guide.*when.*needed|operator rotated the session/);
 });
-await check('Sandbox client recommendation is opt-in and contains no execution command', () => {
+await check('sandbox entry does not rewrite the original generic guide', () => {
   const plain = buildGenericManual('exec');
   const sandbox = buildGenericManual('exec', false, true, false, false, 'script', 'https://example.invalid/bridge/bh.py');
-  assert.doesNotMatch(plain, /## SANDBOX ACCESS/);
-  assert.match(sandbox, /## SANDBOX ACCESS\n- Any MCP-compatible client may be used\.\n- Recommended client: `bh\.py` — https:\/\/example\.invalid\/bridge\/bh\.py/);
-  assert.doesNotMatch(sandbox, /curl|wget|python3|--sessionid/);
+  assert.equal(sandbox, plain);
+  assert.doesNotMatch(sandbox, /## SANDBOX ACCESS|Recommended client/);
 });
 
 await check('Sandbox client source URL uses only a public route and preserves its base path', () => {
@@ -177,9 +186,10 @@ function assertStartup(manual, mode) {
     assert.equal(section.trim(), '- When a live progress view would help, call `show` at most once after each new user message. The `show` call only opens BlackHole\'s progress panel; it does not read or modify workspace files, run commands, or approve actions.');
     assert.doesNotMatch(section, /bh\.py|sandbox|URL|before other work tools/);
   } else {
-    assert.doesNotMatch(section, /\bshow\b|bh\.py|sandbox|URL|sessionId/i);
-    assert.equal(section.trim(), '- Use the supplied connection for this session.');
-    assert.equal((section.match(/^- /gm) ?? []).length, 1);
+    assert.doesNotMatch(section, /\bshow\b/i);
+    assert.match(section, /Use the supplied connection; when using bh\.py, use the downloaded script\. Local sandbox ≠ operator workspace\./);
+    assert.match(section, /Use this task's URL\/sessionId, not stale CLI or environment overrides\./);
+    assert.equal((section.match(/^- /gm) ?? []).length, 2);
   }
 }
 await check('STARTUP emits only the selected connection branch, with a conservative default', () => {
@@ -274,7 +284,7 @@ for (const [label, name, capabilities, mode] of cases) {
       assert.equal(first._meta?.ui, undefined);
       assert.equal(first.structuredContent.panel_key, undefined);
       assert.match(first.structuredContent.instruction, /Follow Startup for this connection/);
-      assert.doesNotMatch(first.structuredContent.instruction, /carry out the user task/);
+      assert.match(first.structuredContent.instruction, /carry out the user task/);
       assertStartup(first.structuredContent.manual, mode);
       assert.doesNotMatch(first.structuredContent.manual, /UNTRUSTED_STARTUP_TEXT/);
       assert.equal(f.audit.length, 2);
@@ -283,30 +293,20 @@ for (const [label, name, capabilities, mode] of cases) {
   });
 }
 
-await check('Sandbox access appears only for explicit sandbox entry with a public client URL', async () => {
+await check('sandbox entry stays presentation-only and does not alter the original guide', async () => {
   const f = await connectGuide('plain-client', {}, false, 'https://example.invalid/bridge/bh.py');
   try {
     const connector = await f.client.callTool({ name: 'guide', arguments: { sessionId: sid } });
-    assert.equal(connector.isError, false);
-    assert.doesNotMatch(connector.structuredContent.manual, /## SANDBOX ACCESS/);
-
     const sandbox = await f.client.callTool({ name: 'guide', arguments: { sessionId: sid, entry: 'sandbox' } });
+    assert.equal(connector.isError, false);
     assert.equal(sandbox.isError, false);
-    assert.match(sandbox.structuredContent.manual, /## SANDBOX ACCESS/);
-    assert.match(sandbox.structuredContent.manual, /https:\/\/example\.invalid\/bridge\/bh\.py/);
-    assert.doesNotMatch(sandbox.structuredContent.manual, /curl|wget|python3|--sessionid/);
+    assert.equal(sandbox.structuredContent.manual, connector.structuredContent.manual);
+    assert.doesNotMatch(sandbox.structuredContent.manual, /## SANDBOX ACCESS|https:\/\/example\.invalid\/bridge\/bh\.py/);
     assert.doesNotMatch(JSON.stringify(sandbox.structuredContent), new RegExp(sid));
 
     const bad = await f.client.callTool({ name: 'guide', arguments: { sessionId: sid, entry: 'connector' } });
     assert.equal(bad.isError, true);
   } finally { await f.close(); }
-
-  const noPublic = await connectGuide('plain-client', {});
-  try {
-    const sandbox = await noPublic.client.callTool({ name: 'guide', arguments: { entry: 'sandbox' } });
-    assert.equal(sandbox.isError, false);
-    assert.doesNotMatch(sandbox.structuredContent.manual, /## SANDBOX ACCESS/);
-  } finally { await noPublic.close(); }
 });
 await check('interleaved connections sharing a session ID do not share startup state; reconnect reclassifies', async () => {
   const fixtures = [];

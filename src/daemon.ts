@@ -28,6 +28,7 @@ import { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import { mountPanel } from './panel/index.js';
 import { mountLocalWeb, sendRemotePage, sendRootPage } from './web/local-web.js';
 import { ChannelIntent, migrateDecoupledTabs } from './tunnel/resume.js';
+import { LastChannel } from './tunnel/switch.js';
 import { resolveConfirmation } from './control/api.js';
 import { ConfirmationsRepo } from './storage/confirmations.js';
 import { maintainDb, openDb, type Storage } from './storage/db.js';
@@ -275,6 +276,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     },
   });
   deps.channelIntent = new ChannelIntent(machineState);
+  deps.lastChannel = new LastChannel(machineState);
   // One-time migration (plan §5.1): tabs no longer gate channels.
   if (migrateDecoupledTabs(machineState, settings.get().values.channelMode)) {
     log('channel: dropped the Cloudflare channel remembered under the custom tab (tabs no longer switch channels)');

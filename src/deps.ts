@@ -93,6 +93,8 @@ export interface DaemonDeps {
   webPresence?: Set<object>;
   /** The public channel the operator started; resumed after restarts and watchdog stops. */
   channelIntent?: import('./tunnel/resume.js').ChannelIntent;
+  /** 上次手动启动的渠道（停止不清除），渠道总开关用它决定打开哪个渠道。 */
+  lastChannel?: import('./tunnel/switch.js').LastChannel;
   /** Ends every paired phone; set by the Local Web mount (plan 6.13 R). */
   revokeRemoteDevices?: () => void;
   /** Phone access controls for the VS Code panel (plan 6.13 R4); set by mountLocalWeb. */

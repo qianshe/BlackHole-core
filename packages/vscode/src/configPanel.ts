@@ -82,6 +82,14 @@ const RESTART_KEYS = new Set(['port', 'publicBaseUrl', 'tunnelProbeProxy', 'clou
  * 会触发 daemon 重启的设置仍由「保存」按钮提交，避免每改一个字段就重启一次。
  */
 const AUTO_SAVE_KEYS = new Set(['channelMode', 'connectorName', 'openaiTunnelClientPath', 'openaiTunnelId', 'pollIntervalMs']);
+/** 渠道总开关缺前提时的提示：告诉用户在本页哪里补上。 */
+const CHANNEL_SWITCH_ERRORS: Record<string, string> = {
+  cloudflared: '还没有 cloudflared：在下方「公网渠道 → Cloudflare」点「一键初始化安装」。',
+  named_url: '持久渠道还没有填公网地址：在下方「公网渠道 → Cloudflare」填写。',
+  openai_setup: 'OpenAI 渠道还没配置完：在下方「公网渠道 → OpenAI」填写 Tunnel ID、tunnel-client 和密钥。',
+  openai_unavailable: '当前 daemon 不支持 OpenAI 渠道。',
+  start_failed: '渠道没有启动，原因见下方公网渠道卡片。',
+};
 /** Same rule as the daemon's settings store: a Tunnel ID, never a URL. */
 const OPENAI_TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
 /** OpenAI onboarding pages the panel may open (developers.openai.com secure-mcp-tunnels guide). */
@@ -121,6 +129,7 @@ type PanelMessage =
   | { type: 'copyUserId'; userId: string }
   | { type: 'save'; values: Record<string, string>; webAgents?: string[] }
   | { type: 'autosave'; values: Record<string, string>; webAgents?: string[] }
+  | { type: 'channelToggle'; on: boolean }
   | { type: 'restart' }
   | { type: 'tunnel'; action: 'quick' | 'named' | 'stop' | 'copy' }
   | { type: 'installCloudflared'; path: string; channelMode: 'cloudflare' | 'openai' | 'custom' }
@@ -134,6 +143,7 @@ type PanelMessage =
   | { type: 'courierSiteRemove'; id: string }
   | { type: 'lanToggle'; on: boolean }
   | { type: 'lanPort'; port: number }
+  | { type: 'lanUrl'; url: string }
   | { type: 'lanCopy'; url: string }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
@@ -178,6 +188,7 @@ export class ConfigPanel {
   private cloudflaredInstallBusy = false;
   private openaiInstallBusy = false;
   private openaiBusy = false;
+  private channelBusy = false;
   private lastProxies: ProxiesInfo | null = null;
   private proxySignature = '';
   private projectionGeneration = 0;
@@ -276,6 +287,7 @@ export class ConfigPanel {
     }
     else if (m.type === 'save') await this.save(m.values, m.webAgents);
     else if (m.type === 'autosave') await this.autosave(m.values, m.webAgents);
+    else if (m.type === 'channelToggle' && typeof m.on === 'boolean') await this.channelToggle(m.on);
     else if (m.type === 'restart') {
       try { await this.daemon.restart(); void window.showInformationMessage('BlackHole：daemon 已重启。'); }
       catch (e) { void window.showErrorMessage(`BlackHole：重启 daemon 失败 — ${e instanceof Error ? e.message : String(e)}`); }
@@ -293,6 +305,7 @@ export class ConfigPanel {
     else if (m.type === 'courierSiteRemove' && typeof m.id === 'string') await this.courierSiteRemove(m.id);
     else if (m.type === 'lanToggle' && typeof m.on === 'boolean') await this.lanToggle(m.on);
     else if (m.type === 'lanPort' && Number.isInteger(m.port)) await this.lanSave({ lanPort: m.port });
+    else if (m.type === 'lanUrl' && typeof m.url === 'string') await this.lanSave({ lanUrl: m.url.trim() });
     else if (m.type === 'lanCopy' && typeof m.url === 'string') { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：直连 MCP 链接已复制。'); }
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
@@ -381,10 +394,14 @@ export class ConfigPanel {
   }
 
   private async overview(includeSemantic = false): Promise<Record<string, unknown>> {
-    const health = await this.api.health().catch(() => undefined);
+    // 渠道总开关是可选的：旧版 daemon 没有 /channel 时为 null（驾驶舱不显示开关）。
+    const [health, channel] = await Promise.all([
+      this.api.health().catch(() => undefined),
+      Promise.resolve().then(() => this.api.channel()).catch(() => null),
+    ]);
     if (!health) {
       this.lastUrl = null;
-      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, openai_tunnel_id: this.savedTunnelId(), tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null };
+      return { daemon: this.daemon.currentState, version: null, daemon_id: null, proxy_surface_gen: null, mcp_conn_gen: null, openai_tunnel: null, openai_tunnel_id: this.savedTunnelId(), tunnel: 'unreachable', tunnel_mode: null, tunnel_url: null, tunnel_reason: null, public_base_url: null, mcp_url: null, mcp_path: null, semantic: null, channel: null };
     }
     this.lastUrl = health.tunnel_url;
     // Devin Key 卡片随状态轮询自愈：保存/重启后无需手动刷新页面
@@ -411,8 +428,28 @@ export class ConfigPanel {
       openai_tunnel_id: this.savedTunnelId(),
       stats: health.stats ?? null,
       activity_days: health.activity_days ?? [],
+      channel,
       ...(semantic !== undefined ? { semantic } : {}),
     };
+  }
+
+  /** 驾驶舱里的渠道总开关：和侧边栏同一个 daemon 接口；缺前提时把页面切到对应渠道并提示。 */
+  private async channelToggle(on: boolean): Promise<void> {
+    if (this.channelBusy) return;
+    this.channelBusy = true;
+    let code = '';
+    let message = '';
+    try {
+      const r = await this.api.channelSwitch(on);
+      if (!r.ok) { code = r.error; message = CHANNEL_SWITCH_ERRORS[r.error] ?? `渠道没有启动（${r.error}）。`; }
+    } catch (e) {
+      message = `操作失败：${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      this.channelBusy = false;
+    }
+    if (this.disposed) return;
+    await this.post({ type: 'channelToggleResult', ok: !message, code, message });
+    await this.status();
   }
 
   /**
@@ -552,7 +589,8 @@ export class ConfigPanel {
   private async pushLan(): Promise<void> {
     try {
       const [s, h] = await Promise.all([this.api.settings(), this.api.health()]);
-      await this.post({ type: 'lan', on: s.values.lanAccess === true, port: typeof s.values.lanPort === 'number' ? s.values.lanPort : 7307, lan: h.lan_access ?? null });
+      await this.post({ type: 'lan', on: s.values.lanAccess === true, port: typeof s.values.lanPort === 'number' ? s.values.lanPort : 7307,
+        url: typeof s.values.lanUrl === 'string' ? s.values.lanUrl : '', lan: h.lan_access ?? null });
     } catch {
       /* 守护进程没运行或版本较旧：保留上一次的显示 */
     }
@@ -1221,6 +1259,20 @@ export class ConfigPanel {
   .ck-v .d.ok { background: var(--vscode-charts-green); }
   .ck-v .d.warn { background: var(--vscode-charts-yellow); }
   .ck-v .d.bad { background: var(--vscode-charts-red); }
+  /* 渠道总开关：与侧边栏标题里的开关同一套样式与状态。开关自身就是状态指示，显示时隐藏状态点。 */
+  .chsw { position: relative; width: 26px; height: 14px; flex-shrink: 0; padding: 0; min-width: 0; border-radius: 999px; cursor: pointer; border: 1px solid var(--vscode-checkbox-border, var(--vscode-panel-border)); background: color-mix(in srgb, var(--vscode-descriptionForeground) 22%, transparent); transition: background .15s, border-color .15s; }
+  .chsw::after { content: ''; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--vscode-foreground); opacity: .8; transition: transform .15s; }
+  .chsw[aria-checked="true"]::after { transform: translateX(12px); background: #fff; opacity: 1; }
+  .chsw[data-state="on"] { background: var(--vscode-charts-green); border-color: transparent; }
+  .chsw[data-state="warn"], .chsw[data-state="starting"] { background: var(--vscode-charts-yellow); border-color: transparent; }
+  .chsw[data-state="starting"]::after { animation: ckSwPulse 1s ease-in-out infinite; }
+  .chsw[data-state="error"] { border-color: var(--vscode-charts-red); }
+  .chsw:disabled { cursor: progress; opacity: 1; }
+  .chsw:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  .chsw:not([hidden]) + .d { display: none; }
+  .ck-msg { margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--vscode-errorForeground); }
+  @keyframes ckSwPulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .chsw, .chsw::after { transition: none; } .chsw[data-state="starting"]::after { animation: none; } }
   .ck-v code { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .sec { font-weight: 600; font-size: 11.5px; color: var(--vscode-descriptionForeground); margin: 20px 0 8px; }
   .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px 14px; }
@@ -1438,7 +1490,7 @@ export class ConfigPanel {
       <div class="buy-dialog-actions"><button id="cloudBuyCancel" class="secondary">取消</button><button id="cloudBuyConfirm">前往付款</button></div>
     </div>
   </div>
-    <div class="cell"><div class="ck-k">渠道</div><div class="ck-v"><span class="d" id="ckCd"></span><span id="ckCv">—</span></div></div>
+    <div class="cell"><div class="ck-k">渠道</div><div class="ck-v"><button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false" aria-label="公网渠道开关" hidden></button><span class="d" id="ckCd"></span><span id="ckCv">—</span></div><div class="ck-msg" id="ckSwMsg" role="status" hidden></div></div>
     <div class="cell wide" id="activity"><div class="activity-head"><div class="ck-k">活动</div><div class="activity-today" id="activityToday">等待本地服务</div></div><div class="activity-track"><div class="activity-grid" id="activityGrid" role="group" aria-label="最近 7 天活动"></div></div></div>
   </div>
   <div id="activityTooltip" class="activity-tooltip" role="tooltip" hidden></div>
@@ -1525,9 +1577,10 @@ export class ConfigPanel {
   </div>
   <div class="sec">局域网直连</div>
   <div class="card">
-    <div class="hint" style="margin:0 0 10px">让另一台服务器上的 agent 直接用 MCP 连到这台电脑，不经过公网渠道。只开放 MCP 端点；控制接口、本地 Web 和面板不会对外开放。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用；Windows 首次开启时可能弹出防火墙提示。</div>
+    <div class="hint" style="margin:0 0 10px">监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</div>
     <div class="chrow"><span class="chst dim" id="lanst">…</span><span class="sp"></span><button id="lanToggle">开启直连</button></div>
     <div class="f" style="margin-top:10px"><label for="lanPort">直连端口</label><input id="lanPort" type="number" min="1024" max="65535" spellcheck="false"><div class="hint">1024–65535，不能与主端口相同；修改后立即生效。</div></div>
+    <div class="f" style="margin-top:10px"><label for="lanUrl">直连域名（可选）</label><input id="lanUrl" type="text" spellcheck="false" placeholder="https://mcp.example.com 或 http://nas.lan:7307"><div class="hint" id="lanUrlHint">域名映射到这台电脑时填写，下面会列出域名链接。</div></div>
     <div id="lanurls" style="display:grid;gap:8px;margin-top:10px"></div>
   </div>
   <div class="sec">授权管理</div>
@@ -1587,6 +1640,40 @@ export class ConfigPanel {
       if (!m.message) return;
       n.textContent = m.message; n.className = 'hint ok';
       autoNoteTimer = setTimeout(() => { n.textContent = '其余设置修改后自动保存；标有「需重启」的改完点保存。'; n.className = 'hint'; }, 2500);
+    }
+    // 驾驶舱的渠道总开关：开 = 启动上次使用的渠道，关 = 停止所有渠道（daemon /channel）。
+    const SW_NAMES = { quick: '临时渠道', named: '持久渠道', openai: 'OpenAI 渠道' };
+    let swBusy = false;
+    function renderCockpitSwitch(c, daemon) {
+      const sw = $('ckSw');
+      sw.hidden = !c || daemon !== 'running';
+      if (sw.hidden) return;
+      sw.setAttribute('aria-checked', c.on ? 'true' : 'false');
+      sw.dataset.state = swBusy ? 'starting' : c.state;
+      sw.disabled = swBusy || c.state === 'starting';
+      sw.title = c.on
+        ? '关闭：停止' + c.running.map((x) => SW_NAMES[x] || x).join('、')
+        : '开启：' + (SW_NAMES[c.next] || c.next) + (c.last ? '（上次使用）' : '')
+          + (c.missing === 'cloudflared' ? ' · 需要先安装 cloudflared' : '')
+          + (c.state === 'error' && c.reason ? ' · 上次失败：' + c.reason : '');
+    }
+    $('ckSw').addEventListener('click', () => {
+      const sw = $('ckSw');
+      if (sw.disabled) return;
+      swBusy = true;
+      const on = sw.getAttribute('aria-checked') !== 'true';
+      sw.dataset.state = 'starting'; sw.disabled = true;
+      $('ckSwMsg').hidden = true;
+      vs.postMessage({ type: 'channelToggle', on });
+    });
+    function onChannelToggleResult(m) {
+      swBusy = false;
+      const box = $('ckSwMsg');
+      box.textContent = m.message || '';
+      box.hidden = !m.message;
+      // 缺前提时把「公网渠道」切到对应标签（只切显示，不保存），方便就地补上。
+      const tab = m.code === 'openai_setup' ? 'openai' : m.code === 'cloudflared' || m.code === 'named_url' ? 'cloudflare' : '';
+      if (tab) { renderChannelMode(tab); renderStatus(lastStatus || { overview: {} }); $('channelCloudflare').closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     }
     for (const k of AUTO_KEYS) {
       const input = document.getElementById(k);
@@ -1683,6 +1770,7 @@ export class ConfigPanel {
       void customMap;
       $('ckCd').className = 'd ' + cm[0];
       $('ckCv').textContent = cm[1];
+      renderCockpitSwitch(o.channel, o.daemon);
       renderActivity(o.stats, o.activity_days);
       // 公网渠道卡片按钮可见性
       const hasNamed = !!o.public_base_url;
@@ -1942,6 +2030,7 @@ export class ConfigPanel {
       }
       else if (m.type === 'custom') renderCustom(m.custom ?? []);
       else if (m.type === 'autosaved') onAutosaved(m);
+      else if (m.type === 'channelToggleResult') onChannelToggleResult(m);
       else if (m.type === 'status') renderStatus(m);
       else if (m.type === 'remote') renderRemote(m.view, m.paired);
       else if (m.type === 'remoteQr') showRemoteQr(m);
@@ -1984,7 +2073,11 @@ export class ConfigPanel {
       $('lanToggle').textContent = lanOn ? '关闭直连' : '开启直连';
       $('lanToggle').className = lanOn ? 'secondary' : '';
       if (document.activeElement !== $('lanPort')) $('lanPort').value = String(m.port);
-      const urls = lanOn && lan && lan.listening ? (lan.addresses || []).map((a) => 'http://' + a + ':' + lan.port + lan.mcp_path) : [];
+      if (document.activeElement !== $('lanUrl')) $('lanUrl').value = m.url || '';
+      // 填了直连域名时，域名链接排在最前面。
+      const urls = lanOn && lan && lan.listening
+        ? (m.url ? [m.url + lan.mcp_path] : []).concat((lan.addresses || []).map((a) => 'http://' + a + ':' + lan.port + lan.mcp_path))
+        : [];
       const list = $('lanurls');
       list.innerHTML = urls.map((u) => '<div class="ag-row"><span class="nm" style="flex:1" title="' + esc(u) + '">' + esc(u.replace(lan.mcp_path, '/mcp/…')) + '</span>'
         + '<button class="secondary" data-url="' + esc(u) + '">复制 MCP 链接</button></div>').join('');
@@ -1994,6 +2087,18 @@ export class ConfigPanel {
     $('lanPort').addEventListener('change', () => {
       const n = Number($('lanPort').value);
       if (Number.isInteger(n) && n >= 1024 && n <= 65535) vs.postMessage({ type: 'lanPort', port: n });
+    });
+    $('lanUrl').addEventListener('change', () => {
+      let v = $('lanUrl').value.trim();
+      while (v.endsWith('/')) v = v.slice(0, -1);
+      const hint = $('lanUrlHint');
+      // 只接受 http(s)://主机[:端口]；不合法时就地提示，不提交。
+      // 这段脚本在 TS 模板字符串里，用 URL 解析而不用正则，避免反斜杠被吃掉。
+      let valid = !v;
+      if (v) { try { const u = new URL(v); valid = (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; } catch { valid = false; } }
+      if (!valid) { hint.textContent = '请填写 http(s)://域名[:端口]，不要带路径。'; hint.className = 'hint bad'; return; }
+      hint.textContent = '域名映射到这台电脑时填写，下面会列出域名链接。'; hint.className = 'hint';
+      vs.postMessage({ type: 'lanUrl', url: v });
     });
 
     // Courier 网页站点：浏览器 Courier「检测此页面」接入的网站；删除后 Courier 解除绑定并收回权限。

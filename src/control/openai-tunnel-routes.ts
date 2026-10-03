@@ -77,7 +77,8 @@ export function openAITunnelRouter(deps: DaemonDeps, daemonId: () => string, gua
     const view = manager().start({ settingsRevision: revision(b.settings_revision), credentialRevision: revision(b.credential_revision) });
     // An explicit start comes from a heartbeat sender: keep the watchdog fed (like /tunnel/start).
     deps.lastHeartbeatAt = Date.now();
-    return view;
+    // 启动成功才记为「上次使用」，供渠道总开关再次打开。
+    return view.then((v) => { deps.lastChannel?.set('openai'); return v; });
   }));
   r.post('/stop', handle((req) => {
     const b = body(req);

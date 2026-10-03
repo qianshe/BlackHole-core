@@ -9,6 +9,7 @@ import { startPresence } from '../presence';
 import { CopyButton, Icon } from '../ui';
 import { ApprovalDialog } from './Approval';
 import { ChannelsPane, channelSummary } from './ChannelsPane';
+import { CHANNEL_SWITCH_HINT } from './ChannelSwitch';
 import { ConfirmDialog, DialogHead, failText, Modal, PromptDialog, ToastProvider, useToast, type ConfirmSpec } from './common';
 import { SearchPalette } from './SearchPalette';
 import { SessionPane } from './SessionPane';
@@ -136,6 +137,26 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const confirmations = usePoll((s) => api.confirmations(undefined, s), 'confirmations', POLL_MS, true);
   const health = usePoll(() => panel.health(), 'health', POLL_MS * 2, true);
   const settings = usePoll((s) => api.settings(s), 'settings', POLL_MS * 10, true);
+  // 渠道总开关：旧版 daemon 没有 /channel 时为 null（不显示开关）。
+  const channelSwitch = usePoll(() => panel.channel().catch(() => null), 'channel', POLL_MS * 2, true);
+  const [channelBusy, setChannelBusy] = useState(false);
+  const toggleChannel = (on: boolean): void => {
+    if (channelBusy) return;
+    setChannelBusy(true);
+    panel.channelSwitch(on).then(
+      () => toast(on ? '正在启动渠道' : '渠道已关闭'),
+      (e: unknown) => {
+        const code = (e as { code?: string }).code ?? '';
+        toast(CHANNEL_SWITCH_HINT[code] ?? failText(e), code in CHANNEL_SWITCH_HINT ? 'warn' : 'bad');
+        // 缺前提：直接带用户去设置的「公网渠道」补上。
+        if (code === 'cloudflared' || code === 'named_url' || code === 'openai_setup') openSettings('channel');
+      },
+    ).finally(() => {
+      setChannelBusy(false);
+      channelSwitch.refresh();
+      health.refresh();
+    });
+  };
   const remote = usePoll(() => remoteAdmin.view(), 'remote', POLL_MS * 5, view.view === 'channels');
   // An open console keeps channels alive like a VS Code window (hidden tabs too).
   useEffect(() => startPresence(), []);
@@ -256,6 +277,9 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         current={view.session}
         view={view.view}
         channel={{ text: st.text, ok: st.tone === 'ok' }}
+        channelSwitch={channelSwitch.data ?? null}
+        channelBusy={channelBusy}
+        onChannelToggle={toggleChannel}
         account={account}
         now={now}
         collapsed={collapsed}
@@ -317,6 +341,9 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
                 remote.refresh();
               }}
               onSettings={openSettings}
+              channelSwitch={channelSwitch.data ?? null}
+              channelBusy={channelBusy}
+              onChannelToggle={toggleChannel}
             />
           ) : current ? (
             <SessionPane

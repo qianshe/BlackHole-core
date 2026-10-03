@@ -996,6 +996,8 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     ['POST', /^\/semantic\/(key|clear)$/],
     ['GET', /^\/tunnel$/],
     ['POST', /^\/tunnel\/(start|stop)$/],
+    ['GET', /^\/channel$/],
+    ['POST', /^\/channel$/],
     ['POST', /^\/token\/rotate$/],
     ['GET', /^\/approvals$/],
     ['POST', /^\/approvals\/(clear|session\/remove|[^/]+\/remove)$/],

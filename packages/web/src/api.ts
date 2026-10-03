@@ -98,6 +98,21 @@ export interface SettingsValues {
   lanAccess: boolean;
   /** 局域网直连端口。 */
   lanPort: number;
+  /** 可选的直连域名地址（如 https://mcp.example.com）；旧版守护进程没有这一项。 */
+  lanUrl?: string;
+}
+
+/** 渠道总开关（daemon /channel）：开 = 启动上次使用的渠道，关 = 停止所有渠道。 */
+export type ChannelChoice = 'quick' | 'named' | 'openai';
+export interface ChannelSwitchView {
+  on: boolean;
+  state: 'off' | 'starting' | 'on' | 'warn' | 'error';
+  running: ChannelChoice[];
+  /** 正在运行的渠道；关着时为打开会启动的渠道。 */
+  next: ChannelChoice;
+  last: ChannelChoice | null;
+  missing: 'cloudflared' | 'named_url' | 'openai_setup' | 'openai_unavailable' | null;
+  reason: string | null;
 }
 
 /** 守护进程 health 里的局域网直连状态。 */
@@ -308,6 +323,10 @@ export const panel = {
   semanticClear: () => request<{ removed: boolean }>('/panel/semantic/clear', json('POST', {})),
   tunnelStart: (mode: 'quick' | 'named') => request<{ status: string }>('/panel/tunnel/start', json('POST', { mode })),
   tunnelStop: () => request<{ status: string }>('/panel/tunnel/stop', json('POST', {})),
+  /** 渠道总开关；旧版 daemon 没有这个接口时抛错（调用方按「不显示开关」处理）。 */
+  channel: () => request<ChannelSwitchView>('/panel/channel'),
+  /** 开/关渠道总开关；缺少前提时抛 ApiError(409, 缺少的那一项)。 */
+  channelSwitch: (on: boolean) => request<{ ok: true; view: ChannelSwitchView }>('/panel/channel', json('POST', { on })),
   rotateToken: () => request<{ mcp_url: string }>('/panel/token/rotate', json('POST', {})),
   grants: () => request<GrantsInfo>('/panel/approvals'),
   grantsClear: () => request<{ removed: number }>('/panel/approvals/clear', json('POST', {})),

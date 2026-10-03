@@ -135,6 +135,98 @@
   composes: navSummary;
   color: var(--ok);
 }
+/* 渠道总开关：与 VS Code 侧边栏同一套状态色（绿=开、黄=启动中/未验证、红描边=失败）。 */
+.chSwitch {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-3) 28%, transparent);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.chSwitch::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--raised);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-3) 35%, transparent);
+  transition: transform 0.15s;
+}
+.chSwitch[aria-checked='true']::after {
+  transform: translateX(12px);
+  background: #fff;
+  box-shadow: none;
+}
+.chSwitch[data-state='on'] {
+  background: var(--ok);
+  border-color: transparent;
+}
+.chSwitch[data-state='warn'],
+.chSwitch[data-state='starting'] {
+  background: var(--warn);
+  border-color: transparent;
+}
+.chSwitch[data-state='starting']::after {
+  animation: chSwitchPulse 1s ease-in-out infinite;
+}
+.chSwitch[data-state='error'] {
+  border-color: var(--bad);
+}
+.chSwitch:disabled {
+  cursor: progress;
+}
+.chSwitch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+@keyframes chSwitchPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chSwitch,
+  .chSwitch::after {
+    transition: none;
+  }
+  .chSwitch[data-state='starting']::after {
+    animation: none;
+  }
+}
+/* 侧栏「公网渠道」行：开关是独立的按钮（不能嵌在导航按钮里），浮在行右侧，导航按钮给它留出位置。 */
+.navRow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.navBtnWithSwitch {
+  padding-right: 48px;
+}
+.collapsed .navBtnWithSwitch {
+  padding-right: 11px;
+}
+.navRowSwitch {
+  position: absolute;
+  right: 22px;
+  top: 13px;
+}
+.collapsed .navRowSwitch {
+  display: none;
+}
+/* 渠道页状态行里的总开关：和状态文字垂直居中。 */
+.channelSummarySwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .kbd {
   font: 11px var(--mono);
   color: var(--text-3);

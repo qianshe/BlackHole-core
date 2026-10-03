@@ -20,7 +20,10 @@ export function buildAccessRules(): string {
   return [
     '# BlackHole workspace access',
     '',
-    '- Read `guide` with the supplied `sessionId` before the first workspace operation and follow it throughout the session.',
+    '- Read `guide` with the supplied `sessionId` before the first workspace operation,',
+    '  then follow its startup guidance and carry out the user task.',
+    '- Native connector: call `guide` directly. Script entry: use',
+    '  python3 bh.py call guide \'{}\'.',
     '- Keep the sessionId unchanged on every BlackHole call; it selects the workspace.',
     '  Panel lifecycle, tool routing, approvals and verification are explained in `guide`.',
   ].join('\n');
@@ -56,9 +59,6 @@ export function buildGenericManual(_execShellHint: string, semantic = false, ski
     '',
     buildStartupGuidance(startup),
     '',
-    ...(sandboxClientUrl
-      ? ['## SANDBOX ACCESS', '- Any MCP-compatible client may be used.', `- Recommended client: \`bh.py\` — ${sandboxClientUrl}`, '']
-      : []),
     '## WORKFLOW',
     '- Load the matching `guide(workflow=...)` before work only on the current user\'s explicit `plan`/`计划`, `execute-plan`, `handoff`, or `review` invocation.',
     '- Match whole English tokens, case-insensitive, with optional `/`. Without these keywords, do not load or search workflows, regardless of complexity or similar meaning.',

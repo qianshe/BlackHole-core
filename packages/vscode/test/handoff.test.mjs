@@ -25,12 +25,18 @@ test('both handoff copy modes reuse the existing template with fresh credentials
     assert.ok(actual.endsWith('Handoff context:\n' + current.handoff.content));
     assert.doesNotMatch(actual, /^Task:/m);
     assert.ok(!actual.includes('old task name'));
-    if (kind === 'sandbox') { assert.match(actual, /BlackHole MCP: https:\/\/example\.invalid\/bridge\/mcp\/token/); assert.match(actual, /entry: "sandbox"/); assert.doesNotMatch(actual, /curl|wget|python|bh\.py/); }
+    if (kind === 'sandbox') {
+      assert.match(actual, /^Download https:\/\/example\.invalid\/bridge\/bh\.py\?sessionid=/);
+      assert.match(actual, /current sandbox root as `bh\.py`/);
+      assert.match(actual, /Read `bh\.py`, then use it to read `guide`/);
+      assert.match(actual, /familiarize yourself with the connected BlackHole MCP/); assert.match(actual, /`BLACKHOLE\.md` for reuse/);
+      assert.doesNotMatch(actual, /^Task:|curl|python3/m);
+    }
   }
   current = { ...current, session: { ...current.session, session_id: '000000000000000000000000000000000000456' }, mcp_url: 'https://new.example.invalid/path/mcp/new-token' };
   const rotated = await prepareHandoffPrompt(api, 'session-a', 'handoff-a', 'sandbox', 'BlackHole');
   assert.ok(rotated.includes(current.session.session_id)); assert.ok(!rotated.includes(sid));
-  assert.ok(rotated.includes(current.mcp_url)); assert.doesNotMatch(rotated, /bh\.py|sessionid=/);
+  assert.ok(rotated.includes('https://new.example.invalid/path/bh.py?sessionid=' + current.session.session_id)); assert.doesNotMatch(rotated, /BlackHole MCP:/);
   assert.deepEqual(reads, ['session-a', 'session-a', 'session-a']);
   assert.equal(current.handoff.id, 'handoff-a', 'copy does not mutate or consume pending context');
 });
@@ -158,7 +164,7 @@ test('OpenAI-only handoff: URL-free connector prompt is allowed, sandbox is refu
     await assert.rejects(prepareHandoffPrompt({ handoff: async () => local({ openai_tunnel: oa }) }, 'session-a', 'handoff-a', 'connector', 'BlackHole'), /Cloudflare 或 OpenAI/);
   }
   const both = { ...snapshot(), openai_tunnel: { status: 'ready' } };
-  assert.match(await prepareHandoffPrompt({ handoff: async () => both }, 'session-a', 'handoff-a', 'sandbox', 'BlackHole'), /BlackHole MCP: https:\/\/example\.invalid\/bridge\/mcp\/token/);
+  assert.match(await prepareHandoffPrompt({ handoff: async () => both }, 'session-a', 'handoff-a', 'sandbox', 'BlackHole'), /https:\/\/example\.invalid\/bridge\/bh\.py\?sessionid=/);
 });
 
 test('connectionTarget is the one pure decision for create, copy and handoff', () => {

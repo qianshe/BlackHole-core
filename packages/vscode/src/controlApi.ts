@@ -121,6 +121,19 @@ export interface TunnelState {
   reason: string | null;
 }
 
+/** 渠道总开关（daemon GET /channel）：开 = 启动上次使用的渠道，关 = 停止所有渠道。 */
+export type ChannelChoice = TunnelKind | 'openai';
+export interface ChannelSwitchView {
+  on: boolean;
+  state: 'off' | 'starting' | 'on' | 'warn' | 'error';
+  running: ChannelChoice[];
+  /** 正在运行的渠道；关着时为打开会启动的渠道。 */
+  next: ChannelChoice;
+  last: ChannelChoice | null;
+  missing: 'cloudflared' | 'named_url' | 'openai_setup' | 'openai_unavailable' | null;
+  reason: string | null;
+}
+
 export type PermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 export interface HandoffSummary { id: string; created_at: number; }
@@ -773,6 +786,22 @@ export class ControlApi {
 
   tunnelStop(): Promise<TunnelState> {
     return this.req('POST', '/tunnel/stop');
+  }
+
+  /** 渠道总开关状态；旧版 daemon 没有这个接口时抛错（调用方按「不显示开关」处理）。 */
+  channel(): Promise<ChannelSwitchView> {
+    return this.req('GET', '/channel', undefined, 4000);
+  }
+
+  /** 开/关渠道总开关。缺少前提（409）或参数不对（400）时返回错误码，不抛错。 */
+  async channelSwitch(on: boolean): Promise<{ ok: true; view: ChannelSwitchView } | { ok: false; error: string }> {
+    try {
+      return await this.req<{ ok: true; view: ChannelSwitchView }>('POST', '/channel', { on }, 20_000);
+    } catch (e) {
+      const err = e as Error & { status?: number };
+      if (err.status === 409 || err.status === 400) return { ok: false, error: err.message };
+      throw e;
+    }
   }
 
   /**

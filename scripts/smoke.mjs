@@ -354,14 +354,14 @@ async function main() {
     const ruleRes = await client.readResource({ uri: 'blackhole://rules' });
     assert.ok(ruleRes.contents[0]?.text.includes('`sessionId`'), 'resources/read returns the access-level manual (sessionId discipline)');
     assert.match(ruleRes.contents[0]?.text ?? '', /Read `guide`.*before the first workspace operation/s, 'access manual starts with guide, not a panel prerequisite');
-    assert.doesNotMatch(ruleRes.contents[0]?.text ?? '', /Native connector:|Script entry:|bh\.py|python3|curl/, 'access manual delegates client choice to guide/bootstrap instead of prescribing a script');
+    assert.match(ruleRes.contents[0]?.text ?? '', /Native connector: call `guide` directly/); assert.match(ruleRes.contents[0]?.text ?? '', /Script entry: use[\s\S]*python3 bh\.py call guide '\{\}'/); assert.doesNotMatch(ruleRes.contents[0]?.text ?? '', /curl|wget/);
     const askPrompt = await client.getPrompt({ name: 'blackhole_operator', arguments: {} });
     assert.ok(askPrompt.messages[0]?.content.text.includes('Read `guide`'), 'prompts/get points to the common guide entry');
     ok('rules resource + operator prompt registered (bh.py ask works)');
 
     // --- guide: one keyless entry, same manual for every caller ---
     const guideGeneric = resultJson(await rawCall(client, 'guide', {}));
-    assert.match(guideGeneric.instruction, /read and apply/i, 'guide directs the agent to read and apply the manual');
+    assert.match(guideGeneric.instruction, /read and apply[\s\S]*carry out the user task/i, 'guide restores the original startup-and-task instruction');
     // routing line reflects REALITY: no context_search clause while the tool is
     // not registered, and the shell clause names a generic term (the registered
     // name varies by host) instead of a nonexistent 'exec' tool

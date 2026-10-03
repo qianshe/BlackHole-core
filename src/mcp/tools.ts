@@ -561,7 +561,7 @@ export function registerTools(
         return text({ instruction: `Unsupported workflow. Available workflows: ${WORKFLOW_NAMES.join(', ')}.`, manual: '' }, true);
       }
       const instruction =
-        'Read and apply this operating manual before workspace operations. Follow Startup for this connection. ' +
+        'Read and apply this operating manual before workspace operations. Follow Startup for this connection, then carry out the user task. ' +
         'Reuse the manual; revisit after context loss or when an instruction is unclear.';
       const startup = startupMode();
       return attributedFeed(

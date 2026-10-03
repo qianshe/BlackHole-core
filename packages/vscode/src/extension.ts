@@ -1,7 +1,7 @@
 import { ProcessTerminalController } from './processTerminals';
 import path from 'node:path';
 import { registerCloudAccount } from './cloudAccount';
-import { commands, ProgressLocation, workspace, window, type ExtensionContext } from 'vscode';
+import { commands, ConfigurationTarget, ProgressLocation, workspace, window, type ExtensionContext } from 'vscode';
 import { ApprovalsWatcher } from './approvals';
 import { ConfigPanel } from './configPanel';
 import { getConfig } from './config';
@@ -24,6 +24,16 @@ export function activate(context: ExtensionContext): void {
   const daemon = new DaemonManager(context, cfg, api, log);
   const poller = new Poller(() => cfg().pollIntervalMs);
   const sidebar = new SidebarProvider(api, daemon, poller, {
+    // 首次引导的渠道卡片：用户点过「稍后」就不再弹出（所有窗口共用）。
+    setupDismissed: () => context.globalState?.get<boolean>('blackhole.setupDismissed') === true,
+    dismissSetup: (dismissed) => void context.globalState?.update('blackhole.setupDismissed', dismissed || undefined),
+    installCloudflared: async () => {
+      // 用到时才加载安装程序：启动插件时不必载入。
+      const { initializeCloudflared } = await import('./cloudflaredInstall');
+      const c = workspace.getConfiguration('blackhole');
+      const result = await initializeCloudflared(c.get<string>('cloudflaredPath') ?? '');
+      if ((c.get<string>('cloudflaredPath') ?? '') !== result.path) await c.update('cloudflaredPath', result.path, ConfigurationTarget.Global);
+    },
     create: () => void createSession(api, daemon, openCreated),
     act: (s, a) => void sessionAction(api, s, a, refresh),
     copyTemplate: (s, kind, message) => void copyTemplateSession(api, s, kind, message),
@@ -75,7 +85,7 @@ export function activate(context: ExtensionContext): void {
     });
   });
   context.subscriptions.push(
-    registerCloudAccount(context, view => statusBar.updateAccount(view), api),
+    registerCloudAccount(context, view => { statusBar.updateAccount(view); sidebar.updateAccount(view); }, api),
     log,
     daemon,
     poller,

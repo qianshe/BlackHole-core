@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { AccountView, ProjectView, SessionView } from '../api';
+import type { AccountView, ChannelSwitchView, ProjectView, SessionView } from '../api';
+import { ChannelSwitch } from './ChannelSwitch';
 import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
 import { Icon } from '../ui';
 import { useMenu } from './common';
@@ -20,6 +21,10 @@ interface Props {
   current: string | null;
   view: 'session' | 'channels';
   channel: ChannelSummary;
+  /** 渠道总开关；旧版 daemon 没有 /channel 时为 null（不显示）。 */
+  channelSwitch?: ChannelSwitchView | null;
+  channelBusy?: boolean;
+  onChannelToggle?: (on: boolean) => void;
   account: AccountView | null;
   now: number;
   collapsed: boolean;
@@ -249,13 +254,16 @@ export function Sidebar(p: Props) {
         <span className={c.navLabel}>搜索</span>
         <span className={c.kbd}>Ctrl K</span>
       </button>
-      <button type="button" className={c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
-        <span className={c.navIcon}>
-          <Icon name="globe" />
-        </span>
-        <span className={c.navLabel}>公网渠道</span>
-        <span className={p.channel.ok ? c.navSummaryOk : c.navSummary}>{p.channel.text}</span>
-      </button>
+      <div className={c.navRow}>
+        <button type="button" className={p.channelSwitch ? `${c.navBtn} ${c.navBtnWithSwitch}` : c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
+          <span className={c.navIcon}>
+            <Icon name="globe" />
+          </span>
+          <span className={c.navLabel}>公网渠道</span>
+          <span className={p.channel.ok ? c.navSummaryOk : c.navSummary}>{p.channel.text}</span>
+        </button>
+        <ChannelSwitch view={p.channelSwitch ?? null} busy={!!p.channelBusy} onToggle={(on) => p.onChannelToggle?.(on)} className={c.navRowSwitch} />
+      </div>
 
       <nav className={c.sideScroll} aria-label="项目与会话">
         <div className={c.sectionLabel}>

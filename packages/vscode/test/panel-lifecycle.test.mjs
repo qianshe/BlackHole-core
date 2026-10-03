@@ -631,3 +631,44 @@ test('auto-saved settings never restart the daemon; restart settings are marked 
   assert.match(html,/el\.classList\.toggle\('on'\); autosave\(\{\}, collectWebAgents\(\)\)/);
   for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
 });
+
+// 用户 2026-10-03：局域网直连可填直连域名，填了就把域名链接排在最前面。
+test('LAN domain is saved to the daemon and listed first among the direct MCP links', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const patches=[];let values={lanAccess:true,lanPort:7307,lanUrl:''};
+  h.api.settings=async()=>({revision:3,values});
+  h.api.patchSettings=async(v,rev)=>{patches.push([JSON.parse(JSON.stringify(v)),rev]);values={...values,...v};};
+  h.health.lan_access={listening:true,port:7307,addresses:['192.168.1.5'],mcp_path:'/mcp/tok'};
+  await h.instance.dispatch({type:'lanUrl',url:' https://mcp.example.test '});
+  assert.deepEqual(patches,[[{lanUrl:'https://mcp.example.test'},3]]);
+  const lan=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='lan')));
+  assert.equal(lan.url,'https://mcp.example.test');
+  const html=h.panels[0].webview.html;
+  assert.match(html,/<input id="lanUrl" type="text"/);
+  assert.match(html,/\(m\.url \? \[m\.url \+ lan\.mcp_path\] : \[\]\)\.concat\(/);
+  // 页面脚本在 TS 模板字符串里：校验用 URL 解析而不是正则，反斜杠不会被吃掉。
+  assert.match(html,/const u = new URL\(v\); valid = /);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});
+
+// 用户 2026-10-03：设置页顶部「渠道」格里的总开关，和侧边栏共用 daemon 的 /channel。
+test('cockpit channel switch calls the daemon and reports a missing prerequisite with its code', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());
+  const view={on:false,state:'off',running:[],next:'quick',last:'quick',missing:null,reason:null};
+  const calls=[];h.api.channel=async()=>view;
+  h.api.channelSwitch=async(on)=>{calls.push(on);return calls.length===1?{ok:true,view:{...view,on:true,state:'starting',running:['quick']}}:{ok:false,error:'cloudflared'};};
+  await h.instance.dispatch({type:'ready'});
+  const status=h.panels[0].messages.findLast(m=>m.type==='status'||m.type==='init');
+  assert.equal(JSON.parse(JSON.stringify(status.overview.channel)).next,'quick');
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  let r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.deepEqual(r,{type:'channelToggleResult',ok:true,code:'',message:''});
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.equal(r.ok,false);assert.equal(r.code,'cloudflared');assert.match(r.message,/一键初始化安装/);
+  assert.deepEqual(calls,[true,true]);
+  const html=h.panels[0].webview.html;
+  assert.match(html,/<button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false"/);
+  assert.match(html,/renderCockpitSwitch\(o\.channel, o\.daemon\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});
