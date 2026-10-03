@@ -585,3 +585,49 @@ test('OpenAI connection card: saved Tunnel ID shown and copied offline, fixed on
   const card=html.slice(html.indexOf('id="channelOpenai"'),html.indexOf('id="channelCustom"'));
   assert.match(card,/Tunnels Read\/Use/);assert.match(card,/不支持沙箱直连/);
 });
+
+// 用户 2026-10-03：不需要重启 daemon 的设置自动保存，会重启的仍由「保存」按钮提交。
+test('autosave writes only no-restart settings, quietly, without re-sending the form', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const before=h.panels[0].messages.length;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare',connectorName:' Mine ',pollIntervalMs:'1500',publicBaseUrl:'https://evil.example',cloudflaredPath:'/x',port:'9'}});
+  assert.deepEqual(h.settingsWrites,[['channelMode','cloudflare',1],['connectorName','Mine',1],['pollIntervalMs',1500,1]]);
+  assert.equal(h.restarts,0);assert.deepEqual(h.notices,[]);assert.deepEqual(h.errors,[]);
+  const sent=h.panels[0].messages.slice(before);
+  assert.equal(sent.some(m=>m.type==='init'),false,'other fields being edited are not overwritten');
+  // 面板代码跑在 vm 沙箱里，数组原型不同：经 JSON 比较结构。
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))),{type:'autosaved',ok:true,keys:['channelMode','connectorName','pollIntervalMs'],message:'已自动保存'});
+  h.settingsWrites.length=0;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare'}});
+  assert.equal(h.settingsWrites.length,0,'unchanged values are not rewritten');
+  assert.equal(h.panels[0].messages.at(-1).message,'');
+});
+
+test('autosave rejects invalid values with an inline message and writes nothing for them', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  await h.instance.dispatch({type:'autosave',values:{openaiTunnelId:'https://platform.openai.com/x',openaiTunnelClientPath:'relative/tunnel.exe',pollIntervalMs:'10'}});
+  assert.equal(h.settingsWrites.length,0);
+  const last=h.panels[0].messages.at(-1);
+  assert.equal(last.type,'autosaved');assert.equal(last.ok,false);assert.match(last.message,/未保存/);
+  await h.instance.dispatch({type:'autosave',values:{},webAgents:['ChatGPT']});
+  assert.equal(h.panels[0].messages.at(-1).ok,true);
+});
+
+test('auto-saved settings never restart the daemon; restart settings are marked and stay on the Save button', t => {
+  const source=fs.readFileSync(new URL('../src/configPanel.ts',import.meta.url),'utf8');
+  const auto=JSON.parse(source.match(/const AUTO_SAVE_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  const restart=JSON.parse(source.match(/const RESTART_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  assert.deepEqual(auto.filter(k=>restart.includes(k)),[]);
+  // daemon 启动指纹里的设置一变就会自动重启 daemon：自动保存的设置一个都不能在里面。
+  const dm=fs.readFileSync(new URL('../src/daemonManager.ts',import.meta.url),'utf8');
+  const fp=dm.slice(dm.indexOf('private fingerprint('),dm.indexOf('private async liveFingerprintMatches'));
+  for(const k of auto)assert.doesNotMatch(fp,new RegExp('\\bc\\.'+k+'\\b'),k);
+  const h=harness();t.after(()=>h.panels[0].close());
+  const html=h.panels[0].webview.html;
+  for(const k of ['cloudflaredPath','publicBaseUrl','skillsDir'])assert.match(html,new RegExp('<label>[^<]+<span class="rs"[^>]*>需重启</span></label><input id="'+k+'"'),k);
+  assert.doesNotMatch(html,/<label>连接器名称<span class="rs"/);
+  assert.match(html,/id="autoNote"/);
+  assert.match(html,/if \(channelMode !== before\) autosave\(\{ channelMode \}\)/);
+  assert.match(html,/el\.classList\.toggle\('on'\); autosave\(\{\}, collectWebAgents\(\)\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});

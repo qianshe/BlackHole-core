@@ -77,6 +77,11 @@ const FIELDS = ALL_FIELDS.filter(f => f.key !== 'daemonEntry' || resolveCloudEnd
 const KEYS = FIELDS.map((f) => f.key);
 /** Settings the daemon only reads at spawn: a change must restart it. */
 const RESTART_KEYS = new Set(['port', 'publicBaseUrl', 'tunnelProbeProxy', 'cloudflaredPath', 'gitUsrBinPath', 'daemonEntry', 'namedTunnelName', 'skillsDir']);
+/**
+ * 改完就生效、不在 daemon 启动指纹里的设置：选中或离开输入框即自动保存（用户 2026-10-03）。
+ * 会触发 daemon 重启的设置仍由「保存」按钮提交，避免每改一个字段就重启一次。
+ */
+const AUTO_SAVE_KEYS = new Set(['channelMode', 'connectorName', 'openaiTunnelClientPath', 'openaiTunnelId', 'pollIntervalMs']);
 /** Same rule as the daemon's settings store: a Tunnel ID, never a URL. */
 const OPENAI_TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
 /** OpenAI onboarding pages the panel may open (developers.openai.com secure-mcp-tunnels guide). */
@@ -115,6 +120,7 @@ type PanelMessage =
   | { type: 'cloudAccount'; action: 'signIn' | 'redeem' | 'signOut' | 'refresh' | 'buyCard' | 'orders' | 'refund'; sku?: 'pro_day'|'pro_week'|'pro_month' }
   | { type: 'copyUserId'; userId: string }
   | { type: 'save'; values: Record<string, string>; webAgents?: string[] }
+  | { type: 'autosave'; values: Record<string, string>; webAgents?: string[] }
   | { type: 'restart' }
   | { type: 'tunnel'; action: 'quick' | 'named' | 'stop' | 'copy' }
   | { type: 'installCloudflared'; path: string; channelMode: 'cloudflare' | 'openai' | 'custom' }
@@ -269,6 +275,7 @@ export class ConfigPanel {
       await this.refresh();
     }
     else if (m.type === 'save') await this.save(m.values, m.webAgents);
+    else if (m.type === 'autosave') await this.autosave(m.values, m.webAgents);
     else if (m.type === 'restart') {
       try { await this.daemon.restart(); void window.showInformationMessage('BlackHole：daemon 已重启。'); }
       catch (e) { void window.showErrorMessage(`BlackHole：重启 daemon 失败 — ${e instanceof Error ? e.message : String(e)}`); }
@@ -908,6 +915,41 @@ export class ConfigPanel {
   }
 
   /**
+   * 自动保存：只接受 AUTO_SAVE_KEYS 和 Web Agent 显示，校验规则与「保存」一致。
+   * 不弹成功通知、不重新下发表单（不打断正在编辑的其他字段），结果只回给面板显示。
+   */
+  private async autosave(values: Record<string, string>, webAgents?: string[]): Promise<void> {
+    const c = workspace.getConfiguration('blackhole');
+    const saved: string[] = [];
+    let error: string | undefined;
+    for (const [key, value] of Object.entries(values ?? {})) {
+      if (!AUTO_SAVE_KEYS.has(key)) continue;
+      const raw = String(value ?? '').trim();
+      let next: string | number | undefined = raw;
+      if (key === 'channelMode') next = normalizeChannelMode(raw);
+      else if (key === 'openaiTunnelId' && raw && !OPENAI_TUNNEL_ID.test(raw)) {
+        error = 'Tunnel ID 应为 OpenAI Platform 隧道设置中的 ID（tunnel_ 加 32 位小写十六进制），不是 URL；未保存。';
+        continue;
+      } else if (key === 'openaiTunnelClientPath' && raw && !path.isAbsolute(raw)) {
+        error = 'tunnel-client 路径需要填写可执行文件的绝对路径，或留空；未保存。';
+        continue;
+      } else if (key === 'pollIntervalMs') {
+        next = raw === '' ? undefined : Number(raw);
+        if (typeof next === 'number' && !(Number.isFinite(next) && next >= 250)) { error = '轮询间隔至少 250 毫秒；未保存。'; continue; }
+      }
+      if (String(c.get(key) ?? '') === String(next ?? '')) continue;
+      await c.update(key, next, ConfigurationTarget.Global);
+      saved.push(key);
+    }
+    if (webAgents) {
+      await this.saveWebAgents(webAgents);
+      saved.push('webAgents');
+    }
+    if (this.disposed) return;
+    await this.post({ type: 'autosaved', ok: !error, keys: saved, message: error ?? (saved.length ? '已自动保存' : '') });
+  }
+
+  /**
    * Persist the Web Agent checkboxes: subset -> write the array, all enabled
    * -> reset to the default (undefined), none -> explicit empty list (the
    * picker then hides every predefined agent; typed URLs still work).
@@ -1136,12 +1178,14 @@ export class ConfigPanel {
       const control=f.type==='select'
         ? `<select id="${f.key}">${(f.options??[]).map(option=>`<option value="${option.value}">${option.label}</option>`).join('')}</select>`
         : `<input id="${f.key}" type="${f.type === 'number' ? 'number' : 'text'}" spellcheck="false">`;
-      return `<div class="f"><label>${f.label}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
+      // 需重启的字段标出来：它们不自动保存，要点「保存」。
+      const tag = RESTART_KEYS.has(f.key) ? '<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span>' : '';
+      return `<div class="f"><label>${f.label}${tag}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
     };
     // Devin Key 输入框与「daemon 端口」同行（fgrid 空槽位）；状态行、清除按钮、
     // 凭据来源 chips 全部收在输入框正下方，是唯一的 key 手动入口
     const keyCell =
-      '<div class="f"><label>Devin Key</label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
+      '<div class="f"><label>Devin Key<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span></label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
       + '<div class="chrow"><span class="chst dim" id="semst">…</span><span class="sp"></span><button id="semClear" class="secondary" style="display:none">清除已存</button></div>'
       + '<div class="semrow"><span class="lbl">凭据来源</span><div class="agrid" id="semMode"></div></div></div>';
     const cloudflaredField = fieldHtml(FIELDS.find((f) => f.key === 'cloudflaredPath')!);
@@ -1321,6 +1365,8 @@ export class ConfigPanel {
   details { margin-top: 8px; }
   summary { cursor: pointer; font-weight: 600; opacity: .85; }
   .actions { margin-top: 26px; display: flex; gap: 10px; }
+  .actions .hint { margin: 0; align-self: center; }
+  .f label .rs { font-weight: 400; font-size: 10px; margin-left: 6px; padding: 0 5px; border-radius: 8px; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
   button { font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer; border: none; border-radius: 6px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
   button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
   button:disabled { opacity: .6; cursor: not-allowed; }
@@ -1497,8 +1543,9 @@ export class ConfigPanel {
     <ul id="rmDevices" style="list-style:none;margin:0;padding:0"></ul>
   </div></details>
   <div class="actions">
-    <button id="save">保存</button>
+    <button id="save" title="保存标有「需重启」的设置；其余设置修改后已自动保存">保存</button>
     <button id="restart" class="secondary">重启 daemon</button>
+    <span id="autoNote" class="hint" role="status" aria-live="polite">其余设置修改后自动保存；标有「需重启」的改完点保存。</span>
   </div>
   <script nonce="${nonce}">
     const vs = acquireVsCodeApi();
@@ -1527,6 +1574,25 @@ export class ConfigPanel {
       $('cloudRefresh').disabled=!loggedIn;$('cloudRedeem').disabled=!loggedIn;$('cloudPlan').disabled=!loggedIn;$('cloudBuyCard').disabled=!loggedIn;$('cloudOrders').disabled=!loggedIn;$('cloudRefund').disabled=!loggedIn;
     });
     const KEYS = ${JSON.stringify(KEYS)};
+    // 不触发 daemon 重启的设置：选中 / 离开输入框即自动保存（其余走「保存」按钮）。
+    const AUTO_KEYS = ${JSON.stringify([...AUTO_SAVE_KEYS])};
+    let autoNoteTimer;
+    function autosave(values, webAgents) {
+      vs.postMessage(Object.assign({ type: 'autosave', values: values || {} }, webAgents ? { webAgents } : {}));
+    }
+    function onAutosaved(m) {
+      const n = $('autoNote');
+      clearTimeout(autoNoteTimer);
+      if (!m.ok) { n.textContent = m.message; n.className = 'hint bad'; return; }
+      if (!m.message) return;
+      n.textContent = m.message; n.className = 'hint ok';
+      autoNoteTimer = setTimeout(() => { n.textContent = '其余设置修改后自动保存；标有「需重启」的改完点保存。'; n.className = 'hint'; }, 2500);
+    }
+    for (const k of AUTO_KEYS) {
+      const input = document.getElementById(k);
+      // change 只在内容改过并离开输入框（或回车）时触发，不会逐字保存。
+      if (input) input.addEventListener('change', () => autosave({ [k]: input.value.trim() }));
+    }
     function esc(s) { return (s ?? '').replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';'); }
     const activityCells = new Map();
     let activitySignature = '', activityHovered = null;
@@ -1852,7 +1918,13 @@ export class ConfigPanel {
       if (channelMode === 'custom' && custom && fixed) custom.value = fixed.value;
       if (channelMode !== 'custom' && custom && fixed) fixed.value = custom.value;
     }
-    for (const el of document.querySelectorAll('[data-channel-mode]')) el.addEventListener('click', () => { if (cloudflaredInstalling) return; resetCustomProbe(); renderChannelMode(el.getAttribute('data-channel-mode')); renderStatus(lastStatus || { overview: {} }); });
+    for (const el of document.querySelectorAll('[data-channel-mode]')) el.addEventListener('click', () => {
+      if (cloudflaredInstalling) return;
+      const before = channelMode;
+      resetCustomProbe(); renderChannelMode(el.getAttribute('data-channel-mode')); renderStatus(lastStatus || { overview: {} });
+      // 标签只是默认显示偏好，不开关通道：选中即保存。
+      if (channelMode !== before) autosave({ channelMode });
+    });
     $('customPublicBaseUrl').addEventListener('input', () => { resetCustomProbe(); renderStatus(lastStatus || { overview: {} }); });
     window.addEventListener('message', (e) => {
       const m = e.data;
@@ -1869,6 +1941,7 @@ export class ConfigPanel {
         renderWebAgents(m.agents ?? [], m.webAgents ?? []); renderCustom(m.custom ?? []); renderStatus(m);
       }
       else if (m.type === 'custom') renderCustom(m.custom ?? []);
+      else if (m.type === 'autosaved') onAutosaved(m);
       else if (m.type === 'status') renderStatus(m);
       else if (m.type === 'remote') renderRemote(m.view, m.paired);
       else if (m.type === 'remoteQr') showRemoteQr(m);
@@ -1987,7 +2060,7 @@ export class ConfigPanel {
         '<button class="agchip' + (on.has(a.name) ? ' on' : '') + '" data-name="' + esc(a.name) + '" title="' + esc(a.description) + '"><span class="d"></span>' + esc(a.name) + '</button>'
       ).join('');
       for (const el of $('wagrid').querySelectorAll('.agchip')) {
-        el.addEventListener('click', () => el.classList.toggle('on'));
+        el.addEventListener('click', () => { el.classList.toggle('on'); autosave({}, collectWebAgents()); });
       }
     }
     function renderCustom(custom) {
