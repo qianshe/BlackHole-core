@@ -89,6 +89,24 @@ test('a real status poll repairs manager state after startup timeout, without sp
   const { bar, item } = barFor(h); t.after(() => bar.dispose()); await bar.refreshHealth(false); await settle(); await settle();
   assert.equal(h.manager.currentState, 'running'); assert.doesNotMatch(item.text, /error/); assert.equal(h.spawns, 1);
 });
+test('a live loopback listener gets bounded startup grace instead of a false 12s failure', async t => {
+  let wall = 0;
+  class Clock extends Date { static now() { wall += 4000; return wall; } }
+  const h = host({ Date: Clock }); t.after(() => h.manager.dispose());
+  h.manager.listenerOpen = async () => true;
+  const wanted = h.manager.fingerprint();
+  let reads = 0;
+  h.api.health = async () => {
+    reads++;
+    if (reads < 4) throw Error('control plane still initializing');
+    return { ok:true, version:'fixture', daemon_id:'late-but-healthy', start_fingerprint:wanted };
+  };
+  assert.equal(await h.manager.ensureRunning(), true);
+  assert.equal(h.manager.currentState, 'running');
+  assert.deepEqual(h.notices, []);
+  assert.match(h.logs.join('\n'), /listener is open but control API is still initializing after 12s/);
+  assert.equal(h.spawns, 1);
+});
 test('health observations made before Stop or disposal cannot revive the manager', async t => {
   const h = host(); t.after(() => h.manager.dispose());
   const observation = h.manager.captureHealthObservation();

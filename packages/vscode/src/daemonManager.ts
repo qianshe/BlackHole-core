@@ -33,6 +33,10 @@ export type DaemonState = 'stopped' | 'starting' | 'running' | 'error';
 /** globalState key holding the fingerprint of the last daemon spawn. */
 const FP_KEY = 'blackhole.daemonStartFingerprint';
 const START_TIMEOUT_MS = 12_000;
+// If the new daemon has already claimed loopback, startup is real but its control
+// plane may still be doing bounded local initialization. Give only that proven
+// listener a grace window; a failed spawn with no listener still fails at 12s.
+const START_LISTENER_GRACE_MS = 18_000;
 const POST_START_HEALTH_RETRIES = 4;
 const RECONCILE_BACKOFF_MS = 15_000;
 const SHUTDOWN_TIMEOUT_MS = 12_000;
@@ -344,49 +348,69 @@ export class DaemonManager implements Disposable {
       if (fd !== undefined) fs.closeSync(fd);
     }
 
-    const deadline = Date.now() + START_TIMEOUT_MS;
-    while (Date.now() < deadline && !this.disposed) {
-      const current = await this.health(750);
-      if (this.disposed) return false;
-      if (current) {
-        const matchesLaunch = current.daemon_id && current.version === this.context.extension.packageJSON.version
-          && current.start_fingerprint === spawnFingerprint;
-        if (matchesLaunch) {
-          // One response can arrive just before a competing window retires the
-          // listener. Confirm the same identity before claiming this launch.
-          const confirmed = await this.health(750);
-          if (!confirmed || confirmed.daemon_id !== current.daemon_id
-            || confirmed.version !== current.version || confirmed.start_fingerprint !== spawnFingerprint) {
-            await sleep(100);
-            continue;
-          }
-          this.setState('running');
-          // This PID is only our ATTEMPT: another window can win with the same
-          // fingerprint. Do not claim the observed listener belongs to our child.
-          this.log.appendLine(`daemon healthy id=${current.daemon_id} attemptedSpawnPid=${child.pid} entry=${entry} log=${logFile}`);
-          await this.context.globalState.update(FP_KEY, spawnFingerprint);
-          return true;
-        }
-        if ((launchError || exited) && current.daemon_id && typeof current.version === 'string') {
-          // Our candidate lost the port race. Attach to the actual listener so
-          // activation can reconcile it; never persist OUR candidate's fingerprint
-          // or report its PID as the live daemon's PID.
-          this.reconcileNeeded = true;
-          this.setState('starting');
-          this.log.appendLine(`daemon candidate lost port race; attached to v${current.version} id=${current.daemon_id} attemptedSpawnPid=${child.pid} log=${logFile}`);
-          return true;
-        }
+    const acceptHealth = async (current: Health | undefined): Promise<boolean> => {
+      if (!current) return false;
+      const matchesLaunch = current.daemon_id && current.version === this.context.extension.packageJSON.version
+        && current.start_fingerprint === spawnFingerprint;
+      if (matchesLaunch) {
+        // One response can arrive just before a competing window retires the
+        // listener. Confirm the same identity before claiming this launch.
+        const confirmed = await this.health(750);
+        if (!confirmed || confirmed.daemon_id !== current.daemon_id
+          || confirmed.version !== current.version || confirmed.start_fingerprint !== spawnFingerprint) return false;
+        this.setState('running');
+        // This PID is only our ATTEMPT: another window can win with the same
+        // fingerprint. Do not claim the observed listener belongs to our child.
+        this.log.appendLine(`daemon healthy id=${current.daemon_id} attemptedSpawnPid=${child.pid} entry=${entry} log=${logFile}`);
+        await this.context.globalState.update(FP_KEY, spawnFingerprint);
+        return true;
       }
-      // A port-race loser can exit while the winner is still initializing. Wait
-      // for that listener, but do not spend 12s on a failed spawn with no owner.
-      if ((launchError || exited) && !(await this.listenerOpen())) {
-        return this.startFailure(launchError ?? new Error(exited));
+      if ((launchError || exited) && current.daemon_id && typeof current.version === 'string') {
+        // Our candidate lost the port race. Attach to the actual listener so
+        // activation can reconcile it; never persist OUR candidate's fingerprint
+        // or report its PID as the live daemon's PID.
+        this.reconcileNeeded = true;
+        this.setState('starting');
+        this.log.appendLine(`daemon candidate lost port race; attached to v${current.version} id=${current.daemon_id} attemptedSpawnPid=${child.pid} log=${logFile}`);
+        return true;
       }
-      await sleep(250);
+      return false;
+    };
+
+    let terminalStartFailure = false;
+    const waitUntil = async (deadline: number, healthBudget = 750): Promise<boolean> => {
+      while (Date.now() < deadline && !this.disposed) {
+        if (await acceptHealth(await this.health(healthBudget))) return true;
+        // A port-race loser can exit while the winner is still initializing. Wait
+        // for that listener, but do not spend the whole window on a failed spawn.
+        if ((launchError || exited) && !(await this.listenerOpen())) {
+          terminalStartFailure = true;
+          return this.startFailure(launchError ?? new Error(exited));
+        }
+        await sleep(250);
+      }
+      return false;
+    };
+
+    if (await waitUntil(Date.now() + START_TIMEOUT_MS)) return true;
+    if (this.disposed || terminalStartFailure) return false;
+
+    // The daemon claims the port at the start of boot, before slower local probes
+    // finish and /api/health is mounted. A live loopback listener is positive
+    // evidence that startup is still progressing, so allow a bounded grace period.
+    // No listener => preserve the original 12s fail-fast behavior.
+    if (await this.listenerOpen()) {
+      this.log.appendLine(`daemon listener is open but control API is still initializing after ${START_TIMEOUT_MS / 1000}s; waiting up to ${START_LISTENER_GRACE_MS / 1000}s more`);
+      if (await waitUntil(Date.now() + START_LISTENER_GRACE_MS, 1_000)) return true;
+      if (this.disposed || terminalStartFailure) return false;
+      if (!(await this.listenerOpen())) return this.startFailure(new Error('daemon listener closed before health became ready'));
+      this.setState('error', 'daemon control API did not become healthy (see log file)');
+      void window.showErrorMessage(`BlackHole: daemon 已占用本机端口，但控制面在 ${(START_TIMEOUT_MS + START_LISTENER_GRACE_MS) / 1000}s 内仍未就绪，日志见 ${logFile}`);
+      return false;
     }
-    if (this.disposed) return false;
+
     this.setState('error', 'daemon did not become healthy (see log file)');
-    void window.showErrorMessage(`BlackHole: daemon 启动后 12s 内未就绪，日志见 ${logFile}`);
+    void window.showErrorMessage(`BlackHole: daemon 启动后 ${START_TIMEOUT_MS / 1000}s 内未就绪，日志见 ${logFile}`);
     return false;
   }
 
