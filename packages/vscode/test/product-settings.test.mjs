@@ -46,6 +46,17 @@ test('Cloud API environment is not a user-editable product setting', () => {
   assert.doesNotMatch(panel, /key: 'cloudEnvironment'|key: 'cloudTestOrigin'|values\.cloudEnvironment|values\.cloudTestOrigin/);
   assert.doesNotMatch(read('../src/cloudAccount.ts'), /config\.get\('cloudEnvironment'\)|config\.get\('cloudTestOrigin'\)/);
 });
+
+// 用户 2026-10-03：模型归因拆成独立服务（BlackHole-courier/attribution-service），BlackHole 产品里不再有任何归因代码。
+test('model attribution is not part of BlackHole: no settings card, no control API, no daemon mount', () => {
+  const panel = read('../src/configPanel.ts');
+  const api = read('../src/controlApi.ts');
+  const daemon = read('../../../src/daemon.ts') + read('../../../src/deps.ts') + read('../../../src/control/api.ts');
+  assert.doesNotMatch(panel, /模型归因|id="fp[A-Z]|fingerprint(Config|Action|Reload|Result)/);
+  assert.doesNotMatch(api, /attribution-admin|fingerprintConfig|AttributionPolicy/);
+  assert.doesNotMatch(daemon, /attribution\/|attribution-routes|AttributionRuntime|mountAttribution/);
+  assert.equal(fs.existsSync(new URL('../../../src/attribution', import.meta.url)), false);
+});
 test('tool cards omit the initial badge without shrinking the hit area or losing content', () => {
   const source = read('../src/sidebar.ts');
   assert.doesNotMatch(source, /tool-g/);
