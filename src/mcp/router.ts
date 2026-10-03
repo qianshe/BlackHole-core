@@ -5,14 +5,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SessionRuntime } from '../runtime.js';
 import { normalizePermissionMode, type Config } from '../config.js';
-import type { DaemonDeps } from '../deps.js';
+import { bhClientSourceUrl, publicBaseUrl, type DaemonDeps } from '../deps.js';
 import { buildAccessRules } from '../workspace/rules.js';
 import { PersistentShell } from '../workspace/pwsh.js';
 import { detectExecutionEnvironment, finiteDescription } from '../execution.js';
 import { deriveAccessToken, isSessionId } from '../util/token.js';
 import { detectShell } from '../workspace/shell.js';
 import { panelHtml, PANEL_RESOURCE_URI, RESOURCE_MIME_TYPE } from '../panel/appHtml.js';
-import { publicBaseUrl } from '../deps.js';
 import { KEYLESS_TOOLS, registerTools } from './tools.js';
 import { VERSION } from '../version.js';
 import { INTEGRITY_MESSAGE, integrityFailures } from '../integrity.js';
@@ -490,6 +489,7 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
       ...deps,
       panelBase: () => presentationBase,
       panelResourceUri,
+      sandboxClientUrl: () => bhClientSourceUrl(deps),
     }, machine);
     pair.transport = transport;
     pair.server = server;

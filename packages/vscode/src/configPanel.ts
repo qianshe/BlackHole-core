@@ -614,7 +614,7 @@ export class ConfigPanel {
   private async copyConnectorDesc(): Promise<void> {
     const desc = [
       'BlackHole provides access to the current workspace through MCP.',
-      'Start with guide using the supplied sessionId. Comply with its instructions throughout the session, and use that sessionId on every BlackHole call.',
+      'Use the supplied sessionId on every BlackHole call. Call guide before workspace work and follow it.',
     ].join('\n');
     await env.clipboard.writeText(desc);
     void window.showInformationMessage('BlackHole：连接器描述已复制。');

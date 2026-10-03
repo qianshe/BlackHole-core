@@ -28,7 +28,7 @@ import type { Poller } from './poller';
 export interface SidebarHooks {
   create(): void;
   act(session: SessionInfo, action: SessionAction): void;
-  copyTemplate(session: SessionInfo, kind: 'connector' | 'sandbox', task?: string): void;
+  copyTemplate(session: SessionInfo, kind: 'connector' | 'sandbox', message?: string): void;
   /** Chat composer: send to the bound web chat, or open a new one when targetId is null (Courier). */
   chatSend(session: SessionInfo, targetId: string | null, text: string, site?: string): Promise<CourierSendResult>;
   /** Stop button: asks the bound web chat to press its own stop control (daemon relays it to Courier). */

@@ -143,3 +143,24 @@ export function publicBaseUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string 
   const channelUrl = deps.tunnel.status === 'online' || deps.tunnel.status === 'unverified' ? deps.tunnel.url : undefined;
   return (channelUrl ?? deps.cfg.publicBaseUrl ?? `http://${deps.cfg.host}:${deps.cfg.port}`).replace(/\/+$/, '');
 }
+
+/**
+ * Credential-free source URL for the optional Sandbox client recommendation.
+ * Only an explicitly public HTTP route qualifies; connector-only/OpenAI and
+ * loopback addresses must never leak into Sandbox guidance.
+ */
+export function bhClientSourceUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string | null {
+  const raw = (deps.tunnel.status === 'online' && deps.tunnel.url) || deps.cfg.publicBaseUrl;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (/^(localhost|0\.0\.0\.0|127\..*|\[?::1\]?)$/i.test(url.hostname)) return null;
+    url.pathname = url.pathname.replace(/\/+$/, '') + '/bh.py';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}

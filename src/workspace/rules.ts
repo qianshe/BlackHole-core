@@ -20,10 +20,7 @@ export function buildAccessRules(): string {
   return [
     '# BlackHole workspace access',
     '',
-    '- Read `guide` with the supplied `sessionId` before the first workspace operation,',
-    '  then follow its startup guidance and carry out the user task.',
-    '- Native connector: call `guide` directly. Script entry: use',
-    '  python3 bh.py call guide \'{}\'.',
+    '- Read `guide` with the supplied `sessionId` before the first workspace operation and follow it throughout the session.',
     '- Keep the sessionId unchanged on every BlackHole call; it selects the workspace.',
     '  Panel lifecycle, tool routing, approvals and verification are explained in `guide`.',
   ].join('\n');
@@ -33,10 +30,9 @@ export function buildAccessRules(): string {
  * The keyless generic manual served by the `guide` MCP tool. Finite-command
  * routing always targets the single stable `exec` tool; shell syntax stays in
  * that tool's dynamic metadata. One entry point for every caller:
- * connector hosts that refuse credential-like args and script clients that
- * echo a sessionId share the same policy, with startup tailored to the current
- * connection — the workspace root travels
- * with the operator's task message. The title reads "operating rules" by the
+ * connector hosts and sandbox clients that carry a sessionId share the same
+ * policy, with startup tailored to the current connection. When the session
+ * resolves, project instructions are loaded from its workspace. The title reads "operating rules" by the
  * operator's decision (2026-09-11); note connector hosts (e.g. ChatGPT) run a
  * safety classifier that may flag "rule*" tool output — if the guide is ever
  * blocked, revisit the title first (see the vocabulary note on buildAccessRules).
@@ -46,7 +42,7 @@ export function buildAccessRules(): string {
  * capability this machine cannot serve costs the agent a failed call and the
  * operator a confusing question.
  */
-export function buildGenericManual(_execShellHint: string, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script'): string {
+export function buildGenericManual(_execShellHint: string, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script', sandboxClientUrl: string | null = null): string {
   const capabilities: PromptCapabilities = { execTool: 'exec', semantic, skills, todo: true };
   return [
     '# BlackHole operating rules',
@@ -60,6 +56,9 @@ export function buildGenericManual(_execShellHint: string, semantic = false, ski
     '',
     buildStartupGuidance(startup),
     '',
+    ...(sandboxClientUrl
+      ? ['## SANDBOX ACCESS', '- Any MCP-compatible client may be used.', `- Recommended client: \`bh.py\` — ${sandboxClientUrl}`, '']
+      : []),
     '## WORKFLOW',
     '- Load the matching `guide(workflow=...)` before work only on the current user\'s explicit `plan`/`计划`, `execute-plan`, `handoff`, or `review` invocation.',
     '- Match whole English tokens, case-insensitive, with optional `/`. Without these keywords, do not load or search workflows, regardless of complexity or similar meaning.',
@@ -101,6 +100,6 @@ export function buildGenericManual(_execShellHint: string, semantic = false, ski
 }
 
 /** Keyless manual: shared workspace policy, connection-local startup guidance. */
-export function fullGenericManual(execShellHint: string, _log: (line: string) => void, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script'): string {
-  return buildGenericManual(execShellHint, semantic, skills, proxy, processes, startup);
+export function fullGenericManual(execShellHint: string, _log: (line: string) => void, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script', sandboxClientUrl: string | null = null): string {
+  return buildGenericManual(execShellHint, semantic, skills, proxy, processes, startup, sandboxClientUrl);
 }

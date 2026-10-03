@@ -367,7 +367,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     pairs: new CourierPairs(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-pairs.json'), log),
     onStarted: (id, text) => { deps.sessions.commitDraft(id, text); },
     onIdle: (id) => deps.sessionActivity?.endTurn(id),
-    connectorPrompt: (id, task, kind = 'connector') => {
+    initialPrompt: (id, message, kind = 'connector') => {
       const s = deps.sessions.get(id);
       if (!s) return { code: 'session_inactive', message: '这个 BlackHole 会话已结束' };
       const target = connectionTarget({
@@ -378,10 +378,10 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
       });
       if (kind === 'sandbox') {
         if (!target.sandbox) return { code: 'no_channel', message: SANDBOX_NEEDS_PUBLIC_URL };
-        return { text: renderPrompt('sandbox', mcpUrl(deps), s.credential_id, task) };
+        return { text: renderPrompt('sandbox', mcpUrl(deps), s.credential_id, { kind: 'user', text: message }) };
       }
       if (!target.connector) return { code: 'no_channel', message: '还没有在线的渠道：请先启动 Cloudflare 或 OpenAI 渠道，网页 AI 才能调用 BlackHole' };
-      return { text: renderPrompt('connector', '', s.credential_id, task, deps.settings?.get().values.connectorName || 'BlackHole') };
+      return { text: renderPrompt('connector', '', s.credential_id, { kind: 'user', text: message }, deps.settings?.get().values.connectorName || 'BlackHole') };
     },
     onChange: () => changes.bump(),
     onStateChange: (id) => { feed.touchState(id); },

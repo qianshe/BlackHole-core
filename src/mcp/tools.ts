@@ -74,6 +74,8 @@ export interface ToolDeps {
    * > loopback). Injected by the MCP router; absent in unit-test subsets.
    */
   panelBase?: () => string;
+  /** Credential-free source URL for the recommended Sandbox MCP client, when publicly reachable. */
+  sandboxClientUrl?: () => string | null;
   /** Resource URI versioned with the same public-base snapshot as its CSP. */
   panelResourceUri?: string;
 }
@@ -520,12 +522,12 @@ export function registerTools(
       },
     },
     async (args, extra) => {
-      const a = args as { sessionId?: string; tool?: 'exec' | 'process'; workflow?: unknown; content?: string };
+      const a = args as { sessionId?: string; entry?: 'sandbox'; tool?: 'exec' | 'process'; workflow?: unknown; content?: string };
       if (Object.prototype.hasOwnProperty.call(a, 'content')) {
         const fail = (code: string) => text({ instruction: code === 'save_unconfirmed'
           ? 'Handoff save unconfirmed. Stop work and automatic retries; ask the user to inspect the current Handoff in the plugin before deciding whether to replace it.'
           : 'Handoff not saved. Check the submission arguments and session availability.', manual: '', code }, true);
-        if (a.workflow !== 'handoff' || a.tool !== undefined || typeof a.content !== 'string'
+        if (a.workflow !== 'handoff' || a.entry !== undefined || a.tool !== undefined || typeof a.content !== 'string'
           || !a.content.trim() || Buffer.byteLength(a.content, 'utf8') > HANDOFF_MAX_BYTES) return fail('invalid_submission');
         if (!a.sessionId || !isSessionId(a.sessionId)) return fail('session_invalid');
         const metadata = { sessionId: a.sessionId, workflow: 'handoff', action: 'submit', content_bytes: Buffer.byteLength(a.content, 'utf8') };
@@ -559,7 +561,7 @@ export function registerTools(
         return text({ instruction: `Unsupported workflow. Available workflows: ${WORKFLOW_NAMES.join(', ')}.`, manual: '' }, true);
       }
       const instruction =
-        'Read and apply this operating manual before workspace operations. Follow Startup for this connection, then carry out the user task. ' +
+        'Read and apply this operating manual before workspace operations. Follow Startup for this connection. ' +
         'Reuse the manual; revisit after context loss or when an instruction is unclear.';
       const startup = startupMode();
       return attributedFeed(
@@ -603,9 +605,12 @@ export function registerTools(
               workflow: workflow.id,
             });
           }
+          const sandboxClientUrl = !a.tool && !workflow && a.entry === 'sandbox'
+            ? deps.sandboxClientUrl?.() ?? null
+            : null;
           const manual = a.tool === 'exec' ? machine.execDescription
             : a.tool === 'process' ? processHelp(deps.execution?.process.shell)
-            : fullGenericManual('exec', deps.log ?? (() => undefined), semantic?.available === true, true, deps.proxy !== undefined, deps.processes?.supported === true, startup);
+            : fullGenericManual('exec', deps.log ?? (() => undefined), semantic?.available === true, true, deps.proxy !== undefined, deps.processes?.supported === true, startup, sandboxClientUrl);
           return text({
             runtime,
             instruction: a.tool ? 'Use this supplement only for the selected tool; the operating guide still applies.' : instruction,

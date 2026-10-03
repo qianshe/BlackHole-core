@@ -32,5 +32,5 @@ export async function prepareHandoffPrompt(
       ? 'OpenAI 渠道正在启动，就绪后再复制Handoff 提示词。'
       : '当前没有可用渠道，请先启动 Cloudflare 或 OpenAI 渠道再复制Handoff 提示词。');
   }
-  return renderPrompt(kind, snapshot.mcp_url, snapshot.session.session_id, snapshot.handoff.content, connectorName, 'handoff');
+  return renderPrompt(kind, snapshot.mcp_url, snapshot.session.session_id, { kind: 'handoff', text: snapshot.handoff.content }, connectorName);
 }

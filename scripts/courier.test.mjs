@@ -161,7 +161,7 @@ test('the end reason reaches Courier: revoked vs archived vs a cut pairing', () 
 const audits = [];
 const SESSIONS = [{ id: 's-1', name: 'Fix login', status: 'active' }, { id: 's-2', name: 'Other', status: 'active' }, { id: 's-old', name: 'Gone', status: 'revoked' }];
 const log = memoryMessages();
-const hub = new CourierHub({ sendTimeoutMs: 400, startTimeoutMs: 400, sessions: () => SESSIONS, messages: log, connectorPrompt: (id, task, kind = 'connector') => ({ text: `[${kind}:${id}] ${task}` }) });
+const hub = new CourierHub({ sendTimeoutMs: 400, startTimeoutMs: 400, sessions: () => SESSIONS, messages: log, initialPrompt: (id, message, kind = 'connector') => ({ text: `[${kind}:${id}] ${message}` }) });
 const app = express();
 const server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
 mountCourier(app, server, hub, (d) => audits.push(d));

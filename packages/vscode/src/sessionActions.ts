@@ -175,7 +175,7 @@ export async function copySessionUrl(api: ControlApi, node: SessionInfo): Promis
  * the daemon each time — nothing lives in extension memory, so a rotated
  * session automatically serves its fresh id on the next copy.
  */
-export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind, task?: string): Promise<void> {
+export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind, message?: string): Promise<void> {
   const [h, s] = await Promise.all([
     api.health().catch(() => undefined),
     api.getSession(node.id).catch(() => undefined),
@@ -196,7 +196,7 @@ export async function copyTemplateSession(api: ControlApi, node: SessionInfo, ki
     return;
   }
   // The connector prompt is URL-free: it only needs some channel to be up.
-  await env.clipboard.writeText(renderPrompt(kind, url, sessionId, task ?? node.name, connectorName));
+  await env.clipboard.writeText(renderPrompt(kind, url, sessionId, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
   if (!target.connector) {
     void window.showWarningMessage('BlackHole: 连接器提示词已复制，但当前没有可用的连接渠道——请先在设置页启动 Cloudflare 或 OpenAI 渠道（点击右下角状态图标进入），网页 AI 才能调用。');
     return;

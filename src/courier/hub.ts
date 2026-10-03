@@ -173,10 +173,10 @@ export class CourierHub {
     /** The first message reached a new chat: store the draft session for real (`text` names an unnamed one). */
     onStarted?: (sessionId: string, text?: string) => void;
     /**
-     * Wraps the typed first message in the connector prompt (credential, connector name, channel
-     * check) so no client has to hold the session credential; the phone never sees it.
+     * Wraps the typed first message with the selected connection bootstrap (credential, connector
+     * name/channel check) so no client has to hold the session credential; the phone never sees it.
      */
-    connectorPrompt?: (sessionId: string, task: string, kind?: 'connector' | 'sandbox') => { text: string } | { code: string; message: string };
+    initialPrompt?: (sessionId: string, message: string, kind?: 'connector' | 'sandbox') => { text: string } | { code: string; message: string };
     /** Chat targets or pairings changed (bumps the daemon's change epoch). */
     onChange?: () => void;
     /**
@@ -682,9 +682,9 @@ export class CourierHub {
     let text = input.text;
     let shown = display;
     if (input.template != null && input.template !== 'connector' && input.template !== 'sandbox') return fail('invalid_input', '不支持这个模板');
-    if (this.opts.connectorPrompt) {
+    if (this.opts.initialPrompt) {
       const kind = templateForSite(site, this.opts.sites?.list().find((s) => s.id === site)?.origin);
-      const p = this.opts.connectorPrompt(session.id, input.text, kind);
+      const p = this.opts.initialPrompt(session.id, input.text, kind);
       if ('code' in p) return fail(p.code, p.message);
       if (p.text.length > MAX_TEXT) return fail('text_too_long', `消息超过 ${MAX_TEXT} 个字符`);
       shown = input.text.slice(0, MAX_TEXT);

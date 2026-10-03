@@ -216,7 +216,7 @@ function SessionMenu({ session, actions, goal }: { session: SessionView; actions
       </button>
       {m.open && (
         <div className={c.sessionMenu} role="menu">
-          <SessionMenuItems s={session} actions={actions} pick={pick} goal={goal} />
+          <SessionMenuItems s={session} actions={actions} pick={pick} />
         </div>
       )}
     </div>

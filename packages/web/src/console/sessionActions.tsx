@@ -11,7 +11,7 @@ import c from './console.module.css';
 export interface SessionActions {
   pauseResume: (s: SessionView, action: 'pause' | 'resume') => Promise<void>;
   copyConnection: () => Promise<void>;
-  copyPrompt: (s: SessionView, kind: 'connector' | 'sandbox', goal?: string | null) => Promise<void>;
+  copyPrompt: (s: SessionView, kind: 'connector' | 'sandbox', message?: string | null) => Promise<void>;
   rotate: (s: SessionView) => void;
   setMode: (s: SessionView, mode: PermissionMode) => void;
   revoke: (s: SessionView) => void;
@@ -66,15 +66,14 @@ export function useSessionActions({ toast, confirm, onChanged, onRotated, onRena
         const r = await unpairSession(s.id);
         toast(r.ok ? '已解除配对，之后只接收' : r.message, r.ok ? 'ok' : 'bad');
       },
-      copyPrompt: async (s, kind, goal) => {
+      copyPrompt: async (s, kind, message) => {
         try {
-          const [cred, h, g] = await Promise.all([
+          const [cred, h] = await Promise.all([
             api.sessionCredential(s.id),
             panel.health().then(
               (x): Health | null => x,
               () => null,
             ),
-            goal !== undefined ? Promise.resolve(goal) : api.todos(s.id).then((t) => t.contract?.goal ?? null, () => null),
           ]);
           const u = mcpUrl ?? h?.mcp_url ?? null;
           if (!u) return toast('还没有可用的连接地址', 'warn');
@@ -82,7 +81,7 @@ export function useSessionActions({ toast, confirm, onChanged, onRotated, onRena
           // fixed address) and the OpenAI tunnel only serves connector prompts.
           const target = h ? connectionTarget(h) : null;
           if (kind === 'sandbox' && target && !target.sandbox) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
-          const ok = await copyText(renderPrompt(kind, u, cred.session_id, g, connectorName));
+          const ok = await copyText(renderPrompt(kind, u, cred.session_id, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
           if (ok && kind === 'connector' && target && !target.connector) {
             return toast('连接器提示词已复制，但还没有在线的渠道：请先启动 Cloudflare 或 OpenAI 渠道', 'warn');
           }
@@ -138,7 +137,7 @@ export function useSessionActions({ toast, confirm, onChanged, onRotated, onRena
 }
 
 /** Menu body for one session. `withPause` adds pause/resume (the header already has a button for it). */
-export function SessionMenuItems({ s, actions, pick, withPause, goal }: { s: SessionView; actions: SessionActions; pick: (fn: () => void) => () => void; withPause?: boolean; goal?: string | null }) {
+export function SessionMenuItems({ s, actions, pick, withPause }: { s: SessionView; actions: SessionActions; pick: (fn: () => void) => () => void; withPause?: boolean }) {
   const ended = s.status === 'revoked' || s.status === 'archived';
   const paired = usePairLink(s.id) === 'paired';
   return (
@@ -153,10 +152,10 @@ export function SessionMenuItems({ s, actions, pick, withPause, goal }: { s: Ses
       </button>
       {/* Same groups, order and wording as the VS Code session menu: 会话 · 提示词 · 网页会话 · 权限 · 会话 ID / 终止 */}
       <div className={c.menuSep} role="separator" />
-      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'connector', goal))}>
+      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'connector'))}>
         复制连接器提示词
       </button>
-      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'sandbox', goal))}>
+      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'sandbox'))}>
         复制沙箱提示词
       </button>
       {paired && !ended && (

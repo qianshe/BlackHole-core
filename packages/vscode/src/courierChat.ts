@@ -10,8 +10,8 @@ const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 export async function chatSend(api: ControlApi, s: SessionInfo, targetId: string | null, text: string, site: string = 'arena'): Promise<CourierSendResult> {
   try {
     if (targetId) return await api.courierSend({ targetId, sessionId: s.id, text });
-    // The daemon wraps the typed text in the connector prompt (its Task); the thread and the
-    // session name show only the typed text.
+    // The daemon appends the typed text to the connection bootstrap; the thread and the
+    // session name show only the typed text, never the bootstrap.
     // The daemon picks the template by site (connector: ChatGPT/Claude/Manus, sandbox otherwise); this one is ignored.
     return await api.courierStart({ sessionId: s.id, text, site, template: site === 'arena' ? 'sandbox' : 'connector' });
   } catch (e) {

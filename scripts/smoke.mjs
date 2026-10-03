@@ -354,7 +354,7 @@ async function main() {
     const ruleRes = await client.readResource({ uri: 'blackhole://rules' });
     assert.ok(ruleRes.contents[0]?.text.includes('`sessionId`'), 'resources/read returns the access-level manual (sessionId discipline)');
     assert.match(ruleRes.contents[0]?.text ?? '', /Read `guide`.*before the first workspace operation/s, 'access manual starts with guide, not a panel prerequisite');
-    assert.match(ruleRes.contents[0]?.text ?? '', /Native connector:[\s\S]*Script entry:/, 'access manual documents the native and bh.py startup entries without a panel prerequisite');
+    assert.doesNotMatch(ruleRes.contents[0]?.text ?? '', /Native connector:|Script entry:|bh\.py|python3|curl/, 'access manual delegates client choice to guide/bootstrap instead of prescribing a script');
     const askPrompt = await client.getPrompt({ name: 'blackhole_operator', arguments: {} });
     assert.ok(askPrompt.messages[0]?.content.text.includes('Read `guide`'), 'prompts/get points to the common guide entry');
     ok('rules resource + operator prompt registered (bh.py ask works)');

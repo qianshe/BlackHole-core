@@ -2,13 +2,11 @@
 # BlackHole CLI — lets a website's code sandbox (bash/python) drive the local
 # BlackHole MCP server directly over Streamable HTTP. Zero dependencies.
 #
-# Setup inside the remote sandbox (use the operator's complete download URL):
-#   curl -fsSL 'https://<tunnel>/bh.py?sessionid=<id>' -o bh.py
-# The downloaded copy carries the endpoint and session id; they win over the
-# BH_URL/BH_SESSIONID env vars (a stale export cannot redirect it). Only explicit
-# --url/--sessionid flags override them.
-# bh.py is the MCP client for this mode, even inside ChatGPT.
-# Read guide first, then follow it for the task.
+# BlackHole may expose this source to a remote sandbox as a recommended MCP client.
+# Review the file before use. A served copy carries the MCP endpoint; legacy
+# downloads with ?sessionid=<id> may also carry the session id. Injected values
+# win over BH_URL/BH_SESSIONID; explicit --url/--sessionid flags override them.
+# Read guide first, then follow it for workspace work.
 #
 # Usage:
 #   python3 bh.py call guide                     # common operating manual

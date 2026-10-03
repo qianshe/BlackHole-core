@@ -36,7 +36,7 @@ test('OpenAI-only: connector prompt copies without a loopback warning and names 
   const h = actions(oaOnly);
   await h.mod.copyTemplateSession(h.api, h.node, 'connector');
   assert.equal(h.clipboard.length, 1);
-  assert.ok(h.clipboard[0].startsWith('@Team\n')); assert.ok(!h.clipboard[0].includes('127.0.0.1'));
+  assert.ok(h.clipboard[0].startsWith('@Team\n')); assert.ok(!h.clipboard[0].includes('127.0.0.1')); assert.doesNotMatch(h.clipboard[0], /Task:|fix it|paste your task/i);
   assert.deepEqual(h.warnings, []); assert.match(h.statuses[0], /OpenAI 渠道.*@Team/);
 });
 
@@ -48,7 +48,7 @@ test('sandbox prompt is never copied with a loopback bootstrap URL; a public URL
   }
   const both = actions({ ...oaOnly, mcp_url: PUB, tunnel: 'online', tunnel_url: 'https://pub.example' });
   await both.mod.copyTemplateSession(both.api, both.node, 'sandbox');
-  assert.match(both.clipboard[0], /https:\/\/pub\.example\/bh\.py\?sessionid=/); assert.deepEqual(both.warnings, []);
+  assert.match(both.clipboard[0], /BlackHole MCP: https:\/\/pub\.example\/mcp\/token/); assert.match(both.clipboard[0], /entry: "sandbox"/); assert.doesNotMatch(both.clipboard[0], /bh\.py|curl|python|Task:/); assert.deepEqual(both.warnings, []);
 });
 
 test('no channel: connector prompt still copies but asks to start Cloudflare or OpenAI', async () => {

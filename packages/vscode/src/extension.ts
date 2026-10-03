@@ -26,7 +26,7 @@ export function activate(context: ExtensionContext): void {
   const sidebar = new SidebarProvider(api, daemon, poller, {
     create: () => void createSession(api, daemon, openCreated),
     act: (s, a) => void sessionAction(api, s, a, refresh),
-    copyTemplate: (s, kind, task) => void copyTemplateSession(api, s, kind, task),
+    copyTemplate: (s, kind, message) => void copyTemplateSession(api, s, kind, message),
     chatSend: (s, targetId, text, site) => chatSend(api, s, targetId, text, site),
     chatStop: (s, targetId) => chatStop(api, s, targetId),
       chatCard: async (s, targetId) => {

@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     case 'create': {
       const workspace = positional[0];
       if (!workspace) {
-        process.stderr.write('usage: blackhole create <workspace> [--mode read-only|workspace-write|danger-full-access] [--name <task>] [--expires-in-s N] [--copy url|prompt]\n');
+        process.stderr.write('usage: blackhole create <workspace> [--mode read-only|workspace-write|danger-full-access] [--name <name>] [--expires-in-s N] [--copy url|prompt]\n');
         process.exit(2);
       }
       const mode = (str(flags, 'mode') ?? 'workspace-write') as PermissionMode;
