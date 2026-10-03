@@ -157,10 +157,12 @@ export function execDescription(hasPwsh: boolean, shellName: string, processes =
 
 const EDITOR_DESCRIPTION = [
   'Workspace file tool for reading and modifying files and directories — use it for all ordinary file inspection and editing, not the command tool.',
-  'Pass shared `sessionId` and `path` at the top level, then put the command and its command-specific fields inside the strict `operation` object. Commands: `view`, `create`, `str_replace`, `insert`, `delete`. View before editing; all paths stay inside the workspace.',
+  'Pass shared `sessionId` and `path` at the top level, then put the command and its command-specific fields inside the strict `operation` object. Commands: `view`, `create`, `str_replace`, `insert`, `delete`. View before editing.',
+  'Reach follows the session permission mode: the workspace by default, plus operator-granted directories under workspace-write, anywhere under danger-full-access.',
+  '`view` on a PNG/JPEG/GIF/WebP file returns the image itself (up to 5 MB, no `view_range`); other binary files are reported, not printed.',
 ].join(' ');
 
-const WORKSPACE_EDITOR_PATH_SCHEMA = z.string().describe('Path relative to the workspace root (absolute paths must stay inside it).');
+const WORKSPACE_EDITOR_PATH_SCHEMA = z.string().describe('Path relative to the workspace root, or absolute; absolute paths outside the workspace work only where the permission mode allows.');
 const WORKSPACE_EDITOR_OPERATION_SCHEMA = z.discriminatedUnion('command', [
   z.object({
     command: z.literal('view'),
@@ -244,14 +246,19 @@ export function registerTools(
   const editorFor = (rt: SessionRuntime): WorkspaceEditor => {
     let e = editors.get(rt.session.id);
     if (!e) {
-      e = new WorkspaceEditor(rt.workspace);
+      const id = rt.session.id;
+      // Live: a permission-mode / writable-dir change reaches the cached editor immediately.
+      e = new WorkspaceEditor(rt.workspace, () => {
+        const row = (typeof deps.sessions.get === 'function' ? deps.sessions.get(id) : undefined) ?? rt.session;
+        return { mode: normalizePermissionMode(row.permission_mode), writableDirs: row.writable_dirs ?? [] };
+      });
       editors.set(rt.session.id, e);
     }
     return e;
   };
   const execTool = 'exec';
 
-  const withCallTracking = async <T extends { isError?: boolean; content: { text: string }[] }>(
+  const withCallTracking = async <T extends { isError?: boolean; content: ReadonlyArray<{ type?: string; text?: string }> }>(
     // proxy host 只要求 session 主键；SessionRuntime 结构上满足即可
     rt: { session: { id: string } },
     tool: string,
@@ -906,9 +913,11 @@ export function registerTools(
       const editor = editorFor(rt);
       let navigationJson: string | undefined;
       const reply = (res: EditorResult) => {
-        const { navigation, ...publicResult } = res;
+        const { navigation, image, ...publicResult } = res;
         if (navigation) navigationJson = JSON.stringify(navigation);
-        return text({ result: publicResult }, res.isError);
+        const out = text({ result: publicResult }, res.isError);
+        // 图片块排在 JSON 文本之后：调用记录和事件只取 content[0] 的文本，图片字节不进数据库。
+        return image ? { ...out, content: [...out.content, { type: 'image' as const, data: image.data, mimeType: image.mimeType }] } : out;
       };
       return withCallTracking(rt, WORKSPACE_FILE_TOOL, a, async () => {
         const mode = rt.session.permission_mode;
@@ -1266,6 +1275,8 @@ export function registerTools(
               workspaceRoot: rt.workspace,
               query,
               ...(a.path ? { subPath: a.path } : {}),
+              // Full access may search any directory on this machine, like exec.
+              ...(normalizePermissionMode(rt.session.permission_mode) === 'danger-full-access' ? { allowOutside: true } : {}),
               ...(a.tree_depth ? { treeDepth: clampInt(a.tree_depth, 1, 6, 3) } : {}),
               ...(a.max_turns ? { maxTurns: clampInt(a.max_turns, 1, 5, 3) } : {}),
               ...(a.max_results ? { maxResults: clampInt(a.max_results, 1, 30, 10) } : {}),
