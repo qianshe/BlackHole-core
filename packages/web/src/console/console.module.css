@@ -1029,6 +1029,44 @@
 }
 
 /* inspector */
+/* Wide: a transparent wrapper (the inspector stays a grid item); the toggle only
+   exists on narrow screens (see the max-width: 1100px block). */
+.inspectorDock {
+  display: contents;
+}
+.inspectorToggle {
+  display: none;
+  position: relative;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-2);
+  box-shadow: var(--shadow-pop);
+  cursor: default;
+}
+.inspectorToggle:hover,
+.inspectorDock:focus-within .inspectorToggle {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.inspectorToggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.inspectorBadge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  border: 1.5px solid var(--surface);
+}
 .inspector {
   grid-column: 3;
   grid-row: 1 / -1;
@@ -1694,7 +1732,7 @@
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto;
     overflow: auto;
   }
   .splitter {
@@ -1705,18 +1743,45 @@
     grid-row: 1;
     overflow: visible;
   }
-  .inspector {
+  /* No room for the side column: the details never stack under the replies.
+     They float from a top-right icon (sticky, zero height so it takes no space)
+     and open on hover / keyboard focus; leaving closes them. */
+  .inspectorDock {
+    display: block;
     grid-column: 1;
-    grid-row: 2;
-    border-left: 0;
-    border-top: 1px solid var(--border);
-    overflow: visible;
+    grid-row: 1;
+    justify-self: end;
+    align-self: start;
+    position: sticky;
+    top: 8px;
+    height: 0;
+    margin-right: 12px;
+    z-index: 7;
   }
-  /* single column: the composer trails the stack and stays pinned to the bottom
+  .inspectorToggle {
+    display: inline-flex;
+  }
+  .inspector {
+    display: none;
+    position: absolute;
+    top: 28px;
+    right: 0;
+    width: min(360px, calc(100vw - 80px));
+    max-height: min(70vh, 640px);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-pop);
+  }
+  .inspectorDock:hover .inspector,
+  .inspectorDock:focus-within .inspector {
+    display: block;
+  }
+  /* single column: the composer trails the feed and stays pinned to the bottom
      of the scrolling workspace, as it was before the grid slot */
   .dockCell {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
     position: sticky;
     bottom: 0;
     z-index: 4;
@@ -1861,6 +1926,8 @@
 @media (max-width: 1100px) {
   .narrowApprovals {
     display: flex;
+    /* clear the floating details icon at the top right */
+    padding-right: 52px;
   }
 }
 @media (max-width: 760px) {

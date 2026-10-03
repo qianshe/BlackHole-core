@@ -531,6 +531,15 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
           onDoubleClick={split.reset}
         />
 
+        {/* Wide: the dock is display:contents, so the inspector stays grid column 3.
+            Narrow (≤1100px): it becomes a top-right icon; the panel opens on hover or
+            focus and closes when the pointer/focus leaves. Approvals keep their
+            click-to-open bar in the feed. */}
+        <div className={c.inspectorDock}>
+        <button type="button" className={c.inspectorToggle} aria-label="会话详情" title="会话详情" aria-controls="session-inspector">
+          <Icon name="list" size={14} />
+          {approvals.length > 0 && <span className={c.inspectorBadge} aria-hidden="true" />}
+        </button>
         <aside id="session-inspector" className={c.inspector} aria-label="会话详情">
           <h2 className={c.inspectorTitle}>会话详情</h2>
           {approvals.length > 0 && (
@@ -620,6 +629,7 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             </dl>
           </div>
         </aside>
+        </div>
       </div>
     </section>
   );
