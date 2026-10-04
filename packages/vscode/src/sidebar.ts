@@ -22,7 +22,7 @@ function mermaidAsset(): string {
   mermaidAssetPath = name ? path.join(dir, name) : '';
   return mermaidAssetPath;
 }
-import type { CallRow, ChannelSwitchView, ControlApi, CourierMessageView, CourierSendResult, CourierSiteChoice, CourierStopResult, CourierTargetView, PendingHandoff, PermissionMode, SessionAction, SessionInfo, SessionLink, TodoItem, TunnelState } from './controlApi';
+import type { CallRow, ChannelSwitchView, ControlApi, CourierMessageView, CourierSendResult, CourierSiteChoice, CourierStopResult, CourierTargetView, OpenAITunnelView, PendingHandoff, PermissionMode, SessionAction, SessionInfo, SessionLink, TodoItem, TunnelState } from './controlApi';
 import type { DaemonManager } from './daemonManager';
 import type { Poller } from './poller';
 
@@ -34,12 +34,37 @@ const CHANNEL_MISSING: Record<string, string> = {
   start_failed: '渠道没有启动，原因见鼠标悬停提示。',
 };
 
+const OPENAI_TUNNEL_ID = /^tunnel_[0-9a-f]{32}$/;
+const OPENAI_ONBOARD_LINKS = new Map([
+  ['platform', 'https://platform.openai.com/settings/organization/tunnels'],
+]);
+const OPENAI_SETUP_ERRORS: Record<string, string> = {
+  empty_api_key: '请输入 Runtime API Key，或使用本机已经保存的密钥。',
+  invalid_api_key: 'Runtime API Key 格式不正确；请检查后重试。',
+  openai_tunnel_unsupported: '当前 daemon 不支持 OpenAI Tunnel；请重启 daemon 后重试。',
+  openai_tunnel_unavailable: '当前 daemon 不支持 OpenAI Tunnel；请重启 daemon 后重试。',
+  settings_changed: '连接设置刚刚发生变化；请确认当前值后重试。',
+  revision_conflict: '连接设置刚刚发生变化；请确认当前值后重试。',
+  credential_changed: 'Runtime API Key 刚刚发生变化；请确认后重试。',
+  already_running: 'OpenAI Tunnel 正以另一套配置运行；请先在连接设置中停止后再重试。',
+};
+const validOpenaiApiKey = (value: string): boolean => {
+  if (value.length < 8 || value.length > 1024) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 33 || code > 126) return false;
+  }
+  return true;
+};
+
 export interface SidebarHooks {
   /** 首次引导的渠道卡片是否已被用户点过「稍后」（存在 globalState，跨窗口保留）。 */
   setupDismissed?(): boolean;
   dismissSetup?(dismissed: boolean): void;
   /** 下载并验证 cloudflared，把路径存进设置（和设置页的一键安装是同一个安装程序）。 */
   installCloudflared?(): Promise<void>;
+  /** 下载并验证 OpenAI tunnel-client runtime，并把已验证路径存进 VS Code 设置；不启动渠道。 */
+  installOpenaiTunnel?(): Promise<{ path: string; installed: boolean; version: string }>;
   create(): void;
   act(session: SessionInfo, action: SessionAction): void;
   copyTemplate(session: SessionInfo, kind: 'connector' | 'sandbox', message?: string): void;
@@ -59,7 +84,8 @@ export interface SidebarHooks {
 
 interface ViewMessage {
   type: 'ready' | 'create' | 'refresh' | 'settings' | 'open' | 'back' | 'action' | 'copyTemplate' | 'approve' | 'deny' | 'webAgent' | 'callOlder' | 'mode' | 'cancel' | 'reorder' | 'openCallResource' | 'copyHandoff' | 'previewHandoff' | 'cancelHandoffPreview' | 'chatSend' | 'chatStop' | 'openLink' | 'unpair' | 'rename' | 'chatReload' | 'chatCard' | 'copyText' | 'courierImages'
-    | 'signIn' | 'channelToggle' | 'setupStart' | 'setupDismiss' | 'setupResume';
+    | 'signIn' | 'channelToggle' | 'setupStart' | 'setupDismiss' | 'setupResume' | 'setupChoose'
+    | 'openaiSetupStart' | 'openaiSetupBack' | 'openaiConnect' | 'openOpenaiLink';
   /** channelToggle：打开还是关闭渠道总开关。 */
   on?: boolean;
   /** courierImages: how many images the sent message carries. */
@@ -80,6 +106,10 @@ interface ViewMessage {
   text?: string;
   /** chatSend without a bound chat: which site Courier opens (draft card buttons). */
   site?: string;
+  /** OpenAI onboarding: fixed link target, Tunnel ID draft and one-shot Runtime API Key draft. */
+  target?: 'platform';
+  tunnelId?: string;
+  apiKey?: string;
 }
 
 /** 详情页时间线的 feed 首屏条数与每次往上翻的条数（调用 + 回复，最新的在下面）。 */
@@ -160,6 +190,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   private channelBusy = false;
   /** 首次引导：一键安装 cloudflared 并启动临时渠道的进度（null = 没在进行）。 */
   private setup: { step: 'install' | 'restart' | 'start' | 'failed'; failedAt?: 'install' | 'restart' | 'start'; error?: string } | null = null;
+  /** OpenAI onboarding只保存瞬时流程状态；密钥草稿只存在 webview，绝不存这里。 */
+  private openaiSetup: { step: 'installing' | 'configure' | 'connecting' | 'failed'; runtimeReady: boolean; path?: string; version?: string; failedAt?: 'install' | 'connect'; error?: string } | null = null;
+  private openaiSetupGeneration = 0;
+  private openaiView: OpenAITunnelView | null = null;
+  private openaiSettings: { tunnelId: string; clientConfigured: boolean } = { tunnelId: '', clientConfigured: false };
   /** 开关缺前提时给用户的一句话（下次刷新清掉）。 */
   private channelNote: string | null = null;
   private disposed = false;
@@ -395,13 +430,18 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     let complete = true;
     const failed = <T>(fallback: T): T => { complete = false; return fallback; };
     // 全量拉取待审批确认：审批条在列表/详情两种模式下都要渲染（样式与内联框一致）
-    const [sessions, health, pendingAll, channel] = await Promise.all([
+    const [sessions, health, pendingAll, channel, settings] = await Promise.all([
       this.api.listSessions().then((r) => r.sessions).catch(() => failed(undefined)),
       this.api.health().catch(() => failed(undefined)),
       this.api.confirmations().then((r) => r.confirmations.filter((c) => c.status === 'pending')).catch(() => failed([])),
       // 拉取失败即清空：daemon 不可达时没有可处理的审批，徽标绝不残留旧数字
       // 渠道总开关是可选的：旧版 daemon 没有这个接口，不影响列表。
       Promise.resolve().then(() => this.api.channel()).catch(() => null),
+      // 只有首次欢迎页/正在进行的 OpenAI 引导需要这些非敏感设置事实；
+      // 已有正常会话时不为侧栏轮询额外读取 /settings。旧 daemon 仍保持兼容。
+      this.mode === 'sessions' && (this.openaiSetup !== null || !this.sessions.some((s) => !s.draft))
+        ? Promise.resolve().then(() => this.api.settings()).catch(() => null)
+        : Promise.resolve(null),
     ]);
     if (!current()) return;
     this.channel = channel;
@@ -410,7 +450,27 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       this.sessions = sessions.filter((s) => s.status !== 'revoked' && s.status !== 'archived');
     }
     this.tunnel = health ? { status: health.tunnel, url: health.tunnel_url, mode: health.tunnel_mode, reason: health.tunnel_reason } : null;
-    this.openai = health?.openai_tunnel?.status ?? null;
+    this.openaiView = health?.openai_tunnel ?? null;
+    this.openai = this.openaiView?.status ?? null;
+    if (settings) {
+      const tunnelId = typeof settings.values.openaiTunnelId === 'string' ? settings.values.openaiTunnelId.trim() : '';
+      const clientPath = typeof settings.values.openaiTunnelClientPath === 'string' ? settings.values.openaiTunnelClientPath.trim() : '';
+      this.openaiSettings = { tunnelId, clientConfigured: !!clientPath };
+    }
+    if (this.openaiSetup && this.openaiView?.status === 'ready') {
+      this.openaiSetup = null;
+      this.hooks.dismissSetup?.(false);
+    } else if (this.openaiSetup?.step === 'connecting'
+      && this.openaiView
+      && ['error', 'unavailable', 'off'].includes(this.openaiView.status)) {
+      this.openaiSetup = {
+        ...this.openaiSetup,
+        step: 'failed',
+        failedAt: 'connect',
+        error: this.openaiView.reason
+          || (this.openaiView.status === 'off' ? 'OpenAI Tunnel 已停止；请检查配置后重新连接。' : 'OpenAI Tunnel 连接失败。'),
+      };
+    }
     this.pending = pendingAll;
     this.handoffSynchronized = sessions !== undefined && health !== undefined;
     const endpoint = JSON.stringify(getConfig());
@@ -534,6 +594,126 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     if (!this.disposed) void window.showInformationMessage('BlackHole：已提交临时渠道启动请求，连接状态将在侧栏更新。');
     await this.refresh(true);
   }
+  private openaiSetupError(error: unknown): string {
+    const code = (error as { message?: unknown } | null)?.message;
+    if (typeof code === 'string' && OPENAI_SETUP_ERRORS[code]) return OPENAI_SETUP_ERRORS[code];
+    return typeof code === 'string' ? code : String(error);
+  }
+
+  /** OpenAI 是与临时渠道并列的首次连接路径：选择后立即验证/安装 runtime，不依赖 cloudflared。 */
+  private async startOpenaiSetup(): Promise<void> {
+    if (this.openaiSetup?.step === 'installing' || this.openaiSetup?.step === 'connecting') return;
+    this.hooks.dismissSetup?.(false);
+    const generation = ++this.openaiSetupGeneration;
+    this.openaiSetup = { step: 'installing', runtimeReady: false };
+    this.channelNote = null;
+    this.postUpdate();
+    try {
+      if (!this.hooks.installOpenaiTunnel) throw new Error('当前版本不支持 OpenAI tunnel-client 一键安装，请打开连接设置。');
+      const result = await this.hooks.installOpenaiTunnel();
+      if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      this.openaiSetup = { step: 'configure', runtimeReady: true, path: result.path, version: result.version };
+    } catch (error) {
+      if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      this.openaiSetup = { step: 'failed', runtimeReady: false, failedAt: 'install', error: this.openaiSetupError(error) };
+    }
+    this.postUpdate();
+  }
+
+  private leaveOpenaiSetup(): void {
+    this.openaiSetupGeneration++;
+    this.openaiSetup = null;
+    this.channelNote = null;
+    this.postUpdate();
+  }
+
+  /** One onboarding submit: persist the non-secret fields, save/retain the secret, then start OpenAI. */
+  private async connectOpenai(tunnelIdRaw: unknown, apiKeyRaw: unknown): Promise<void> {
+    if (this.openaiSetup?.step === 'installing' || this.openaiSetup?.step === 'connecting') return;
+    const tunnelId = typeof tunnelIdRaw === 'string' ? tunnelIdRaw.trim() : '';
+    const apiKey = typeof apiKeyRaw === 'string' ? apiKeyRaw.trim() : '';
+    const pathFromSetup = this.openaiSetup?.path;
+    if (!OPENAI_TUNNEL_ID.test(tunnelId)) {
+      this.openaiSetup = { ...(this.openaiSetup ?? { runtimeReady: !!pathFromSetup }), step: 'failed', runtimeReady: !!pathFromSetup, failedAt: 'connect', error: 'Tunnel ID 格式不正确；请从 OpenAI Platform 复制完整的 tunnel_ ID。' };
+      this.postUpdate();
+      return;
+    }
+    if (apiKey && !validOpenaiApiKey(apiKey)) {
+      this.openaiSetup = { ...(this.openaiSetup ?? { runtimeReady: !!pathFromSetup }), step: 'failed', runtimeReady: !!pathFromSetup, failedAt: 'connect', error: OPENAI_SETUP_ERRORS.invalid_api_key };
+      this.postUpdate();
+      return;
+    }
+    const generation = ++this.openaiSetupGeneration;
+    const base = this.openaiSetup ?? { step: 'configure' as const, runtimeReady: !!pathFromSetup, path: pathFromSetup };
+    this.openaiSetup = { ...base, step: 'connecting', runtimeReady: base.runtimeReady };
+    this.postUpdate();
+    try {
+      const [health, settings] = await Promise.all([this.api.health(), this.api.settings()]);
+      if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      const view = health.openai_tunnel;
+      if (!view || health.openai_tunnel_api_version !== 1 || !health.daemon_id) throw new Error('openai_tunnel_unsupported');
+      const configuredPath = typeof settings.values.openaiTunnelClientPath === 'string' ? settings.values.openaiTunnelClientPath.trim() : '';
+      const clientPath = pathFromSetup || configuredPath;
+      if (!clientPath) throw new Error('tunnel-client 尚未安装完成。');
+      if (!apiKey && view.credential_configured !== true) throw new Error('empty_api_key');
+
+      const desiredSettings = {
+        openaiTunnelId: tunnelId,
+        openaiTunnelClientPath: clientPath,
+        channelMode: 'openai',
+      };
+      let saved;
+      try {
+        saved = await this.api.patchSettings(desiredSettings, settings.revision);
+      } catch (error) {
+        if ((error as { message?: unknown } | null)?.message !== 'revision_conflict') throw error;
+        const fresh = await this.api.settings();
+        const changedElsewhere = Object.entries(desiredSettings).some(([key, wanted]) => {
+          const before = settings.values[key];
+          const now = fresh.values[key];
+          return JSON.stringify(now) !== JSON.stringify(before) && JSON.stringify(now) !== JSON.stringify(wanted);
+        });
+        if (changedElsewhere) throw new Error('settings_changed');
+        saved = await this.api.patchSettings(desiredSettings, fresh.revision);
+      }
+      this.openaiSettings = { tunnelId, clientConfigured: true };
+
+      let credentialRevision = view.credential_revision;
+      if (apiKey) {
+        const credential = await this.api.openaiTunnelSetKey(health.daemon_id, credentialRevision, apiKey);
+        credentialRevision = credential.credential_revision;
+        // The plaintext draft has served its purpose once the secret store confirms the write.
+        // Clear it in the webview before starting the tunnel; a later start failure should reuse
+        // credential_configured=true instead of retaining or re-submitting the secret.
+        this.openaiView = { ...view, ...credential };
+        await this.post({ type: 'openaiCredentialStored' });
+      }
+      const started = await this.api.openaiTunnelStart(health.daemon_id, saved.revision, credentialRevision);
+      if (!['starting', 'ready', 'recovering'].includes(started.status)) throw new Error(started.reason_code || started.reason || 'start_failed');
+      if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      this.openaiView = started;
+      this.openai = started.status;
+      this.openaiSetup = started.status === 'ready'
+        ? null
+        : { step: 'connecting', runtimeReady: true, path: clientPath, version: base.version };
+      this.hooks.dismissSetup?.(false);
+      await this.refresh(true);
+    } catch (error) {
+      if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      const current = this.openaiSetup;
+      this.openaiSetup = {
+        step: 'failed',
+        runtimeReady: current?.runtimeReady ?? !!pathFromSetup,
+        path: current?.path ?? pathFromSetup,
+        version: current?.version,
+        failedAt: 'connect',
+        error: this.openaiSetupError(error),
+      };
+      this.postUpdate();
+      await this.refresh(true);
+    }
+  }
+
 
   /** 详情页往上翻：由 feed 读下一页更早的调用与回复（/history），状态变化经 onFeed 推给页面。 */
   private async loadOlder(): Promise<void> {
@@ -571,6 +751,20 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       channelNote: this.channelNote,
       setup: this.setup,
       setupDismissed: this.hooks.setupDismissed?.() ?? false,
+      openaiOnboarding: this.openaiSetup ? {
+        step: this.openaiSetup.step,
+        runtimeReady: this.openaiSetup.runtimeReady,
+        version: this.openaiSetup.version ?? null,
+        failedAt: this.openaiSetup.failedAt ?? null,
+        error: this.openaiSetup.error ?? null,
+      } : null,
+      openaiConfig: {
+        tunnelId: this.openaiSettings.tunnelId,
+        clientConfigured: this.openaiSettings.clientConfigured,
+        credentialConfigured: this.openaiView?.credential_configured ?? null,
+        status: this.openaiView?.status ?? null,
+        reason: this.openaiView?.reason ?? null,
+      },
       selected: this.mode === 'calls' ? this.selected() : undefined,
       // 只送当前页：旧会话几百条记录时不再每轮全量展开+解析+过桥大 payload
       calls:
@@ -784,6 +978,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       case 'settings':
         await commands.executeCommand('blackhole.openSettings');
         return;
+      case 'openOpenaiLink': {
+        const url = typeof m.target === 'string' ? OPENAI_ONBOARD_LINKS.get(m.target) : undefined;
+        if (url) await env.openExternal(Uri.parse(url));
+        return;
+      }
       case 'signIn':
         // 和设置页同一个登录命令：在浏览器里完成，账号状态变化经 updateAccount 推回来。
         await commands.executeCommand('blackhole.accountSignIn');
@@ -794,6 +993,15 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       case 'setupStart':
         await this.runSetup();
         return;
+      case 'openaiSetupStart':
+        await this.startOpenaiSetup();
+        return;
+      case 'openaiSetupBack':
+        this.leaveOpenaiSetup();
+        return;
+      case 'openaiConnect':
+        await this.connectOpenai(m.tunnelId, m.apiKey);
+        return;
       case 'setupDismiss':
         this.hooks.dismissSetup?.(true);
         if (this.setup?.step === 'failed') this.setup = null;
@@ -803,6 +1011,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         // Reveal the existing setup UI only; never install or start a channel implicitly.
         this.hooks.dismissSetup?.(false);
         this.postUpdate();
+        return;
+      case 'setupChoose':
+        this.hooks.dismissSetup?.(false);
+        if (this.setup?.step === 'failed') this.setup = null;
+        this.leaveOpenaiSetup();
         return;
       case 'webAgent':
         await commands.executeCommand('blackhole.openLocalWeb');
@@ -1044,6 +1257,25 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .bh-onboard h2 { margin: 0 0 12px; font-size: 21px; font-weight: 500; line-height: 1.4; letter-spacing: -.4px; text-wrap: balance; }
   .bh-onboard p { margin: 0; font-size: 12px; line-height: 1.8; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
   .bh-onboard-actions { display: flex; flex-direction: column; align-items: center; gap: 7px; margin-top: 23px; }
+  .bh-onboard-options { display: grid; gap: 9px; margin-top: 22px; text-align: left; }
+  .bh-onboard-option { width: 100%; padding: 11px 12px; border: 1px solid var(--vscode-panel-border) !important; background: transparent; color: var(--vscode-foreground); text-align: left; }
+  .bh-onboard-option:hover { border-color: var(--vscode-focusBorder) !important; background: var(--vscode-list-hoverBackground); }
+  .bh-onboard-option strong, .bh-onboard-option span { display: block; }
+  .bh-onboard-option strong { font-size: 12px; font-weight: 600; }
+  .bh-onboard-option span { margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.55; }
+  .bh-openai-form { margin-top: 20px; text-align: left; }
+  .bh-openai-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 0; border-top: 1px solid var(--vscode-panel-border); border-bottom: 1px solid var(--vscode-panel-border); font-size: 11px; }
+  .bh-openai-runtime .ok { color: var(--vscode-charts-green); }
+  .bh-openai-runtime .bad { color: var(--vscode-errorForeground); }
+  .bh-openai-field { margin-top: 15px; }
+  .bh-openai-field label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--vscode-foreground); }
+  .bh-openai-field-row { display: flex; gap: 7px; align-items: stretch; }
+  .bh-openai-field input { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; outline: none; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: 11px var(--vscode-editor-font-family); }
+  .bh-openai-field input:focus { border-color: var(--vscode-focusBorder); }
+  .bh-openai-field-row .link { flex: none; color: var(--vscode-textLink-foreground); }
+  .bh-openai-note { margin-top: 5px; font-size: 10.5px; line-height: 1.55; color: var(--vscode-descriptionForeground); }
+  .bh-openai-note.done { color: var(--vscode-charts-green); }
+  .bh-openai-note.bad { color: var(--vscode-errorForeground); }
   .bh-onboard button, .bh-onboard summary { font: inherit; font-size: 12px; cursor: pointer; }
   .bh-onboard button { border: 0; border-radius: 4px; line-height: 1.6; }
   .bh-onboard .primary { width: 100%; min-height: 34px; padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
@@ -1584,24 +1816,27 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
           + (c.state === 'error' && c.reason ? ' · 上次失败：' + c.reason : '');
     }
 
-    // B / focused welcome: presentation only. Account and channel facts still come from the host.
+    // B / focused welcome: connection choice is presentation state; actual channel facts still come from the host.
     let signInOpened = false, onboardEngaged = false, onboardNode = null, onboardKey = '';
+    let openaiTunnelDraft = '', openaiKeyDraft = '', openaiDraftInitialized = false;
     const SETUP_STEPS = [['install', '安装并验证 cloudflared'], ['restart', '重启本地服务'], ['start', '启动临时公网渠道']];
     function onboardingState(d) {
-      const c = d.channel, s = d.setup, empty = !(d.sessions || []).some(x => !x.draft);
+      const c = d.channel, s = d.setup, o = d.openaiOnboarding, empty = !(d.sessions || []).some(x => !x.draft);
       if (d.daemon === 'running' && d.account === 'logged_out') return 'login';
-      // Keep real progress visible while the daemon is restarting.
+      // Cloudflare's real restart progress stays visible; OpenAI may be collapsed while its download finishes.
       if (s) return s.step;
       if (d.daemon !== 'running' || !c) return null;
-      const candidate = empty || onboardEngaged || !c.last || c.missing === 'cloudflared';
-      if (!candidate) return null;
       if (d.setupDismissed && c.state !== 'on' && !d.channelBusy) return 'dismissed';
+      if (o) return 'openai';
+      const candidate = empty || onboardEngaged || !c.last || !!d.channelNote;
+      if (!candidate) return null;
       if (d.channelBusy || c.state === 'starting') return 'start';
       if (c.state === 'warn') return 'unverified';
       if (c.on && c.state === 'on') return empty && d.account === 'verified' ? 'ready' : null;
+      if (empty && !onboardEngaged) return 'choose';
       if ((c.state === 'error' && c.missing !== 'cloudflared') || (onboardEngaged && d.channelNote)) return 'failed';
       if (c.missing && c.missing !== 'cloudflared') return 'configure';
-      return 'setup';
+      return 'choose';
     }
     function onboardProgress(state, account) {
       const step = state === 'login' ? 0 : state === 'ready' ? 2 : 1;
@@ -1618,13 +1853,83 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       return '<button type="button" class="primary" id="' + id + '"' + (disabled ? ' disabled' : '') + '>' + esc(text) + '</button>';
     }
     function onboardOther() {
-      return '<details id="guideOther"><summary id="guideOtherToggle">已有通道或其它连接方式</summary><p>也可使用 OpenAI 通道或自定义地址，无需走这条安装流程。</p><button type="button" class="link" id="guideSettings">打开连接设置 →</button></details>';
+      return '<details id="guideOther"><summary id="guideOtherToggle">高级连接方式</summary><p>已有固定公网地址或需要手动指定程序路径时，可进入完整连接设置。</p><button type="button" class="link" id="guideSettings">打开连接设置 →</button></details>';
+    }
+    function openaiTunnelValid(value) {
+      return value.length === 39 && /^tunnel_[0-9a-f]{32}/.test(value);
+    }
+    function openaiKeyValid(value) {
+      if (value.length < 8 || value.length > 1024) return false;
+      for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code < 33 || code > 126) return false;
+      }
+      return true;
+    }
+    function syncOpenaiForm(el, d) {
+      const o = d.openaiOnboarding || {}, cfg = d.openaiConfig || {};
+      const tunnelOk = openaiTunnelValid(openaiTunnelDraft);
+      const keyOk = openaiKeyValid(openaiKeyDraft);
+      const credentialOk = cfg.credentialConfigured === true || keyOk;
+      const tunnelState = el.querySelector('#guideOpenaiTunnelState');
+      const keyState = el.querySelector('#guideOpenaiKeyState');
+      const tunnelInput = el.querySelector('#guideOpenaiTunnelId');
+      const keyInput = el.querySelector('#guideOpenaiKey');
+      const connect = el.querySelector('#guideOpenaiConnect');
+      if (tunnelState) {
+        tunnelState.className = 'bh-openai-note' + (tunnelOk ? ' done' : openaiTunnelDraft ? ' bad' : '');
+        tunnelState.textContent = tunnelOk ? '✓ Tunnel ID 格式正确' : openaiTunnelDraft ? 'Tunnel ID 格式不正确' : '从 OpenAI Platform 创建 Tunnel 后复制到这里';
+      }
+      if (keyState) {
+        keyState.className = 'bh-openai-note' + (credentialOk ? ' done' : openaiKeyDraft ? ' bad' : '');
+        keyState.textContent = keyOk ? (cfg.credentialConfigured === true ? '✓ 将替换本机已保存的 Runtime API Key' : '✓ Runtime API Key 已填写')
+          : cfg.credentialConfigured === true ? '✓ 本机已保存 Runtime API Key，可留空继续'
+          : openaiKeyDraft ? 'Runtime API Key 需为 8–1024 个可见字符且不能含空格' : '继续时安全保存到本机，不写入普通设置，也不会回显';
+      }
+      if (tunnelInput) tunnelInput.setAttribute('aria-invalid', openaiTunnelDraft && !tunnelOk ? 'true' : 'false');
+      if (keyInput) keyInput.setAttribute('aria-invalid', openaiKeyDraft && !keyOk ? 'true' : 'false');
+      if (connect) connect.disabled = !(o.runtimeReady && tunnelOk && credentialOk) || o.step === 'connecting';
+    }
+    function openaiBody(d, later, helper) {
+      const o = d.openaiOnboarding || {}, cfg = d.openaiConfig || {};
+      if (!openaiDraftInitialized) {
+        openaiTunnelDraft = cfg.tunnelId || '';
+        openaiKeyDraft = '';
+        openaiDraftInitialized = true;
+      }
+      const installFailed = o.step === 'failed' && o.failedAt === 'install';
+      const connecting = o.step === 'connecting';
+      const runtimeText = o.runtimeReady ? '✓ 已就绪' + (o.version ? ' · ' + o.version : '')
+        : installFailed ? '! 安装未完成' : '正在安装并验证…';
+      const runtimeClass = o.runtimeReady ? 'ok' : installFailed ? 'bad' : '';
+      const failure = o.step === 'failed'
+        ? '<div class="bh-onboard-failure" role="status">' + esc(o.error || 'OpenAI Tunnel 准备未完成。') + '</div>'
+        : '';
+      return '<h2 id="guideTitle" tabindex="-1">OpenAI Tunnel</h2>'
+        + '<p>无需先安装临时渠道。tunnel-client 会在后台准备，你可以同时填写 OpenAI 信息。</p>'
+        + '<div class="bh-openai-form">'
+        + '<div class="bh-openai-runtime" role="status" aria-live="polite"><span>tunnel-client</span><span class="' + runtimeClass + '">' + esc(runtimeText) + '</span></div>'
+        + '<div class="bh-openai-field"><label for="guideOpenaiTunnelId">Tunnel ID</label><div class="bh-openai-field-row"><input id="guideOpenaiTunnelId" type="text" spellcheck="false" autocomplete="off" aria-describedby="guideOpenaiTunnelState" value="' + esc(openaiTunnelDraft) + '" placeholder="tunnel_…"' + (connecting ? ' disabled' : '') + '><button type="button" class="link" id="guideOpenaiPlatform" aria-label="打开 OpenAI Platform 获取 Tunnel ID">获取 ↗</button></div><div class="bh-openai-note" id="guideOpenaiTunnelState" role="status" aria-live="polite"></div></div>'
+        + '<div class="bh-openai-field"><label for="guideOpenaiKey">Runtime API Key</label><input id="guideOpenaiKey" type="password" spellcheck="false" autocomplete="off" aria-describedby="guideOpenaiKeyState" value="' + esc(openaiKeyDraft) + '" placeholder="' + (cfg.credentialConfigured === true ? '已保存；留空继续使用' : '输入 Runtime API Key') + '"' + (connecting ? ' disabled' : '') + '><div class="bh-openai-note" id="guideOpenaiKeyState" role="status" aria-live="polite"></div></div>'
+        + failure
+        + '</div>'
+        + '<div class="bh-onboard-actions">'
+        + onboardButton('guideOpenaiConnect', connecting ? '正在连接…' : '继续并连接 →', true)
+        + (installFailed ? '<button type="button" class="link" id="guideOpenaiRetry">重试安装</button>' : '')
+        + '<button type="button" class="link" id="guideOpenaiBack">← 返回选择连接方式</button>'
+        + later
+        + '</div>'
+        + helper('继续会保存 Tunnel ID，并将新填写的 Runtime API Key 安全保存到本机，然后启动 OpenAI Tunnel。');
     }
     function renderOnboarding(d) {
-      if (!d.setup && d.channel?.on && d.channel.state === 'on') onboardEngaged = false;
-      const state = onboardingState(d), c = d.channel || {}, s = d.setup;
-      if (!state) { onboardNode = null; onboardKey = ''; return null; }
-      const key = JSON.stringify([state, d.account, c.next, c.running, c.reason, c.missing, s, d.channelNote, d.tunnel?.reason, signInOpened]);
+      if (!d.setup && !d.openaiOnboarding && d.channel?.on && d.channel.state === 'on') {
+        onboardEngaged = false;
+        openaiKeyDraft = '';
+        openaiDraftInitialized = false;
+      }
+      const state = onboardingState(d), c = d.channel || {}, s = d.setup, o = d.openaiOnboarding, cfg = d.openaiConfig || {};
+      if (!state) { onboardNode = null; onboardKey = ''; openaiKeyDraft = ''; return null; }
+      const key = JSON.stringify([state, d.account, c.next, c.running, c.reason, c.missing, s, o, cfg.tunnelId, cfg.credentialConfigured, cfg.status, d.channelNote, d.tunnel?.reason, signInOpened]);
       if (onboardNode && key === onboardKey) return onboardNode;
       const openDetails = onboardNode ? [...onboardNode.querySelectorAll('details[open]')].map(x => x.id) : [];
       const el = document.createElement('section');
@@ -1648,12 +1953,18 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const at = s?.failedAt || 'start';
         const copy = state === 'unverified' ? '渠道进程已启动，但公网连接尚未验证。暂不视为连接就绪。' : { install: '下载未完成。检查网络后重试，或在设置中指定已安装的程序。', restart: '本地服务未能重启。查看错误详情后重试。', start: '渠道未能启动。查看错误详情，或使用其它连接方式。' }[at];
         const error = s?.error || d.channelNote || c.reason || d.tunnel?.reason || '没有更多诊断信息。请打开设置检查渠道状态。';
-        body = '<div class="bh-onboard-failure" role="status">' + (state === 'failed' ? '准备未完成' : '等待验证') + '</div><h2 id="guideTitle" tabindex="-1">连接还差一步</h2><p>' + copy + '</p>' + (s ? onboardSteps(state, at) : '') + '<div class="bh-onboard-actions">' + onboardButton(state === 'unverified' ? 'guideRefresh' : 'guideGo', state === 'unverified' ? '刷新连接状态' : '重新准备') + later + '</div><details id="guideDetails"><summary id="guideDetailsToggle">查看错误详情</summary><pre>' + esc(error) + '</pre></details>' + onboardOther();
+        body = '<div class="bh-onboard-failure" role="status">' + (state === 'failed' ? '准备未完成' : '等待验证') + '</div><h2 id="guideTitle" tabindex="-1">连接还差一步</h2><p>' + copy + '</p>' + (s ? onboardSteps(state, at) : '') + '<div class="bh-onboard-actions">' + onboardButton(state === 'unverified' ? 'guideRefresh' : 'guideGo', state === 'unverified' ? '刷新连接状态' : '重新准备') + '<button type="button" class="link" id="guideChoose">换一种连接方式</button>' + later + '</div><details id="guideDetails"><summary id="guideDetailsToggle">查看错误详情</summary><pre>' + esc(error) + '</pre></details>' + onboardOther();
       } else if (state === 'configure') {
-        body = '<h2 id="guideTitle" tabindex="-1">选择连接方式</h2><p>' + esc(CHANNEL_NAMES[c.next] || '当前渠道') + '还需要完成配置。</p><div class="bh-onboard-actions">' + onboardButton('guideSettings', '打开连接设置 →') + later + '</div>' + helper('使用已有通道或自定义地址，不会自动安装其它程序。');
+        body = '<h2 id="guideTitle" tabindex="-1">当前连接还需要配置</h2><p>' + esc(CHANNEL_NAMES[c.next] || '当前渠道') + '缺少必要设置。</p><div class="bh-onboard-actions">' + onboardButton('guideSettings', '打开连接设置 →') + '<button type="button" class="link" id="guideChoose">返回选择连接方式</button>' + later + '</div>';
+      } else if (state === 'openai') {
+        body = openaiBody(d, later, helper);
       } else {
-        const install = c.missing === 'cloudflared', name = CHANNEL_NAMES[c.next] || '渠道';
-        body = '<h2 id="guideTitle" tabindex="-1">让网页 AI 连进来</h2><p>' + (install ? '用临时渠道快速开始，无需准备域名。' : esc(name) + '已配置，启动后即可接入网页 AI。') + '</p><div class="bh-onboard-actions">' + onboardButton('guideGo', install ? '安装并连接 →' : '启动' + name + ' →') + later + '</div>' + helper(install ? '将安装并验证 cloudflared、重启本地服务，<br>然后启动临时公网渠道。<br>临时地址在重启渠道后会变化。' : '渠道只会在你确认后启动。') + onboardOther();
+        body = '<h2 id="guideTitle" tabindex="-1">选择连接方式</h2><p>两种方式都可以直接开始，不需要先完成另一条连接。</p>'
+          + '<div class="bh-onboard-options">'
+          + '<button type="button" class="bh-onboard-option" id="guideQuick"><strong>临时公网渠道</strong><span>最快开始，无需域名；BlackHole 自动安装并启动临时连接。</span></button>'
+          + '<button type="button" class="bh-onboard-option" id="guideOpenai"><strong>OpenAI Tunnel</strong><span>私有出站连接，不公开 MCP 地址；自动准备官方 tunnel-client。</span></button>'
+          + '</div><div class="bh-onboard-actions">' + later + '</div>'
+          + helper('临时渠道与 OpenAI Tunnel 是独立路径；选择 OpenAI 不需要先安装 cloudflared。') + onboardOther();
       }
       el.innerHTML = state === 'dismissed' ? body : '<div class="bh-onboard-body">' + onboardProgress(state, d.account) + '<span class="bh-onboard-mark" aria-hidden="true"></span>' + body + '</div>';
       for (const id of openDetails) { const node = el.querySelector('#' + id); if (node) node.open = true; }
@@ -1666,15 +1977,52 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
           button.textContent = '重新打开登录页';
           el.querySelector('#guideSignInNote').hidden = false;
           vs.postMessage({ type: 'signIn' });
+        } else if (id === 'guideQuick') {
+          button.disabled = true; onboardEngaged = true;
+          vs.postMessage({ type: 'setupStart' });
+        } else if (id === 'guideOpenai') {
+          button.disabled = true; onboardEngaged = true; openaiDraftInitialized = false;
+          vs.postMessage({ type: 'openaiSetupStart' });
+        } else if (id === 'guideOpenaiRetry') {
+          button.disabled = true;
+          vs.postMessage({ type: 'openaiSetupStart' });
+        } else if (id === 'guideOpenaiBack') {
+          openaiKeyDraft = ''; openaiTunnelDraft = ''; openaiDraftInitialized = false;
+          vs.postMessage({ type: 'openaiSetupBack' });
+        } else if (id === 'guideOpenaiPlatform') {
+          vs.postMessage({ type: 'openOpenaiLink', target: 'platform' });
+        } else if (id === 'guideOpenaiConnect') {
+          const tunnelInput = el.querySelector('#guideOpenaiTunnelId');
+          const keyInput = el.querySelector('#guideOpenaiKey');
+          openaiTunnelDraft = tunnelInput ? tunnelInput.value.trim() : openaiTunnelDraft;
+          const submittedKey = keyInput ? keyInput.value.trim() : openaiKeyDraft;
+          button.disabled = true;
+          vs.postMessage({ type: 'openaiConnect', tunnelId: openaiTunnelDraft, apiKey: submittedKey });
         } else if (id === 'guideGo') {
           button.disabled = true; onboardEngaged = true;
           vs.postMessage(s || c.missing === 'cloudflared' ? { type: 'setupStart' } : { type: 'channelToggle', on: true });
+        } else if (id === 'guideChoose') {
+          openaiKeyDraft = ''; openaiTunnelDraft = ''; openaiDraftInitialized = false;
+          vs.postMessage({ type: 'setupChoose' });
         } else if (id === 'guideSettings') vs.postMessage({ type: 'settings' });
-        else if (id === 'guideLater') vs.postMessage({ type: 'setupDismiss' });
+        else if (id === 'guideLater') { openaiKeyDraft = ''; vs.postMessage({ type: 'setupDismiss' }); }
         else if (id === 'guideResume') vs.postMessage({ type: 'setupResume' });
         else if (id === 'guideRefresh') vs.postMessage({ type: 'refresh' });
         else if (id === 'guideCreate') vs.postMessage({ type: 'create' });
       });
+      if (state === 'openai') {
+        const tunnelInput = el.querySelector('#guideOpenaiTunnelId');
+        const keyInput = el.querySelector('#guideOpenaiKey');
+        if (tunnelInput) tunnelInput.addEventListener('input', () => { openaiTunnelDraft = tunnelInput.value.trim(); syncOpenaiForm(el, d); });
+        if (keyInput) {
+          keyInput.addEventListener('input', () => { openaiKeyDraft = keyInput.value.trim(); syncOpenaiForm(el, d); });
+          keyInput.addEventListener('keydown', event => {
+            const connect = el.querySelector('#guideOpenaiConnect');
+            if (event.key === 'Enter' && connect && !connect.disabled) connect.click();
+          });
+        }
+        syncOpenaiForm(el, d);
+      }
       onboardKey = key; onboardNode = el;
       return el;
     }
@@ -3100,6 +3448,15 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       const d = e.data;
       if (d.type === 'handoffCopied') { handoffView.copied(d); return; }
       if (d.type === 'handoffPreview') { handoffView.preview(d); return; }
+      if (d.type === 'openaiCredentialStored') {
+        openaiKeyDraft = '';
+        cur = { ...cur, openaiConfig: { ...(cur.openaiConfig || {}), credentialConfigured: true } };
+        const input = document.querySelector('#guideOpenaiKey');
+        if (input) input.value = '';
+        const guide = document.querySelector('.bh-onboard[data-state="openai"]');
+        if (guide) syncOpenaiForm(guide, cur);
+        return;
+      }
       if (d.type === 'chatResult') { chatResult(d); return; }
       if (d.type === 'chatStopResult') { chatStopResult(d); return; }
       if (d.type === 'chatCardResult') { chatNote(d.ok ? '' : 'warn', d.message || ''); chatHeadSig = ''; renderComposer(cur); return; }

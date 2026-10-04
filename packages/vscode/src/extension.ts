@@ -34,6 +34,15 @@ export function activate(context: ExtensionContext): void {
       const result = await initializeCloudflared(c.get<string>('cloudflaredPath') ?? '');
       if ((c.get<string>('cloudflaredPath') ?? '') !== result.path) await c.update('cloudflaredPath', result.path, ConfigurationTarget.Global);
     },
+    installOpenaiTunnel: async () => {
+      const { initializeOpenAITunnelClient } = await import('./openaiTunnelInstall');
+      const before = workspace.getConfiguration('blackhole').get<string>('openaiTunnelClientPath') ?? '';
+      const result = await initializeOpenAITunnelClient(before);
+      const current = workspace.getConfiguration('blackhole').get<string>('openaiTunnelClientPath') ?? '';
+      if (current !== before && current !== result.path) throw new Error('tunnel-client 路径刚在别处发生变化；请重试。');
+      if (current !== result.path) await workspace.getConfiguration('blackhole').update('openaiTunnelClientPath', result.path, ConfigurationTarget.Global);
+      return result;
+    },
     create: () => void createSession(api, daemon, openCreated),
     act: (s, a) => void sessionAction(api, s, a, refresh),
     copyTemplate: (s, kind, message) => void copyTemplateSession(api, s, kind, message),

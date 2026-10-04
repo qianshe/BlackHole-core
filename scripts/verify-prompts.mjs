@@ -8,6 +8,7 @@ import ts from 'typescript';
 import { buildAccessRules, buildGenericManual } from '../dist/workspace/rules.js';
 import * as prompt from '../dist/prompt.js';
 import { bhClientSourceUrl } from '../dist/deps.js';
+import { renderSandboxManual } from '../dist/courier/manual.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -52,31 +53,49 @@ await check('empty connector names fall back without inventing a task', () => {
   assert.ok(text.startsWith('@BlackHole\n'));
   assert.doesNotMatch(text, /Task:|paste your task/i);
 });
-await check('sandbox bootstrap starts with download, then client and MCP familiarization', () => {
+await check('sandbox bootstrap points to a stable Manual and carries sessionId separately', () => {
   const text = renderPrompt('sandbox', url, sid);
   assert.equal(text, [
-    'Download https://example.invalid/bridge/bh.py?sessionid=' + sid + ' to the current sandbox root as `bh.py`.',
+    'BlackHole MCP Manual: https://example.invalid/bridge/bh.md',
+    'sessionId: ' + sid,
     '',
-    'Read `bh.py`, then use it to read `guide` and familiarize yourself with the connected BlackHole MCP. Save concise practical usage notes beside `bh.py` as `BLACKHOLE.md` for reuse; do not copy the current task into it.',
+    'Read this Manual, familiarize yourself with the BlackHole MCP, and prepare to use it with this sessionId for the work that follows. Refer back to it whenever needed.',
   ].join('\n'));
-  assert.match(text, /Save concise practical usage notes beside `bh\.py` as `BLACKHOLE\.md` for reuse/);
-  assert.match(text, /do not copy the current task into it/);
-  assert.doesNotMatch(text, /Task:|paste your task|BlackHole MCP:|^sessionId:|curl|wget|python3|python\s|chmod|bash|preflight|continue with the user request/i);
+  assert.doesNotMatch(text, /bh\.md\?sessionid|bh\.py|curl|wget|python3|python\s|chmod|bash|preflight|BLACKHOLE\.md/i);
 });
-await check('sandbox explicit user payload is appended raw after the inspection bootstrap', () => {
+await check('sandbox explicit user payload is appended raw after the Manual bootstrap', () => {
   const task = 'Review the diff\n保留换行';
   const text = renderPrompt('sandbox', url, sid, { kind: 'user', text: task });
   assert.ok(text.endsWith('\n\n' + task));
-  assert.match(text, /bh\.py\?sessionid=/);
+  assert.ok(text.includes('BlackHole MCP Manual: https://example.invalid/bridge/bh.md'));
+  assert.ok(text.includes('sessionId: ' + sid));
   assert.doesNotMatch(text, /Task:|curl|python3/i);
 });
-await check('sandbox client URL preserves the public base path without shell syntax', () => {
+await check('sandbox Manual URL preserves the public base path without shell syntax', () => {
   const text = renderPrompt('sandbox', "https://example.invalid/team's/mcp/token", sid);
-  assert.match(text, /^Download https:\/\/example\.invalid\/team's\/bh\.py\?sessionid=/);
-  assert.doesNotMatch(text, /curl|python3|&&/);
+  assert.ok(text.includes("BlackHole MCP Manual: https://example.invalid/team's/bh.md"));
+  assert.ok(text.includes('sessionId: ' + sid));
+  assert.doesNotMatch(text, /curl|python3|&&|bh\.md\?sessionid/);
 });
 await check('bad sandbox endpoints fail before producing a misleading bootstrap', () => {
   assert.throws(() => renderPrompt('sandbox', 'https://example.invalid/not-mcp', sid), /MCP URL/);
+});
+
+await check('BlackHole MCP Manual stays reusable across sessionId changes', () => {
+  const manual = renderSandboxManual(url, 'https://example.invalid/bridge/bh.py');
+  assert.match(manual, /^# BlackHole MCP Manual/m);
+  assert.match(manual, /save it as `BLACKHOLE\.md`/);
+  assert.match(manual, /sessionId.*supplied separately from this Manual/);
+  assert.match(manual, /sessionId changes.*Re-download is not required/s);
+  assert.match(manual, /does not define, replace, or change BlackHole operating rules/);
+  assert.match(manual, /confirm the current project\/workspace context/);
+  assert.match(manual, /Choose by the current operation, not by whichever tool was used most recently/);
+  assert.match(manual, /Optional reference client: .*\/bh\.py`/);
+  assert.match(manual, /tools\/list/);
+  assert.match(manual, /Mcp-Session-Id.*different/s);
+  assert.match(manual, /context is compacted.*re-read this Manual/s);
+  assert.doesNotMatch(manual, new RegExp(sid));
+  assert.doesNotMatch(manual, /Handoff context:|Task:/);
 });
 await check('CLI uses the public API session_id and ignores session names as tasks', () => {
   assert.equal(typeof prompt.buildConnectorPrompt, 'function');

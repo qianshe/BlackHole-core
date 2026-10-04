@@ -20,6 +20,7 @@ import { importCourierMessagesJson } from './courier/messagesImport.js';
 import { CourierPairs } from './courier/pairs.js';
 import { mountCourier } from './courier/mount.js';
 import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
+import { renderSandboxManual } from './courier/manual.js';
 import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
 import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
@@ -294,9 +295,20 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     res.json({ ok: true, service: 'blackhole' });
   });
 
-  // Public agent surface, ported from the legacy daemon: the zero-dependency
-  // python client and the per-session rules doc. The extension's no-connector
-  // prompt template tells web agents to fetch both over the tunnel.
+  // Public agent surface for sandboxes without a native MCP client. The prompt
+  // points only at the generated Manual; bh.py remains an optional reference
+  // client linked from that Manual.
+  app.get('/bh.md', (_req, res) => {
+    const endpoint = mcpUrl(deps);
+    const client = new URL(endpoint);
+    client.pathname = client.pathname.slice(0, client.pathname.lastIndexOf('/mcp/')) + '/bh.py';
+    client.search = '';
+    client.hash = '';
+    res.set('Cache-Control', 'no-store');
+    res.set('Content-Disposition', 'inline; filename="BLACKHOLE.md"');
+    res.type('text/markdown; charset=utf-8').send(renderSandboxManual(endpoint, client.href));
+  });
+
   app.get('/bh.py', (req, res) => {
     const scriptDir = path.dirname(process.argv[1] ?? '.');
     const candidates = [

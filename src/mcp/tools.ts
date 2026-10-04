@@ -1,4 +1,5 @@
 import { processManagementCapability, type ExecutionEnvironment } from '../execution.js';
+import path from 'node:path';
 import { VERSION } from '../version.js';
 import type { ProcessManager } from '../process/manager.js';
 import { registerProcessTool } from './process-tools.js';
@@ -503,10 +504,13 @@ export function registerTools(
         id: z.string().optional(),
         created_at: z.number().optional(),
         bytes: z.number().optional(),
+        session: z.object({
+          project: z.string(),
+          workspace_path: z.string(),
+        }).optional().describe('Resolved project/workspace facts for the supplied sessionId; informational only.'),
         runtime: z.object({
           daemon_version: z.string(), platform: z.string(), arch: z.string(),
           execution_tools: z.array(z.enum(['exec', 'process'])),
-          exec_shell: z.string().nullable(), process_shell: z.string().nullable(),
           process_unavailable_reason: z.string().nullable(),
           sandbox: z.object({
             backend: z.enum(['none','bubblewrap','seatbelt','windows-acl']),
@@ -579,26 +583,29 @@ export function registerTools(
           const platform=deps.execution?.platform??process.platform;
           const processSupported=deps.processes?.supported===true;
           const sandbox=deps.execution?.sandbox??{backend:'none' as const,status:'unsupported' as const,reason:'sandbox_unsupported_platform',detail:'execution environment unavailable'};
+          const session = rt?.session.workspace_path ? {
+            project: path.basename(rt.session.workspace_path) || rt.session.workspace_path,
+            workspace_path: rt.session.workspace_path,
+          } : undefined;
           const runtime = {
             daemon_version: VERSION, platform,
             arch: deps.execution?.arch ?? process.arch,
             execution_tools: ['exec', ...(processSupported ? ['process'] : [])],
-            exec_shell: deps.execution?.exec.shell.executable ?? null,
-            process_shell: deps.execution?.process.shell?.executable ?? null,
             process_unavailable_reason: processSupported ? null : deps.execution?.process.reason ?? 'backend_unavailable',
             sandbox:{...sandbox,fail_closed:true as const},
             process_management:processManagementCapability(platform,processSupported),
             discovery_hint: 'exec/process are native BlackHole tools, not proxy entries. If listed here but missing in your client, refresh the host connector/tool discovery. A sandbox status of unavailable means restricted calls fail closed; it does not remove exec from server tools/list.',
           };
           const project = rt?.session.workspace_path ? readProjectInstructions(rt.session.workspace_path) : undefined;
-          if (project && project.status !== 'ok') return text({ runtime, manual: '',
+          if (project && project.status !== 'ok') return text({ session, runtime, manual: '',
             instruction: `Project instructions could not be loaded completely (${project.status}). Resolve this error before workspace work; do not treat the file as absent.` }, true);
           const appendProject = (manual: string): string => project?.content
             ? `${manual}\n\n## PROJECT INSTRUCTIONS\n${project.content}`
             : manual;
-          if (a.tool === 'process' && !deps.processes?.supported) return text({ instruction: 'process is unavailable on this daemon.', manual: '', runtime }, true);
+          if (a.tool === 'process' && !deps.processes?.supported) return text({ instruction: 'process is unavailable on this daemon.', manual: '', session, runtime }, true);
           if (workflow) {
             return text({
+              session,
               runtime,
               instruction: workflow.instruction,
               manual: appendProject(workflow.manual),
@@ -612,6 +619,7 @@ export function registerTools(
             : a.tool === 'process' ? processHelp(deps.execution?.process.shell)
             : fullGenericManual('exec', deps.log ?? (() => undefined), semantic?.available === true, true, deps.proxy !== undefined, deps.processes?.supported === true, startup, sandboxClientUrl);
           return text({
+            session,
             runtime,
             instruction: a.tool ? 'Use this supplement only for the selected tool; the operating guide still applies.' : instruction,
             manual: appendProject(manual),

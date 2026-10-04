@@ -96,8 +96,8 @@ jobs:
         run: pnpm test:handoff
       - name: Local Web and account tests with isolated data
         run: pnpm test:local-web
-      - name: Cloudflared installer (no real downloads)
-        run: node --test --experimental-test-isolation=none packages/vscode/test/cloudflared-install.test.mjs
+      - name: Tunnel installers (no real downloads)
+        run: node --test --experimental-test-isolation=none packages/vscode/test/cloudflared-install.test.mjs packages/vscode/test/openai-tunnel-install.test.mjs
       - name: Desktop bootstrap against an isolated daemon
         if: matrix.name == 'Linux-x64'
         run: pnpm test:host-runtime
@@ -142,10 +142,46 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  openai-runtime-native:
+    name: OpenAI runtime native (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows-x64, runner: windows-2022, platform: win32, arch: x64 }
+          - { name: Windows-arm64, runner: windows-11-arm, platform: win32, arch: arm64 }
+          - { name: Linux-x64, runner: ubuntu-22.04, platform: linux, arch: x64 }
+          - { name: Linux-arm64, runner: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+          - { name: macOS-Intel, runner: macos-15-intel, platform: darwin, arch: x64 }
+          - { name: macOS-ARM, runner: macos-15, platform: darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      EXPECT_PLATFORM: ${{ matrix.platform }}
+      EXPECT_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Download, verify and execute the pinned pure runtime on this native architecture
+        run: pnpm test:openai-tunnel-runtime:native
+
   ci-result:
     name: Core CI
     if: always()
-    needs: [changes, runtime]
+    needs: [changes, runtime, openai-runtime-native]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -154,11 +190,14 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           RUNTIME: ${{ needs.runtime.result }}
+          OPENAI_NATIVE: ${{ needs.openai-runtime-native.result }}
         run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
             test "$RUNTIME" = success
+            test "$OPENAI_NATIVE" = success
           else
             test "$CODE" = false
             test "$RUNTIME" = skipped
+            test "$OPENAI_NATIVE" = skipped
           fi

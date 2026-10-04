@@ -48,11 +48,11 @@ test('sandbox prompt is never copied with a loopback bootstrap URL; a public URL
   }
   const both = actions({ ...oaOnly, mcp_url: PUB, tunnel: 'online', tunnel_url: 'https://pub.example' });
   await both.mod.copyTemplateSession(both.api, both.node, 'sandbox');
-  assert.match(both.clipboard[0], /^Download https:\/\/pub\.example\/bh\.py\?sessionid=000000000000000000000000000000000000123/);
-  assert.match(both.clipboard[0], /current sandbox root as `bh\.py`/);
-  assert.match(both.clipboard[0], /Read `bh\.py`, then use it to read `guide`/);
-  assert.match(both.clipboard[0], /familiarize yourself with the connected BlackHole MCP/); assert.match(both.clipboard[0], /`BLACKHOLE\.md` for reuse/);
-  assert.doesNotMatch(both.clipboard[0], /Task:|BlackHole MCP:|curl|python3|preflight/);
+  assert.match(both.clipboard[0], /^BlackHole MCP Manual: https:\/\/pub\.example\/bh\.md$/m);
+  assert.match(both.clipboard[0], /^sessionId: 000000000000000000000000000000000000123$/m);
+  assert.match(both.clipboard[0], /Read this Manual, familiarize yourself with the BlackHole MCP/);
+  assert.match(both.clipboard[0], /Refer back to it whenever needed\./);
+  assert.doesNotMatch(both.clipboard[0], /Task:|bh\.py|curl|python3|preflight|BLACKHOLE\.md/);
   assert.deepEqual(both.warnings, []);
 });
 
