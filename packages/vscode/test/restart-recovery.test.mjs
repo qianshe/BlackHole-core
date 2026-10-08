@@ -400,7 +400,7 @@ test('Create Session rejects a health response captured before Stop without revi
   assert.match(action.warnings.join('\n'), /尚未确认就绪/);
 });
 
-test('Create Session accepts an OpenAI-only channel and names both channels when none is up', async t => {
+test('Create Session requires a healthy daemon but never gates a local draft on public-channel state', async t => {
   const h = host(); t.after(() => h.manager.dispose());
   let openai = { status: 'ready' };
   h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
@@ -409,11 +409,11 @@ test('Create Session accepts an OpenAI-only channel and names both channels when
   assert.equal(ready.created.length, 1); assert.deepEqual(ready.warnings, []);
   openai = { status: 'starting' };
   const starting = sessionActionFor(h); await starting.run();
-  assert.equal(starting.created.length, 0); assert.match(starting.warnings.join('\n'), /OpenAI 渠道正在启动/);
+  assert.equal(starting.created.length, 1); assert.deepEqual(starting.warnings, []);
   openai = { status: 'error' };
   const none = sessionActionFor(h); await none.run();
-  assert.equal(none.created.length, 0); assert.match(none.warnings.join('\n'), /Cloudflare（持久或临时）或 OpenAI/);
-  assert.equal(h.spawns, 0, 'channel checks never start anything');
+  assert.equal(none.created.length, 1); assert.deepEqual(none.warnings, []);
+  assert.equal(h.spawns, 0, 'creating drafts must not start public channels or spawn a daemon');
 });
 
 test('Create Session keeps a verified daemon and user-started public channel working', async t => {
