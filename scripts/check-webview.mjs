@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
+import { checkSharedSettings } from './check-shared-settings.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // An explicit local build path lets feature tests verify fresh output without replacing the installed/dev dist.
@@ -20,9 +21,36 @@ const bundle = readFileSync(process.argv[2] ? path.resolve(process.argv[2]) : pa
 
 // Interpolations the webview scripts embed, with the value the browser sees.
 const SUBS = {
+  '${courierGenerating.toString()}': (() => {
+    if (!bundle.includes('${courierGenerating.toString()}')) return '';
+    const source = bundle.match(/^function courierGenerating\([^\n]*\) \{[\s\S]*?^\}/m)?.[0];
+    if (!source) throw new Error('Cannot resolve the bundled courier generation-state helper');
+    return vm.runInNewContext('(' + source + ')', {}, { timeout: 1000 }).toString();
+  })(),
+  '${courierModelLabel.toString()}': (() => {
+    if (!bundle.includes('${courierModelLabel.toString()}')) return '';
+    const source = bundle.match(/^function courierModelLabel\([^\n]*\) \{[\s\S]*?^\}/m)?.[0];
+    if (!source) throw new Error('Cannot resolve the bundled courier model formatter');
+    // Use this candidate's actual function, not a stub or a newer source-tree implementation.
+    return vm.runInNewContext('(' + source + ')', {}, { timeout: 1000 }).toString();
+  })(),
   '${nonce}': 'abc123',
   '${csp}': 'default-src none',
+  '${mermaidConfigs}': '{"dark":{},"default":{}}',
   '${JSON.stringify(KEYS)}': '["port"]',
+  '${JSON.stringify(SETTINGS_PAGES)}': (() => {
+    if (!bundle.includes('${JSON.stringify(SETTINGS_PAGES)}')) return '';
+    const literal = bundle.match(/(?:var|const) SETTINGS_PAGES = (\[[^\n]+\]);/)?.[1];
+    if (!literal) throw new Error('Cannot resolve bundled settings pages');
+    return JSON.stringify(vm.runInNewContext(literal, {}, { timeout: 1000 }));
+  })(),
+  '${JSON.stringify(SETTINGS_LABELS)}': (() => {
+    if (!bundle.includes('${JSON.stringify(SETTINGS_LABELS)}')) return '';
+    const literal = bundle.match(/(?:var|const) SETTINGS_LABELS = (\{[\s\S]*?\n\});/)?.[1];
+    if (!literal) throw new Error('Cannot resolve bundled settings labels');
+    return JSON.stringify(vm.runInNewContext('(' + literal + ')', {}, { timeout: 1000 }));
+  })(),
+  '${JSON.stringify([...AUTO_SAVE_KEYS])}': '["channelMode","connectorName","openaiTunnelClientPath","openaiTunnelId","pollIntervalMs"]',
   '${sidebarIcons()}': '{"plus":"<svg></svg>","globe":"<svg></svg>","gear":"<svg></svg>","refresh":"<svg></svg>","more":"<svg></svg>","warn":"<svg></svg>"}',
   // Read the literal from this exact bundle, not a potentially newer source tree.
   '${handoffScript}': (() => {
@@ -190,7 +218,9 @@ function runProxiesBehavior(script) {
     createElement: () => makeEl('created'),
   };
   const winHandlers = new Map(); // window event type -> [fn]
+  let narrowSettingsView = false;
   const windowStub = {
+    matchMedia() { return { matches: narrowSettingsView, addEventListener() {}, removeEventListener() {} }; },
     addEventListener(type, fn) {
       if (!winHandlers.has(type)) winHandlers.set(type, []);
       winHandlers.get(type).push(fn);
@@ -201,6 +231,11 @@ function runProxiesBehavior(script) {
   // one of those messages here to prove the webview actually reacts to it.
   const fireWindow = (type, data) => {
     for (const fn of winHandlers.get(type) || []) fn({ data });
+  };
+  const fireWindowEvent = (type, event) => { for (const fn of winHandlers.get(type) || []) fn(event); };
+  const fireElement = (id, type = 'click') => {
+    const target = document.getElementById(id);
+    for (const entry of handlers.get(id) || []) if (entry.type === type) entry.fn({ target, currentTarget: target, preventDefault() {}, stopPropagation() {} });
   };
   const acquireVsCodeApi = () => ({ postMessage: (m) => posted.push(m), getState: () => undefined, setState() {} });
 
@@ -215,14 +250,75 @@ function runProxiesBehavior(script) {
   // listener graph exists before it publishes init/proxy frames.
   assert(posted.some((m) => m.type === 'ready'), '设置页未发送 ready 握手，首开状态可能在 listener 就绪前丢失');
 
+  // Narrow settings navigation is one menu button plus a dismissible drawer, not a horizontal tab strip.
+  narrowSettingsView = true;
+  fireElement('settingsMobileMenu');
+  assert(document.getElementById('settingsMobileMenu').getAttribute('aria-expanded') === 'true', 'opening the mobile menu updates aria-expanded');
+  assert(document.getElementById('settingsNav').getAttribute('aria-hidden') === 'false', 'opening the drawer exposes its navigation');
+  fireWindowEvent('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert(document.getElementById('settingsMobileMenu').getAttribute('aria-expanded') === 'false', 'Escape closes the mobile settings drawer');
+  fireElement('settingsMobileMenu'); fireElement('settingsNavScrim');
+  assert(document.getElementById('settingsMobileMenu').getAttribute('aria-expanded') === 'false', 'the drawer scrim closes the menu');
+  narrowSettingsView = false;
+
+  // Action pages never display irrelevant Save/Restart controls. Changing views is read-only.
+  const beforeNavigation = posted.length;
+  for (const page of ['home', 'account', 'security']) {
+    fireWindow('message', { type: 'settingsNavigate', page });
+    assert(document.getElementById('settingsActions').hidden, page + ' must not show the Save footer');
+    assert(document.getElementById('autoNote').hidden, page + ' must not claim fields autosave');
+  }
+  for (const page of ['connections', 'network', 'agents', 'advanced']) {
+    fireWindow('message', { type: 'settingsNavigate', page });
+    assert(!document.getElementById('settingsActions').hidden, page + ' retains its manual Save entry');
+  }
+  assert(posted.length === beforeNavigation, 'view changes must not write settings or restart channels');
+  const directFrame = { type: 'directAccess', revision: 1, on: false, port: 7307, url: '', aiDefaultRoute: 'auto', listener: { state: 'off', listening: false, mode: 'off', port: 7307, target: 'http://127.0.0.1:7307' } };
+  const directUrl = document.getElementById('directAccessUrl');
+  fireWindow('message', directFrame);
+  assert(document.getElementById('directAccessToggle').disabled === false, 'canonical direct frame enables the single switch');
+  directUrl.value = 'https://draft.example'; fireElement('directAccessUrl', 'input');
+  fireWindow('message', { ...directFrame, revision: 2, url: 'https://elsewhere.example' });
+  assert(directUrl.value === 'https://draft.example', 'polling must preserve an unsaved address draft');
+  const directBefore = posted.length;
+  directUrl.value = 'ftp://invalid.example'; fireElement('directAccessUrl', 'change');
+  assert(posted.length === directBefore, 'invalid direct URL never saves');
+  assert(directUrl.getAttribute('aria-invalid') === 'true', 'invalid URL has an inline invalid state');
+  directUrl.value = ''; fireElement('directAccessUrl', 'input');
+  fireElement('directAccessToggle');
+  assert(posted.at(-1).type === 'directAccessToggle' && posted.at(-1).on === true && posted.at(-1).url === '', 'empty URL is valid for explicit direct enable');
+  const toggleCount = posted.length; fireElement('directAccessToggle');
+  assert(posted.length === toggleCount, 'duplicate toggle clicks do not queue another confirmation');
+  fireWindow('message', { type: 'directBusy', busy: false });
+  fireWindow('message', { ...directFrame, revision: 3, on: true, listener: { ...directFrame.listener, state: 'listening', mode: 'direct', listening: true } });
+  assert(document.getElementById('directAccessToggle').getAttribute('aria-checked') === 'true', 'switch reflects acknowledged state');
+  assert(!document.getElementById('aiDefaultRoute').disabled, 'direct does not disable an explicit route preference');
+  document.getElementById('directPort').value = '80'; const beforePort = posted.length;
+  fireElement('directPort', 'change');
+  assert(posted.length === beforePort, 'invalid port never saves');
+  assert(document.getElementById('directPort').getAttribute('aria-invalid') === 'true', 'port validation is visible');
+  directUrl.dataset.dirty = 'false'; document.activeElement = null;
+  fireWindow('message', { ...directFrame, revision: 4, url: 'https://saved.example' });
+  fireWindow('message', { ...directFrame, revision: 2, url: 'https://stale.example' });
+  assert(directUrl.value === 'https://saved.example', 'stale settings revision cannot roll back acknowledged state');
+  fireWindow('message', { type: 'settingsNavigate', page: 'home' });
+
   // Login is one generic entry. Once an account exists, the page keeps only
   // refresh/redeem/logout controls and does not offer a second provider button.
   fireWindow('message', { type: 'cloudAccount', view: { state: 'logged_out' } });
   assert(document.getElementById('cloudSignIn').style.display === '', '未登录时应显示唯一登录入口');
   assert(document.getElementById('cloudSignOut').style.display === 'none', '未登录时不应显示退出入口');
-  fireWindow('message', { type: 'cloudAccount', view: { state: 'verified', userId: 'user-1', account: { status: 'active', serviceExpiresAt: 1800003600, serverNow: 1800000000 } } });
+  // Match the host's current accountStatus frame (host projection has separate lifecycle tests).
+  fireWindow('message', { type: 'cloudAccount', view: { state: 'verified', userId: 'user-1', account: { status: 'active', serviceExpiresAt: 1800003600, serverNow: 1800000000 } },
+    summary: { authState: 'verified', displayName: 'Fixture', email: null, accountStatus: 'active', remainingSeconds: 3600, remainingLabel: '剩余 1 小时', canSignOut: true } });
   assert(document.getElementById('cloudSignIn').style.display === 'none', '登录后应隐藏登录入口');
   assert(document.getElementById('cloudSignOut').style.display === '', '登录后应显示退出入口');
+  assert(document.getElementById('homeAcctSignOut').disabled === false, '已确认身份的首页退出应可用');
+  fireWindow('message', { type: 'cloudAccount', view: { state: 'unavailable' },
+    summary: { authState: 'unavailable', displayName: '账号状态待确认', remainingSeconds: null, remainingLabel: '时长待确认', canSignOut: false } });
+  assert(document.getElementById('homeAcctName').textContent === '账号状态待确认', '未知身份不能显示已登录账号');
+  assert(document.getElementById('homeAcctSignOut').disabled === true, '没有身份时首页退出必须禁用');
+  assert(document.getElementById('cloudSignOut').style.display === 'none', '未知身份不能保留上个账号的退出入口');
 
   // Activity nodes must survive both unchanged polls and changes to today's counters.
   const days = Array.from({length:7}, (_,i) => ({start:new Date(2026,8,10+i).getTime(),total:i,diff_added:i*2,diff_removed:i}));
@@ -580,6 +676,14 @@ while ((idx = bundle.indexOf('<script nonce=', idx)) !== -1) {
     if (fails.length === 0) console.log('PASS: MCP proxies webview behavior (cards / count chip / switch / edit form / tool modal + duplicate marking / click delegation / message bus)');
   }
   idx = end;
+}
+
+if (bundle.includes('data-settings-renderer="shared-react"') || bundle.includes('shared-react')) {
+  assertSharedEntry();
+  checkSharedSettings();
+}
+function assertSharedEntry() {
+  if (bundle.includes('function renderProxies') || bundle.includes('currentConnectionSec')) throw new Error('Legacy settings renderer is still bundled beside shared React');
 }
 
 if (checked === 0) {

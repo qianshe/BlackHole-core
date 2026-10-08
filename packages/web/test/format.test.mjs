@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { argsPreview, baseName, callDuration, callTone, countByFilter, errorText, groupSessions, matchCall, matchSession, pathCrumbs, percent, readViewState, relativeTime, searchAll, sessionTitle, sessionTone, takeTicket, underPath, writeViewState } from '../src/format.ts';
+import { argsPreview, baseName, callDuration, callTone, countByFilter, errorText, groupSessions, matchCall, pickDefaultSession, shortTime, matchSession, pathCrumbs, percent, readViewState, relativeTime, searchAll, sessionTitle, sessionTone, takeTicket, underPath, writeViewState } from '../src/format.ts';
 
 test('console view state round-trips through the query string; unknown values fall back', () => {
   assert.deepEqual(readViewState(''), { session: null, view: 'session', settings: null });
-  const v = { session: 'abc', view: 'channels', settings: 'remote' };
-  assert.equal(writeViewState(v), '?s=abc&v=channels&set=remote');
+  const v = { session: 'abc', view: 'channels', settings: 'agents' };
+  assert.equal(writeViewState(v), '?s=abc&v=channels&set=agents');
   assert.deepEqual(readViewState(writeViewState(v)), v);
-  assert.deepEqual(readViewState('?v=evil&set=evil'), { session: null, view: 'session', settings: null });
+  assert.equal(readViewState('?set=overview').settings, 'home');
+  assert.equal(readViewState('?set=channel').settings, 'connections');
+  assert.equal(readViewState('?set=proxies').settings, 'agents');
+  assert.deepEqual(readViewState('?v=evil&set=evil'), { session: null, view: 'session', settings: 'home' });
   assert.equal(writeViewState({ session: null, view: 'session', settings: null }), '');
 });
 
@@ -102,7 +105,7 @@ test('groupSessions: deepest project, pinned first, ended to recent', () => {
 });
 
 test('pathCrumbs and callDuration', () => {
-  assert.deepEqual(pathCrumbs('D:\\myProject\\tools\\blackhole'), ['myProject', 'tools', 'blackhole']);
+  assert.deepEqual(pathCrumbs('D:\\work\\tools\\demo'), ['work', 'tools', 'demo']);
   assert.deepEqual(pathCrumbs('/home/u/a/b', 2), ['a', 'b']);
   const at = (ms) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString();
   assert.equal(callDuration({ status: 'completed', created_at: at(0), updated_at: at(420) }), '420ms');
@@ -123,4 +126,20 @@ test('searchAll: live sessions when empty; ranks exact > prefix > substring; pro
   assert.deepEqual(searchAll('api', sessions, projects).map((h) => h.id), ['11', 'p', '22']);
   assert.deepEqual(searchAll('old', sessions, projects).map((h) => h.id), ['33']);
   assert.deepEqual(searchAll('33', sessions, projects).map((h) => h.id), ['33']);
+});
+
+test('shortTime: relative within a week, then month-day; year only when different', () => {
+  const now = Date.parse('2026-09-27T12:00:00');
+  assert.equal(shortTime(new Date(now - 3 * 3600_000).toISOString(), now), '3 小时前');
+  assert.equal(shortTime(new Date('2026-09-15T17:12:53').toISOString(), now), '9月15日');
+  assert.equal(shortTime(new Date('2025-12-31T10:00:00').toISOString(), now), '2025年12月31日');
+  assert.equal(shortTime(null, now), '—');
+});
+
+test('pickDefaultSession: running, then most recent live, else newest', () => {
+  const S = (id, status, m, activity = null) => ({ id, name: null, workspace_path: '/w', status, activity, last_active_at: new Date(Date.UTC(2026, 0, 1, 0, m)).toISOString(), created_at: null });
+  assert.equal(pickDefaultSession([S('a', 'active', 50), S('b', 'active', 10, 'running'), S('c', 'active', 59)]).id, 'b');
+  assert.equal(pickDefaultSession([S('a', 'active', 5), S('c', 'paused', 40), S('d', 'revoked', 59)]).id, 'c');
+  assert.equal(pickDefaultSession([S('a', 'revoked', 5), S('d', 'archived', 9)]).id, 'd');
+  assert.equal(pickDefaultSession([]), undefined);
 });

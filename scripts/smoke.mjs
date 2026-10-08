@@ -354,14 +354,14 @@ async function main() {
     const ruleRes = await client.readResource({ uri: 'blackhole://rules' });
     assert.ok(ruleRes.contents[0]?.text.includes('`sessionId`'), 'resources/read returns the access-level manual (sessionId discipline)');
     assert.match(ruleRes.contents[0]?.text ?? '', /Read `guide`.*before the first workspace operation/s, 'access manual starts with guide, not a panel prerequisite');
-    assert.match(ruleRes.contents[0]?.text ?? '', /Native connector:[\s\S]*Script entry:/, 'access manual documents the native and bh.py startup entries without a panel prerequisite');
+    assert.match(ruleRes.contents[0]?.text ?? '', /Native connector: call `guide` directly/); assert.match(ruleRes.contents[0]?.text ?? '', /Script entry: use[\s\S]*python3 bh\.py call guide '\{\}'/); assert.doesNotMatch(ruleRes.contents[0]?.text ?? '', /curl|wget/);
     const askPrompt = await client.getPrompt({ name: 'blackhole_operator', arguments: {} });
     assert.ok(askPrompt.messages[0]?.content.text.includes('Read `guide`'), 'prompts/get points to the common guide entry');
     ok('rules resource + operator prompt registered (bh.py ask works)');
 
     // --- guide: one keyless entry, same manual for every caller ---
     const guideGeneric = resultJson(await rawCall(client, 'guide', {}));
-    assert.match(guideGeneric.instruction, /read and apply/i, 'guide directs the agent to read and apply the manual');
+    assert.match(guideGeneric.instruction, /read and apply[\s\S]*carry out the user task/i, 'guide restores the original startup-and-task instruction');
     // routing line reflects REALITY: no context_search clause while the tool is
     // not registered, and the shell clause names a generic term (the registered
     // name varies by host) instead of a nonexistent 'exec' tool
@@ -387,8 +387,12 @@ async function main() {
     assert.match(guideGeneric.manual, /Inspect → Plan → Execute → Verify/, 'execution loop stays explicit');
     assert.doesNotMatch(guideGeneric.manual, /Project-specific notes|BlackHole project notes|Task lifecycle/i, 'guide stays generic and avoids duplicate lifecycle prose');
     // a (stray or bh.py-injected) sessionId must not change the payload: single entry
-    const guide = resultJson(await call(client, 'guide', {}));
+    const guide = resultJson(await rawCall(client, 'guide', { sessionId: sid }));
     assert.equal(guide.manual, guideGeneric.manual, 'sessionId does not change the manual (one entry point)');
+    assert.equal(guide.session?.workspace_path, ws, 'guide resolves the current workspace from sessionId');
+    assert.equal(guide.session?.project, path.basename(ws), 'guide reports the current project name as informational context');
+    assert.ok(!Object.prototype.hasOwnProperty.call(guide.runtime, 'exec_shell'), 'guide runtime omits terminal executable paths');
+    assert.ok(!Object.prototype.hasOwnProperty.call(guide.runtime, 'process_shell'), 'guide runtime omits terminal executable paths');
     assert.match(guideGeneric.manual, /^# BlackHole operating rules/m, 'guide uses the operating rules title');
     const workflowStops = {
       plan: /Stop after the plan/,
@@ -1197,7 +1201,23 @@ async function main() {
     );
     ok('id hygiene: the session id is stripped from every persisted payload');
 
-    // --- /bh.py: convenience MCP-over-HTTP client (extension templates) ---
+    // --- /bh.md + /bh.py: stable Sandbox Manual with an optional reference client ---
+    const manualRes = await fetch(`${BASE}/bh.md`);
+    assert.equal(manualRes.status, 200);
+    assert.match(manualRes.headers.get('content-type') ?? '', /text\/markdown/);
+    assert.equal(manualRes.headers.get('cache-control'), 'no-store');
+    assert.match(manualRes.headers.get('content-disposition') ?? '', /BLACKHOLE\.md/);
+    const manual = await manualRes.text();
+    assert.match(manual, /^# BlackHole MCP Manual/m);
+    assert.match(manual, /sessionId.*supplied separately from this Manual/);
+    assert.match(manual, /sessionId changes.*Re-download is not required/s);
+    assert.match(manual, /Optional reference client: .*\/bh\.py`/);
+    assert.match(manual, /Call the BlackHole `guide` tool first/);
+    assert.match(manual, /Choose by the current operation, not by whichever tool was used most recently/);
+    assert.match(manual, /context is compacted.*re-read this Manual/s);
+    assert.ok(!manual.includes(sid), 'stable Manual must not embed the current sessionId');
+
+    // Optional reference client remains available.
     const bhRes = await fetch(`${BASE}/bh.py`);
     assert.equal(bhRes.status, 200);
     const bhPy = await bhRes.text();
@@ -1213,9 +1233,9 @@ async function main() {
     assert.equal(
       (await fetch(`${BASE}/rules/deadbeefdeadbeef`)).status,
       404,
-      'keyed rules endpoint removed: the manual travels only via guide',
+      'keyed rules endpoint remains removed: operating rules come from the guide tool',
     );
-    ok('bh.py served; /rules/<key> endpoint removed (single manual entry: guide)');
+    ok('Sandbox Manual served with optional bh.py; /rules/<key> remains removed');
 
     // --- calls cursor feed (polling UIs) ---
     const all1 = await api('GET', `/sessions/${created.json.id}/calls`);

@@ -22,9 +22,16 @@ import type { ApprovalScope, ConfirmationRow } from '../storage/db.js';
 import { VERSION } from '../version.js';
 import { processManagementCapability } from '../execution.js';
 import { createWorkspaceSession, normalizeWritableDirs, type CreateSessionInput } from '../services/sessions.js';
-import { migrateSettings, patchSettings, settingsView } from '../settings/service.js';
+import { migrateSettings, patchSettings, probePublicUrl, settingsView } from '../settings/service.js';
+import { skillDirectoryStatus } from '../settings/skills-status.js';
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
-import { mountOpenAITunnel } from './openai-tunnel-routes.js';
+import { loopbackPeer, mountOpenAITunnel } from './openai-tunnel-routes.js';
+import { mountFeedRoutes } from '../feed/routes.js';
+import { cloudflaredOnDisk, LastChannel, switchOff, switchOn, switchView, type SwitchDeps } from '../tunnel/switch.js';
+import { resolveConnectionRoutes } from '../connection/resolve.js';
+import { initializeCloudflared } from '../tunnel/cloudflared-install.js';
+import { initializeOpenAITunnelClient } from '../tunnel/openai-tunnel-install.js';
+import { withProxyFetch } from '../network/proxy-fetch.js';
 
 /**
  * 设置页「查看工具列表」拉取用的专用 session 键（v2.6）。与 verifyServer 的
@@ -51,6 +58,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   // reject proxy-forwarded requests in case someone fronts this daemon with
   // their own reverse proxy (lesson from codex-with-chatgpt).
   app.use((req, res, next) => {
+    // Host 头可以伪造：先按 TCP 来源地址判断，只接受本机连接（局域网直连开着时也一样）。
+    if (!loopbackPeer(req)) {
+      res.status(403).json({ error: 'control API is loopback-only' });
+      return;
+    }
     if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']) {
       res.status(403).json({ error: 'control API refuses proxied requests' });
       return;
@@ -133,6 +145,9 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       version: VERSION,
       ...(deps.startFingerprint ? { start_fingerprint: deps.startFingerprint } : {}),
       ...(deps.openaiTunnel ? { openai_tunnel_api_version: 1, openai_tunnel: deps.openaiTunnel.view() } : {}),
+      // Clients re-read settings when this moves (an edit made in another client).
+      ...(deps.settings ? { settings_revision: deps.settings.get().revision } : {}),
+      ...(deps.directAccess ? { direct_access: deps.directAccess.view() } : {}),
       ...(deps.entitlement ? { cloud_origin: deps.entitlement.cloudOrigin, entitlement_bridge_version: 2 } : {}),
       ...(deps.account ? { account_api_version: ACCOUNT_API_VERSION, account_storage: deps.account.storage } : {}),
       started_at: new Date(bootTime).toISOString(),
@@ -148,6 +163,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       tunnel_reason: deps.tunnel.reason ?? null,
       // machine-level and stable: the same URL for every session on this host
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
       mcp_path: mcpPath(),
       // whether context_search was offered to agents at boot
       semantic_search: deps.semantic.available,
@@ -199,7 +215,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       // operator-denied risky commands — a security signal distinct from
       // protocol-layer rejections.
       uptime_min: Math.round((Date.now() - bootTime) / 60_000),
-      sessions_active: deps.sessions.list().filter((s) => s.status === 'active').length,
+      sessions_active: deps.sessions.list().filter((s) => s.status === 'active' && !('draft' in s)).length,
       sessions_running: deps.sessions.list().filter((s) => s.status === 'active' && deps.sessionActivity?.status(s.id) === 'running').length,
       approvals_pending: deps.confirmations.list().filter((c) => c.status === 'pending').length,
       approvals_denied: deps.confirmations.deniedSince(dayStart.getTime()),
@@ -293,6 +309,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     const mode = (req.body as { mode?: string } | undefined)?.mode === 'named' ? 'named' : 'quick';
     await deps.tunnel.start(mode);
     deps.channelIntent?.set(mode);
+    deps.lastChannel?.set(mode);
     // a heartbeat sender asked for the channel: keep the watchdog fed from now
     deps.lastHeartbeatAt = Date.now();
     res.json({ status: deps.tunnel.status, url: deps.tunnel.url ?? null, mode: deps.tunnel.mode ?? null });
@@ -302,6 +319,30 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     deps.channelIntent?.clear();
     await deps.tunnel.stop();
     res.json({ status: deps.tunnel.status, url: deps.tunnel.url ?? null, mode: deps.tunnel.mode ?? null, reason: deps.tunnel.reason ?? null });
+  });
+
+  // 渠道总开关：VS Code 侧边栏、设置页和本地 Web（经 /panel 白名单）共用。
+  // 开 = 启动上次使用的渠道，关 = 停止所有渠道；缺前提时返回 409 和缺少的那一项。
+  const channelSwitch = (): SwitchDeps => ({
+    tunnel: deps.tunnel,
+    ...(deps.openaiTunnel ? { openai: deps.openaiTunnel } : {}),
+    ...(deps.settings ? { settings: deps.settings } : {}),
+    namedUrl: () => deps.cfg.publicBaseUrl || undefined,
+    cloudflaredReady: () => cloudflaredOnDisk(deps.cfg.cloudflaredBin ?? 'cloudflared'),
+    last: deps.lastChannel ?? new LastChannel(deps.machineState),
+    ...(deps.channelIntent ? { intent: deps.channelIntent } : {}),
+    heartbeat: () => { deps.lastHeartbeatAt = Date.now(); },
+  });
+  app.get('/channel', (_req, res) => {
+    res.json(switchView(channelSwitch()));
+  });
+  app.post('/channel', async (req, res) => {
+    const on = (req.body as { on?: unknown } | undefined)?.on;
+    if (typeof on !== 'boolean') { res.status(400).json({ error: 'invalid_input', message: 'on must be true or false' }); return; }
+    if (!on) { res.json({ ok: true, view: await switchOff(channelSwitch()) }); return; }
+    const r = await switchOn(channelSwitch());
+    if (r.ok) res.json({ ok: true, view: r.view });
+    else res.status(409).json({ ok: false, error: r.code, view: r.view });
   });
 
   // Rotate the machine-level MCP token (settings page "刷新" button). The new
@@ -315,7 +356,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     deps.events.append(null, 'mcp_token_rotated', {});
     // The OpenAI runtime's MCP_SERVER_URL embeds the token: restart a live run on the new target.
     void deps.openaiTunnel?.targetChanged().catch(() => undefined);
-    res.json({ mcp_url: mcpUrl(deps) });
+    res.json({ mcp_url: mcpUrl(deps), connection_routes: resolveConnectionRoutes(deps, mcpPath()) });
   });
 
   // Extension heartbeat: the channel should close when every VS Code window
@@ -334,7 +375,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   /** Lets the tray quit on its own while VS Code (or another client) still uses this daemon. */
   app.get('/clients', (_req, res) => {
     const other = deps.clientBeats?.get('other');
-    res.json({ others_active: other !== undefined && Date.now() - other < 30_000 });
+    res.json({
+      others_active: other !== undefined && Date.now() - other < 30_000,
+      // Informational only: an open Local Web page does not keep the daemon for a tray quit.
+      web_present: (deps.webPresence?.size ?? 0) > 0,
+    });
   });
 
   // Graceful exit for the extension's "Stop Daemon": respond first, then tear
@@ -384,6 +429,8 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     permission_mode: s.permission_mode,
     writable_dirs: s.writable_dirs ?? [],
     auto_approve: String(s.auto_approve ?? '') === '1' || s.auto_approve === true,
+    /** Reserved, not stored yet: becomes a real session on the first tool call; closing it discards it. */
+    draft: 'draft' in s && s.draft === true,
     created_at: new Date(s.created_at).toISOString(),
     last_active_at: new Date(s.last_active_at).toISOString(),
   });
@@ -407,6 +454,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     res.status(201).json({
       ...publicSession(session),
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
       note: 'Use the numeric session_id as `sessionId` on every tool call so calls stay attached to this session. If it may have leaked, rotate the session: the old id stops resolving immediately while the session continues under a fresh id.',
     });
   });
@@ -424,6 +472,40 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   app.post('/settings/migrate', (req, res) => {
     const r = migrateSettings(deps, req.body);
     res.status(r.status).json(r.body);
+  });
+
+  // The shared settings renderer uses the same validation in both hosts.
+  app.get('/settings/skills', (req, res) => {
+    const dir = typeof req.query.dir === 'string' ? req.query.dir.slice(0, 1000) : (deps.settings?.get().values.skillsDir ?? '');
+    const { cls, hint } = skillDirectoryStatus(dir.trim());
+    res.json({ cls, hint });
+  });
+  app.post('/settings/probe', (req, res) => {
+    const proxy = deps.settings?.get().values.channelProxyUrl || deps.settings?.get().values.tunnelProbeProxy || '';
+    void probePublicUrl((req.body as { url?: unknown } | undefined)?.url, proxy).then(r => res.json(r));
+  });
+  // Runtime installation is daemon-owned so every UI uses the same proxy,
+  // download verification and single network boundary. It never starts a channel.
+  app.post('/runtime/install', async (req, res) => {
+    const body = req.body as { runtime?: unknown; configured_path?: unknown } | undefined;
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((k) => k !== 'runtime' && k !== 'configured_path')
+      || (body.runtime !== 'cloudflared' && body.runtime !== 'openai')
+      || typeof body.configured_path !== 'string'
+      || body.configured_path.length > 4096) {
+      res.status(400).json({ error: 'invalid_body' });
+      return;
+    }
+    const proxy = deps.settings?.get().values.channelProxyUrl || undefined;
+    try {
+      const result = await withProxyFetch(proxy, (fetchFile) =>
+        body.runtime === 'cloudflared'
+          ? initializeCloudflared(body.configured_path as string, { fetch: fetchFile })
+          : initializeOpenAITunnelClient(body.configured_path as string, { fetch: fetchFile }));
+      res.json(result);
+    } catch (error) {
+      res.status(502).json({ error: 'install_failed', message: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get('/sessions', (_req, res) => {
@@ -477,6 +559,11 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       res.status(409).json({ error: 'session is already revoked' });
       return;
     }
+    if ('draft' in existing) {
+      // Nothing was stored or run yet: revoke just forgets the reservation.
+      if (action === 'revoke') { deps.sessions.discardDraft(id); res.json({ ...publicSession(existing), status: 'revoked', draft: true }); return; }
+      if (action !== 'rotate') { res.status(409).json({ error: 'session is still a draft' }); return; }
+    }
     if (action === 'rotate') {
       deps.panels?.revokeSession(id, { keepAnswering: true, reason: 'credential_rotated' });
       const updated = deps.sessions.rotateCredential(id);
@@ -486,6 +573,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       res.json({
         ...publicSession(updated as NonNullable<typeof updated>),
         mcp_url: mcpUrl(deps),
+        connection_routes: resolveConnectionRoutes(deps, mcpPath()),
         note: 'The old session id no longer resolves; hand the new numeric session_id to the agent. The session (shell, todos, audit trail) continues unchanged.',
       });
       return;
@@ -587,6 +675,25 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     res.json(publicSession(updated as NonNullable<typeof updated>));
   });
 
+  // Rename a session from VS Code or the Web console (empty name = back to the default title).
+  app.patch('/sessions/:id/name', (req, res) => {
+    const id = req.params.id as string;
+    const existing = deps.sessions.get(id);
+    if (!existing) {
+      res.status(404).json({ error: 'session not found' });
+      return;
+    }
+    const raw = ((req.body ?? {}) as { name?: unknown }).name;
+    if (raw !== null && typeof raw !== 'string') {
+      res.status(400).json({ error: 'name must be a string' });
+      return;
+    }
+    const updated = deps.sessions.setName(id, raw);
+    if (!('draft' in existing)) deps.events.append(id, 'session_renamed', { name: updated?.name ?? null });
+    deps.changes.bump();
+    res.json(publicSession(updated as NonNullable<typeof updated>));
+  });
+
   // M4.6 auto_approve：confirm 级操作跳过审批卡（agent 摸不到——路由在 loopback 控制面）
   app.patch('/sessions/:id/auto_approve', (req, res) => {
     const id = req.params.id as string;
@@ -666,6 +773,10 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     res.json({ calls, next_after: nextAfter });
   });
 
+  // 会话时间线：feed（增量 + 长轮询）与 history（往上翻页），与 Web/手机共用一份处理函数（src/feed/）。
+  // 调用原样输出行（含 navigation_json），和上面的 /calls 一致。
+  mountFeedRoutes(app, deps, { mapCall: (c) => c });
+
   // A single synchronous snapshot for preview/copy: no stale credential or URL
   // from a webview message, and reading it never consumes the pending document.
   app.get('/sessions/:id/handoff', (req, res) => {
@@ -679,6 +790,9 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       available: session.status === 'active' && (session.expires_at === null || session.expires_at >= Date.now()),
       session: publicSession(session),
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
+      // Status only: a URL-free connector prompt also works over the OpenAI tunnel.
+      openai_tunnel: deps.openaiTunnel ? { status: deps.openaiTunnel.view().status } : null,
     });
   });
 
@@ -764,10 +878,27 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     if (!deps.remote) { res.status(503).json({ error: 'remote_unavailable' }); return; }
     res.json(deps.remote.view());
   });
-  app.post('/remote/pair', (_req, res) => {
-    const r = deps.remote?.pair();
+  app.post('/remote/probe', async (req, res) => {
+    const body = req.body as { origin?: unknown } | undefined;
+    if (!body || typeof body.origin !== 'string' || Object.keys(body).some((key) => key !== 'origin')) {
+      res.status(400).json({ error: 'invalid_body' }); return;
+    }
+    const result = await deps.remote?.probe(body.origin);
+    if (!result) { res.status(409).json({ error: 'remote_unavailable' }); return; }
+    res.json(deps.remote!.view());
+  });
+  app.post('/remote/pair', (req, res) => {
+    const origin = (req.body as { origin?: unknown } | undefined)?.origin;
+    if (origin !== undefined && typeof origin !== 'string') { res.status(400).json({ error: 'invalid_body' }); return; }
+    const r = deps.remote?.pair(typeof origin === 'string' ? origin : undefined);
     if (!r) { res.status(409).json({ error: 'remote_unavailable' }); return; }
     res.json(r);
+  });
+  app.post('/remote/requests/:id', (req, res) => {
+    const allow = (req.body as { allow?: unknown } | undefined)?.allow;
+    if (typeof allow !== 'boolean') { res.status(400).json({ error: 'invalid_body' }); return; }
+    if (!deps.remote?.decide(String(req.params.id), allow)) { res.status(404).json({ error: 'request_not_found' }); return; }
+    res.json(deps.remote.view());
   });
   app.post('/remote/devices/:id/revoke', (req, res) => {
     if (!deps.remote?.revoke(String(req.params.id))) { res.status(404).json({ error: 'device_not_found' }); return; }

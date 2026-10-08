@@ -45,7 +45,7 @@ export function AccountCard() {
   };
 
   const status = !view ? null
-    : view.storage === 'unavailable' ? { tone: f.fieldError, text: '无法使用', hint: '这台电脑的系统凭据库不可用，请在 VS Code 里登录。' }
+    : view.storage === 'unavailable' ? { tone: f.fieldError, text: '无法使用', hint: '这台电脑无法保存登录信息，请检查用户目录是否可写。' }
     : view.state === 'verified' ? { tone: f.okText, text: '已登录', hint: null }
     : view.state === 'saved' ? { tone: f.okText, text: '已登录', hint: null }
     : view.state === 'unavailable' ? { tone: f.fieldError, text: '暂时无法确认', hint: '稍后会自动重试。' }

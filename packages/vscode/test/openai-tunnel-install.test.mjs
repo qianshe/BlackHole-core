@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
@@ -20,6 +21,9 @@ vm.runInNewContext(js + '\nmodule.exports.testOnly = { installArtifact, download
   module, exports: module.exports, require, Buffer, process, fetch, AbortSignal, URL, Response,
 });
 const { initializeOpenAITunnelClient, testOnly: { installArtifact, readZipEntries, extract, verify, ARTIFACTS, VERSION } } = module.exports;
+const desktopTargets = Object.keys(JSON.parse(fs.readFileSync(new URL('../../../scripts/desktop-toolchain.json', import.meta.url), 'utf8')).targets).sort();
+const workflow = parseYaml(fs.readFileSync(new URL('../../../.github/workflows/vscode-extension.yml', import.meta.url), 'utf8'));
+const nativeTargets = workflow.jobs['openai-runtime-native'].strategy.matrix.include.map((x) => `${x.platform}-${x.arch}`).sort();
 
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const exeBytes = Buffer.from('fixture runtime binary, never executed '.repeat(64));
@@ -148,10 +152,10 @@ test('verify accepts only the runtime flavor with the required flags', async () 
   await assert.rejects(verify('C:\\x.exe', run(VERSION_OUT, 'Usage of run:\n --mcp.server-url\n')), /缺少必需参数/);
 });
 
-test('unsupported platforms fail closed with a manual-path hint and no download', async (t) => {
+test('unknown platforms fail closed with a manual-path hint and no download', async (t) => {
   const f = fixture(t);
-  f.env.platform = 'linux';
-  await assert.rejects(initializeOpenAITunnelClient('', f.env), /暂不支持 linux-x64.*手动安装/s);
+  f.env.platform = 'freebsd';
+  await assert.rejects(initializeOpenAITunnelClient('', f.env), /freebsd-x64.*不在 BlackHole.*一键安装支持矩阵.*https:\/\/github\.com\/openai\/tunnel-client\/releases\/tag\/v0\.0\.15 .*填写可执行文件的完整路径/s);
   assert.equal(f.downloads.length, 0);
 });
 
@@ -179,12 +183,25 @@ test('an existing managed install is reused only when it is the pinned executabl
   assert.equal(f.downloads.length, 0);
 });
 
-test('the pinned manifest names only the runtime flavor', () => {
+test('the pinned manifest covers every desktop target and names only the pure runtime flavor', () => {
   assert.equal(VERSION, 'v0.0.15');
-  assert.deepEqual(Object.keys(ARTIFACTS), ['win32-x64']);
-  for (const a of Object.values(ARTIFACTS)) {
-    assert.match(a.asset, /^tunnel-client-runtime-v0\.0\.15-[a-z]+-(amd64|arm64)\.zip$/);
-    assert.doesNotMatch(a.asset, /cloudflared/);
+  assert.deepEqual(Object.keys(ARTIFACTS).sort(), desktopTargets);
+  assert.deepEqual(nativeTargets, desktopTargets, 'native CI verification matrix must cover every desktop target');
+  const expectedAssets = {
+    'win32-x64': 'tunnel-client-runtime-v0.0.15-windows-amd64.zip',
+    'win32-arm64': 'tunnel-client-runtime-v0.0.15-windows-arm64.zip',
+    'darwin-x64': 'tunnel-client-runtime-v0.0.15-darwin-amd64.zip',
+    'darwin-arm64': 'tunnel-client-runtime-v0.0.15-darwin-arm64.zip',
+    'linux-x64': 'tunnel-client-runtime-v0.0.15-linux-amd64.zip',
+    'linux-arm64': 'tunnel-client-runtime-v0.0.15-linux-arm64.zip',
+  };
+  for (const [target, a] of Object.entries(ARTIFACTS)) {
+    assert.equal(a.asset, expectedAssets[target], target);
+    assert.ok(Number.isInteger(a.size) && a.size > 0, target);
+    assert.match(a.archiveSha256, /^[a-f0-9]{64}$/, target);
+    assert.match(a.exeSha256, /^[a-f0-9]{64}$/, target);
+    assert.equal(a.exe, target.startsWith('win32-') ? 'tunnel-client-runtime.exe' : 'tunnel-client-runtime');
+    assert.doesNotMatch(a.asset, /runtime-cloudflared|cloudflared/);
   }
 });
 

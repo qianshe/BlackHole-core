@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { randomId } from '../util/token.js';
-import { WORKSPACE_FILE_TOOL } from '../tool-routing.js';
+import { WORKSPACE_FILE_TOOL, WORKSPACE_FILE_TOOL_HISTORY } from '../tool-routing.js';
 import type { ApprovalScope, ToolCallRow } from './db.js';
+import type { FeedLog } from './feedLog.js';
+import type { TimelineKey } from '../feed/timeline.js';
 
 import { activityDate, addActivity, atomicActivity, editorDelta, emptyCounts, type ActivityCounts } from './activity.js';
 
@@ -23,7 +25,17 @@ function capPersistedSummary(text: string): string {
 }
 
 export class ToolCallsRepo {
-  constructor(private db: DatabaseSync) {}
+  /** `feed` 缺省时不写 rev，已有的 rev 保持不变（SQL 里用 `COALESCE(?, rev)`）。 */
+  constructor(private db: DatabaseSync, private feed?: FeedLog) {}
+
+  /** 为 `sessionId` 的一次写入取变更号；没有 FeedLog 时为 null（不改 rev）。 */
+  private stamp(sessionId: string): number | null {
+    return this.feed ? this.feed.next(sessionId) : null;
+  }
+
+  private sessionOf(id: string): string | undefined {
+    return (this.db.prepare('SELECT session_id FROM tool_calls WHERE id = ?').get(id) as { session_id: string } | undefined)?.session_id;
+  }
 
   start(sessionId: string, tool: string, argsJson: string, argsHash: string): ToolCallRow {
     const id = randomId('call');
@@ -31,9 +43,9 @@ export class ToolCallsRepo {
     return atomicActivity(this.db, () => {
       const day = activityDate(t);
       this.db.prepare(`INSERT INTO tool_calls
-        (id, session_id, tool, args_json, args_hash, status, result_summary, created_at, updated_at, activity_day)
-        VALUES (?, ?, ?, ?, ?, 'started', NULL, ?, ?, ?)`)
-        .run(id, sessionId, tool, argsJson, argsHash, t, t, day);
+        (id, session_id, tool, args_json, args_hash, status, result_summary, created_at, updated_at, activity_day, rev)
+        VALUES (?, ?, ?, ?, ?, 'started', NULL, ?, ?, ?, ?)`)
+        .run(id, sessionId, tool, argsJson, argsHash, t, t, day, this.stamp(sessionId) ?? 0);
       addActivity(this.db, day, 1, 0, 0);
       return this.get(id) as ToolCallRow;
     });
@@ -46,16 +58,16 @@ export class ToolCallsRepo {
     navigationJson?: string,
   ): void {
     atomicActivity(this.db, () => {
-      const row = this.db.prepare('SELECT tool,created_at,activity_day,diff_added,diff_removed,navigation_json FROM tool_calls WHERE id=?').get(id) as
-        { tool: string; created_at: number; activity_day: string | null; diff_added: number; diff_removed: number; navigation_json: string | null } | undefined;
+      const row = this.db.prepare('SELECT session_id,tool,created_at,activity_day,diff_added,diff_removed,navigation_json FROM tool_calls WHERE id=?').get(id) as
+        { session_id: string; tool: string; created_at: number; activity_day: string | null; diff_added: number; diff_removed: number; navigation_json: string | null } | undefined;
       if (!row) return; // A deleted/revoked call cannot resurrect activity on a late reply.
       const delta = editorDelta(row.tool, status, resultSummary);
       const capped = resultSummary === null ? null : capPersistedSummary(resultSummary);
       const navigation = navigationJson === undefined
         ? row.navigation_json
         : Buffer.byteLength(navigationJson, 'utf8') <= PERSISTED_NAVIGATION_CAP_BYTES ? navigationJson : null;
-      this.db.prepare('UPDATE tool_calls SET status=?,result_summary=?,navigation_json=?,updated_at=?,diff_added=?,diff_removed=? WHERE id=?')
-        .run(status, capped, navigation, Date.now(), delta.added, delta.removed, id);
+      this.db.prepare('UPDATE tool_calls SET status=?,result_summary=?,navigation_json=?,updated_at=?,diff_added=?,diff_removed=?,rev=COALESCE(?,rev) WHERE id=?')
+        .run(status, capped, navigation, Date.now(), delta.added, delta.removed, this.stamp(row.session_id), id);
       if (delta.added !== row.diff_added || delta.removed !== row.diff_removed) {
         addActivity(this.db, row.activity_day ?? activityDate(row.created_at), 0, delta.added - row.diff_added, delta.removed - row.diff_removed);
       }
@@ -67,17 +79,25 @@ export class ToolCallsRepo {
    * 'started') lets the feed show awaiting-approval instead of a fake running.
    */
   awaitApproval(id: string): void {
-    this.db.prepare("UPDATE tool_calls SET status = 'awaiting', updated_at = ? WHERE id = ?").run(Date.now(), id);
+    const sessionId = this.sessionOf(id);
+    this.db.prepare("UPDATE tool_calls SET status = 'awaiting', updated_at = ?, rev = COALESCE(?, rev) WHERE id = ?")
+      .run(Date.now(), sessionId ? this.stamp(sessionId) : null, id);
   }
 
   /** Approved and executing again: flip back to 'started'. */
   resume(id: string): void {
-    this.db.prepare("UPDATE tool_calls SET status = 'started', updated_at = ? WHERE id = ? AND status = 'awaiting'").run(Date.now(), id);
+    const row = this.db.prepare('SELECT session_id, status FROM tool_calls WHERE id = ?').get(id) as { session_id: string; status: string } | undefined;
+    // 只有真的从 awaiting 翻回时才取变更号，免得空操作也唤醒等待者
+    if (row?.status !== 'awaiting') return;
+    this.db.prepare("UPDATE tool_calls SET status = 'started', updated_at = ?, rev = COALESCE(?, rev) WHERE id = ? AND status = 'awaiting'")
+      .run(Date.now(), this.stamp(row.session_id), id);
   }
 
   /** Record how the call was approved: once / session / always. */
   setApprovalScope(id: string, scope: ApprovalScope): void {
-    this.db.prepare('UPDATE tool_calls SET approval_scope = ?, updated_at = ? WHERE id = ?').run(scope, Date.now(), id);
+    const sessionId = this.sessionOf(id);
+    this.db.prepare('UPDATE tool_calls SET approval_scope = ?, updated_at = ?, rev = COALESCE(?, rev) WHERE id = ?')
+      .run(scope, Date.now(), sessionId ? this.stamp(sessionId) : null, id);
   }
 
   get(id: string): ToolCallRow | undefined {
@@ -109,6 +129,37 @@ export class ToolCallsRepo {
         'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND rowid > ? AND (rowid > ? OR updated_at > ?) ORDER BY rowid ASC LIMIT ?',
       )
       .all(sessionId, minSeq, afterSeq, updatedSince, limit) as unknown as (ToolCallRow & { seq: number })[];
+  }
+
+  /** Current-turn review: editor calls strictly after the latest user message, oldest first. */
+  listEditorCallsAfter(sessionId: string, afterAt: number, limit = 501): (ToolCallRow & { seq: number })[] {
+    return this.db
+      .prepare(
+        'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND tool IN (?, ?) AND created_at > ? ORDER BY created_at ASC, rowid ASC LIMIT ?',
+      )
+      .all(sessionId, WORKSPACE_FILE_TOOL_HISTORY[0], WORKSPACE_FILE_TOOL_HISTORY[1], afterAt, limit) as unknown as (ToolCallRow & { seq: number })[];
+  }
+
+  /** feed 增量：该会话 `rev > after` 的行，按 rev 升序，最多 `limit` 条（走 idx_tool_calls_session_rev）。 */
+  changedSince(sessionId: string, after: number, limit: number): (ToolCallRow & { seq: number })[] {
+    return this.db
+      .prepare('SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND rev > ? ORDER BY rev ASC LIMIT ?')
+      .all(sessionId, after, limit) as unknown as (ToolCallRow & { seq: number })[];
+  }
+
+  /**
+   * 时间线翻页：严格早于 `before`（见 feed/timeline.ts）的调用，按 (created_at, id) 倒序最多 `limit` 条。
+   * 调用在同一毫秒里排在回复前面，所以游标是回复时同一毫秒的调用都算「更早」。
+   */
+  pageBefore(sessionId: string, before: TimelineKey | null, limit: number): (ToolCallRow & { seq: number })[] {
+    const sql = 'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ?';
+    const order = ' ORDER BY created_at DESC, id DESC LIMIT ?';
+    if (!before) return this.db.prepare(sql + order).all(sessionId, limit) as unknown as (ToolCallRow & { seq: number })[];
+    if (before.kind === 'm') {
+      return this.db.prepare(`${sql} AND created_at <= ?${order}`).all(sessionId, before.t, limit) as unknown as (ToolCallRow & { seq: number })[];
+    }
+    return this.db.prepare(`${sql} AND (created_at < ? OR (created_at = ? AND id < ?))${order}`)
+      .all(sessionId, before.t, before.t, before.id, limit) as unknown as (ToolCallRow & { seq: number })[];
   }
 
   /** 当前会话的实际最大 seq（rowid）。浏览分页的锚点初始化用。 */
@@ -169,10 +220,16 @@ export class ToolCallsRepo {
    * `unknown` so callers never blindly repeat them.
    */
   markStaleStartedAsUnknown(): number {
-    const info = this.db
-      .prepare("UPDATE tool_calls SET status = 'unknown', result_summary = 'interrupted by daemon restart', updated_at = ? WHERE status IN ('started', 'awaiting')")
-      .run(Date.now());
-    return Number(info.changes);
+    const rows = this.db.prepare("SELECT id, session_id FROM tool_calls WHERE status IN ('started', 'awaiting')").all() as { id: string; session_id: string }[];
+    if (rows.length === 0) return 0;
+    const t = Date.now();
+    const update = this.db.prepare("UPDATE tool_calls SET status = 'unknown', result_summary = 'interrupted by daemon restart', updated_at = ?, rev = COALESCE(?, rev) WHERE id = ?");
+    // 一次改多行，每行都要有自己的变更号，所以逐行 UPDATE；放进同一个保存点，要么全改要么全不改
+    return atomicActivity(this.db, () => {
+      let changed = 0;
+      for (const r of rows) changed += Number(update.run(t, this.stamp(r.session_id), r.id).changes);
+      return changed;
+    });
   }
 
   /** Read daily numeric counters; never deserialize audit payloads while polling. */

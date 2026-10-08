@@ -2,13 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {readProfiles,validateProfiles,clientTarget,validatePublicKey,PRODUCTION_ORIGIN,PRODUCTION_KEY} from './environment-config.mjs';
+import {readProfiles as readStoredProfiles,validateProfiles,clientTarget,validatePublicKey,PRODUCTION_ORIGIN,PRODUCTION_KEY} from './environment-config.mjs';
+const readProfiles=()=>readStoredProfiles({loadTest:false});
 const key=()=>generateKeyPairSync('ed25519').publicKey.export({format:'der',type:'spki'}).toString('base64');
 test('public client profiles contain no deployment fields and need no private config files',()=>{
  const p=readProfiles();
  for(const value of Object.values(p))assert.deepEqual(Object.keys(value).sort(),['clientTarget','entitlementPublicKey','environment','origin','schema']);
  const source=readFileSync(new URL('./environment-config.mjs',import.meta.url),'utf8');
- assert.doesNotMatch(source,/from ['"]node:fs['"]|process\.env|readFileSync/);
+ assert.doesNotMatch(source,/process\.env|from ['"]dotenv/); // no ambient configuration; test.json is explicit public data
  assert.equal(clientTarget('production').origin,PRODUCTION_ORIGIN);
  assert.equal(clientTarget('production').entitlementPublicKey,PRODUCTION_KEY);
 });
@@ -34,8 +35,8 @@ test('incomplete independent test profiles fail closed without blocking official
  for(const field of ['origin','entitlementPublicKey']){const p=readProfiles();p.test[field]=null;assert.throws(()=>clientTarget('test',p),/incomplete/);assert.equal(clientTarget('production',p).origin,PRODUCTION_ORIGIN);}
  assert.throws(()=>clientTarget('unknown'));
 });
-test('explicit legacy client alias does not introduce a deployment configuration API',()=>{
- const p=readProfiles();p.test.clientTarget='production';assert.equal(clientTarget('test',p).origin,PRODUCTION_ORIGIN);assert.equal(readProfiles().test.clientTarget,'test');
+test('test-to-production aliases are rejected rather than silently changing services',()=>{
+ const p=readProfiles();p.test.clientTarget='production';assert.throws(()=>clientTarget('test',p));assert.equal(readProfiles().test.clientTarget,'test');
 });
 test('Ed25519 public trust rejects malformed and non-Ed25519 keys',()=>{
  const rsa=generateKeyPairSync('rsa',{modulusLength:2048}).publicKey.export({format:'der',type:'spki'}).toString('base64');

@@ -6,9 +6,9 @@ import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 // Pinned official OpenAI tunnel-client *runtime* flavor (never the
-// runtime-cloudflared or full CLI archives). Only platforms verified natively
-// are listed; see tasks/plan-openai-parallel-tunnels.md §4.1/§4.2. Never a
-// runtime lookup of "latest": https://github.com/openai/tunnel-client/releases/tag/v0.0.15
+// runtime-cloudflared or full CLI archives). Every listed target is required
+// to pass the native OpenAI runtime CI matrix before merge. Never a runtime
+// lookup of "latest": https://github.com/openai/tunnel-client/releases/tag/v0.0.15
 const VERSION = 'v0.0.15';
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_EXE_BYTES = 128 * 1024 * 1024;
@@ -26,6 +26,41 @@ const ARTIFACTS: Record<string, Artifact> = {
     archiveSha256: 'aa5ddb14dddd602fa59f3e6f4401aa8a79a218e341466226b7434127dff65dbc',
     exe: 'tunnel-client-runtime.exe',
     exeSha256: 'a922d372d6be0649156fbc1c8a040597f1f4bb5b4356890151d7875602593b1a',
+  },
+  'win32-arm64': {
+    asset: 'tunnel-client-runtime-v0.0.15-windows-arm64.zip',
+    size: 6684018,
+    archiveSha256: '3c610dd27760987b11285670b35faa36fec8460e68d64a4cdda4342ce6b8e8be',
+    exe: 'tunnel-client-runtime.exe',
+    exeSha256: 'ec9eb30f9ca6f28c00215d07456dde25890ffa776fc8842a270add9c3d984240',
+  },
+  'darwin-x64': {
+    asset: 'tunnel-client-runtime-v0.0.15-darwin-amd64.zip',
+    size: 7540502,
+    archiveSha256: '2d3a2b3a985ad2fcfddc4a82a0caa6624ee9383e7d85e82563bf1fe3ce905794',
+    exe: 'tunnel-client-runtime',
+    exeSha256: 'e17ffc98dce25a31c22714875267eeb309abdb35bea450c5801272317559f033',
+  },
+  'darwin-arm64': {
+    asset: 'tunnel-client-runtime-v0.0.15-darwin-arm64.zip',
+    size: 6938206,
+    archiveSha256: 'e416ea9ea13e1b8be0d0a355fbd28143cfa55fe5a32b2986fce1a516d7b5e2ad',
+    exe: 'tunnel-client-runtime',
+    exeSha256: 'fcc8e40de0606b8909c7ee44a0816d33d616949389ff37938e2657c7a2333025',
+  },
+  'linux-x64': {
+    asset: 'tunnel-client-runtime-v0.0.15-linux-amd64.zip',
+    size: 7367159,
+    archiveSha256: 'f26f8b3ee6c335e38fa5cfbe6ce5635f53738f08a26eecf07d6cebacab4a1abf',
+    exe: 'tunnel-client-runtime',
+    exeSha256: '9755c5f60f40ac64e1a71f9b7d14bc6135fb3fe7170d79c6695881d3aa1255d5',
+  },
+  'linux-arm64': {
+    asset: 'tunnel-client-runtime-v0.0.15-linux-arm64.zip',
+    size: 6620866,
+    archiveSha256: 'a868d295385b22449341fa141b911f3e991583e45b1fa2a5bfb946aed1861b88',
+    exe: 'tunnel-client-runtime',
+    exeSha256: '08ee4ef1a1a0314d7058d37ae57eef9b1de2ce9632fc2f92798e97eb48ca0049',
   },
 };
 /** Extracted next to the executable; everything else in the archive is ignored. */
@@ -277,7 +312,7 @@ export async function initializeOpenAITunnelClient(
 
   const artifact = ARTIFACTS[`${env.platform}-${env.arch}`];
   if (!artifact) {
-    throw new Error(`暂不支持 ${env.platform}-${env.arch} 的 OpenAI tunnel-client 一键安装（该平台尚未完成原生验证）。请从官方 release 手动安装 tunnel-client-runtime 纯运行版并填写路径。`);
+    throw new Error(`当前平台 ${env.platform}-${env.arch} 不在 BlackHole 的 OpenAI tunnel-client 一键安装支持矩阵。请从 https://github.com/openai/tunnel-client/releases/tag/${VERSION} 下载 tunnel-client-runtime 纯运行版（不是 runtime-cloudflared），解压后在设置页填写可执行文件的完整路径。`);
   }
   // Filesystem locations use the host's path rules (env.platform only selects the artifact).
   const target = path.join(env.root, VERSION, `${env.platform}-${env.arch}`);

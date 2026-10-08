@@ -12,11 +12,16 @@ export const handoffStyles = `
      Outer tracks include row padding; subgrid preserves the existing hit targets. */
   #list[data-mode="sessions"] { display:grid; grid-template-columns:28px minmax(0,1fr) max-content 32px; column-gap:6px; align-content:start; }
   #list[data-mode="sessions"] > .row { display:grid; grid-column:1/-1; grid-template-columns:subgrid; }
+  /* Explicit tracks: a row without a status must leave column 3 empty, not move ⋯ into it. */
+  #list[data-mode="sessions"] > .row > .drag { grid-column:1; }
+  #list[data-mode="sessions"] > .row > .main { grid-column:2; }
+  #list[data-mode="sessions"] > .row > .st { grid-column:3; }
+  #list[data-mode="sessions"] > .row > .ract { grid-column:4; }
   #list[data-mode="sessions"] > .empty { grid-column:1/-1; }
   #list[data-mode="sessions"] .row .st { text-align:right; }
   .row .handoffBar { margin-left:auto; border-left:1px solid var(--vscode-panel-border); padding-left:4px; }
-  .row .handoffBar button:first-child { color:var(--vscode-descriptionForeground); }
-  .row:has(.handoffBar) .cur { display:none; }
+  .row .handoffBar button:first-child { color:var(--vscode-descriptionForeground); padding:3px 6px; min-height:22px; border:1px solid var(--vscode-panel-border); border-radius:4px; }
+
   /* Compress all rows alike on narrow sidebars: pending state must not shift titles. */
   @media (max-width:300px) {
     #list[data-mode="sessions"] { grid-template-columns:16px minmax(0,1fr) max-content 24px; column-gap:2px; }
@@ -28,7 +33,7 @@ export const handoffStyles = `
     .row .handoffBar button { padding-inline:1px; }
   }
   #handoffBanner { flex-shrink:0; padding:6px 10px; border-bottom:1px solid var(--vscode-panel-border); }
-  #handoffBanner .handoffBar { display:flex; align-items:center; gap:6px; min-height:26px; }
+  #handoffBanner .handoffBar { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-height:32px; white-space:normal; }
   #handoffBanner .handoffBar button { padding:3px 7px; line-height:18px; border:0; }
   #handoffBanner .handoffBar button:first-child { margin-right:auto; padding-left:0; color:var(--vscode-foreground); font-size:12px; font-weight:600; }
   #handoffStatus { padding:4px 10px 6px; margin:0; font-size:11px; line-height:1.5; overflow-wrap:anywhere; color:var(--vscode-descriptionForeground); }
@@ -98,10 +103,10 @@ function mountHandoffView(document, send) {
     get('handoffTime').textContent='正在读取 Handoff…'; get('handoffNotice').textContent='';
     if(!dialog.open) dialog.showModal(); update(); send(preview);
   }
-  function attach(parent,s) {
+  function attach(parent,s,compact=true) {
     if(!s.pending_handoff) return;
     const bar=document.createElement('span'); bar.className='handoffBar';
-    const buttons=['Handoff','连接器','沙箱'].map((label,i)=>{
+    const buttons=(compact?['Handoff']:['Handoff','连接器','沙箱']).map((label,i)=>{
       const b=document.createElement('button'); b.type='button'; b.textContent=label;
       b.dataset.sessionId=s.id; b.dataset.handoffId=s.pending_handoff.id; b.dataset.handoffAction=String(i);
       b.setAttribute('aria-label',i===0?'查看 Handoff（可选）':'复制 Handoff · '+label);
@@ -133,7 +138,7 @@ function mountHandoffView(document, send) {
       const banner=get('handoffBanner'); banner.replaceChildren();
       const selected=next.mode==='calls'?sessions.get(next.selected?.id):null;
       banner.hidden=!selected?.pending_handoff;
-      if(!banner.hidden)attach(banner,selected);
+      if(!banner.hidden)attach(banner,selected,false);
       if(next.handoffSynchronized===false)say('Handoff 未同步，恢复连接后重试。');
       else if(next.handoffUnsupported)say('当前服务不支持 Handoff 快捷操作，请更新服务。');
       update();

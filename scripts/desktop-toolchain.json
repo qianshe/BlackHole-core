@@ -26,13 +26,7 @@
     "vitest": { "version": "5.0.2", "license": "MIT", "node": "^22.12.0 || ^24.0.0 || >=26.0.0", "task": "T3" },
     "@testing-library/react": { "version": "16.3.3", "license": "MIT", "task": "T3" },
     "@playwright/test": { "version": "1.63.0", "license": "Apache-2.0", "task": "T3" },
-    "qrcode": { "version": "1.5.4", "license": "MIT", "task": "T5" },
-    "@napi-rs/keyring": {
-      "version": "2.1.0",
-      "license": "MIT",
-      "task": "T2A",
-      "prebuiltTargets": ["win32-x64-msvc", "win32-arm64-msvc", "darwin-x64", "darwin-arm64", "linux-x64-gnu", "linux-arm64-gnu"]
-    }
+    "qrcode": { "version": "1.5.4", "license": "MIT", "task": "T5" }
   },
   "targets": {
     "win32-x64": { "localMachine": true, "ciRunner": "windows-latest" },
@@ -47,3 +41,4 @@
     "macos": "unknown - Developer ID and notarization credentials not verified; release blocker until provided"
   }
 }
+

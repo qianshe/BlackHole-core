@@ -1,19 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView, type SessionView } from '../api';
 import { readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
-import { NewSessionDialog } from '../NewSession';
+import { NewChatPane } from './NewChatPane';
 import { FolderPicker } from '../FolderPicker';
 import { SubscriptionBanner } from '../SubscriptionBanner';
 import { POLL_MS, usePoll, useNow } from '../usePoll';
+import { startPresence } from '../presence';
 import { CopyButton, Icon } from '../ui';
 import { ApprovalDialog } from './Approval';
-import { ChannelsPane, channelState } from './ChannelsPane';
+import { ChannelsPane, channelSummary } from './ChannelsPane';
+import { CHANNEL_SWITCH_HINT } from './ChannelSwitch';
 import { ConfirmDialog, DialogHead, failText, Modal, PromptDialog, ToastProvider, useToast, type ConfirmSpec } from './common';
 import { SearchPalette } from './SearchPalette';
 import { SessionPane } from './SessionPane';
 import { SettingsModal } from './SettingsModal';
 import { Sidebar } from './Sidebar';
 import c from './console.module.css';
+import { useSessionActions } from './sessionActions';
+import { draftsInUse } from './ChatDock';
+import { PairPrompt } from './PairPrompt';
 
 function useViewState(): [ViewState, (patch: Partial<ViewState>) => void] {
   const [view, setView] = useState<ViewState>(() => readViewState(window.location.search));
@@ -94,7 +99,9 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
   }, []);
-  const [newSession, setNewSession] = useState<string | null>(null);
+  // New session page (no session selected): the folder to start in; the key resets the page.
+  const [newChat, setNewChat] = useState({ path: '', key: 0 });
+  const [renamingSession, setRenamingSession] = useState<SessionView | null>(null);
   const [search, setSearch] = useState(false);
   const [approving, setApproving] = useState<ConfirmationView | null>(null);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
@@ -104,19 +111,91 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
 
   const sessions = usePoll((s) => api.sessions(s), 'sessions', POLL_MS, true);
   const projects = usePoll((s) => api.projects(s), 'projects', POLL_MS * 5, true);
+  // 添加项目 opens the computer's own folder dialog; the in-page folder browser is the fallback
+  // when the system has no dialog to offer (or the daemon is older).
+  const [pickingFolder, setPickingFolder] = useState(false);
+  const addProjectNative = async (): Promise<void> => {
+    if (pickingFolder) return;
+    setPickingFolder(true);
+    toast('已在电脑上打开选择文件夹窗口');
+    try {
+      const r = await api.pickProjectFolder();
+      if (r.path) {
+        await api.addProject(r.path);
+        toast('项目已添加');
+        projects.refresh();
+      } else if (!r.cancelled) setAddingProject(true);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'picker_busy') toast('电脑上已经打开了一个选择文件夹窗口', 'warn');
+      else if (code === 'project_exists' || code === 'too_many_projects') toast(failText(e), 'bad');
+      else setAddingProject(true);
+    } finally {
+      setPickingFolder(false);
+    }
+  };
   const confirmations = usePoll((s) => api.confirmations(undefined, s), 'confirmations', POLL_MS, true);
   const health = usePoll(() => panel.health(), 'health', POLL_MS * 2, true);
   const settings = usePoll((s) => api.settings(s), 'settings', POLL_MS * 10, true);
+  // 渠道总开关：旧版 daemon 没有 /channel 时为 null（不显示开关）。
+  const channelSwitch = usePoll(() => panel.channel().catch(() => null), 'channel', POLL_MS * 2, true);
+  const [channelBusy, setChannelBusy] = useState(false);
+  const toggleChannel = (on: boolean): void => {
+    if (channelBusy) return;
+    setChannelBusy(true);
+    panel.channelSwitch(on).then(
+      () => toast(on ? '正在启动渠道' : '渠道已关闭'),
+      (e: unknown) => {
+        const code = (e as { code?: string }).code ?? '';
+        toast(CHANNEL_SWITCH_HINT[code] ?? failText(e), code in CHANNEL_SWITCH_HINT ? 'warn' : 'bad');
+        // 缺前提：直接带用户去设置的「公网渠道」补上。
+        if (code === 'cloudflared' || code === 'named_url' || code === 'openai_setup') openSettings('connections');
+      },
+    ).finally(() => {
+      setChannelBusy(false);
+      channelSwitch.refresh();
+      health.refresh();
+    });
+  };
   const remote = usePoll(() => remoteAdmin.view(), 'remote', POLL_MS * 5, view.view === 'channels');
-  const [account, setAccount] = useState<AccountView | null>(null);
-  const loadAccount = useCallback(() => void api.account().then(setAccount, () => undefined), []);
+  // An open console keeps channels alive like a VS Code window (hidden tabs too).
+  useEffect(() => startPresence(), []);
   useEffect(() => {
-    loadAccount();
-    const t = setInterval(loadAccount, 60_000);
-    window.addEventListener('focus', loadAccount);
+    let pending: string | null = null;
+    try {
+      pending = sessionStorage.getItem('blackhole.pendingSetup.v1');
+      if (pending) sessionStorage.removeItem('blackhole.pendingSetup.v1');
+    } catch { /* optional browser storage */ }
+    if (pending === 'cloudflare') {
+      void panel.cloudflaredStart().then(
+        () => toast('Cloudflare 安装任务已开始；安装完成后由你决定是否启动渠道。'),
+        (e: unknown) => toast('Cloudflare 安装未开始：' + failText(e), 'bad'),
+      );
+    } else if (pending === 'openai') {
+      void panel.openaiInstallStart().then(
+        () => toast('OpenAI tunnel-client 安装任务已开始；安装完成后继续配置 Tunnel ID。'),
+        (e: unknown) => toast('OpenAI runtime 安装未开始：' + failText(e), 'bad'),
+      );
+    }
+  }, [toast]);
+  const [account, setAccount] = useState<AccountView | null>(null);
+  const loadAccount = useCallback(async (): Promise<AccountView | null> => {
+    try {
+      const next = await api.account();
+      setAccount(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    void loadAccount();
+    const t = setInterval(() => { if (!document.hidden) void loadAccount(); }, 60_000);
+    const onFocus = () => { void loadAccount(); };
+    window.addEventListener('focus', onFocus);
     return () => {
       clearInterval(t);
-      window.removeEventListener('focus', loadAccount);
+      window.removeEventListener('focus', onFocus);
     };
   }, [loadAccount]);
 
@@ -134,14 +213,32 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
     return m;
   }, [pendingList]);
 
-  // keep a valid selection: newest live session when nothing (or a vanished one) is selected
+  // No selection = the new session page (a lone composer). A selected session that vanished
+  // goes back to it, except one just opened from that page and not in the polled list yet.
+  const opening = useRef<string | null>(null);
   useEffect(() => {
-    if (!sessions.data) return;
-    if (view.session && list.some((x) => x.id === view.session)) return;
-    const first = list.find((x) => x.status === 'active' || x.status === 'paused') ?? list[0];
-    setView({ session: first?.id ?? null });
+    if (!sessions.data || !view.session) return;
+    if (list.some((x) => x.id === view.session)) {
+      if (opening.current === view.session) opening.current = null;
+      return;
+    }
+    if (opening.current === view.session) return;
+    setView({ session: null });
   }, [sessions.data, list, view.session, setView]);
+  // Drafts are not listed: a session shows up once it really started.
+  const listed = useMemo(() => list.filter((x) => !x.draft), [list]);
   const current = list.find((x) => x.id === view.session) ?? null;
+
+  // Leaving a draft that never reached a web AI (no call, nothing sent) discards it.
+  const [lastDraft, setLastDraft] = useState<string | null>(null);
+  useEffect(() => {
+    if (lastDraft && lastDraft !== view.session) {
+      const d = list.find((x) => x.id === lastDraft);
+      if (d?.draft && !draftsInUse.has(d.id)) void api.sessionAction(d.id, 'revoke').catch(() => undefined).then(() => sessions.refresh());
+    }
+    setLastDraft(current?.draft ? current.id : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.session, current?.draft]);
 
   // Ctrl/Cmd+K opens search anywhere; Esc closes the narrow-screen drawer
   useEffect(() => {
@@ -156,19 +253,34 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const openSettings = (section: string = 'overview'): void => setView({ settings: section });
+  const openSettings = (section: SettingsSection = 'home'): void => setView({ settings: section });
   const select = (id: string): void => {
     setView({ session: id, view: 'session' });
     if (narrow()) setCollapsed(true);
   };
-  const st = channelState(health.data, settings.data?.values.channelMode);
+  const openNew = (path?: string): void => {
+    setNewChat((x) => ({ path: path ?? '', key: x.key + 1 }));
+    setView({ session: null, view: 'session' });
+    if (narrow()) setCollapsed(true);
+  };
+  const st = channelSummary(health.data, settings.data?.values.channelMode);
   const refreshAll = (): void => {
     sessions.refresh();
     confirmations.refresh();
-  };
+  };  // one implementation shared by the sidebar row menu and the session header menu
+  const actions = useSessionActions({
+    toast,
+    confirm: setConfirmSpec,
+    onChanged: refreshAll,
+    onRotated: setRotated,
+    onRename: setRenamingSession,
+    connectorName: settings.data?.values.connectorName ?? 'BlackHole',
+    mcpUrl: health.data?.mcp_url ?? null,
+  });
+
 
   const onAccount = (k: 'buy' | 'orders' | 'settings' | 'signout'): void => {
-    if (k !== 'signout') return openSettings(k === 'settings' ? 'overview' : 'account');
+    if (k !== 'signout') return openSettings(k === 'settings' ? 'home' : 'account');
     setConfirmSpec({
       title: '退出登录',
       body: '退出后，这台电脑上的网页和已配对的手机都需要重新登录，AI 暂时无法调用工具。',
@@ -186,24 +298,28 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   return (
     <div className={`${c.app} ${collapsed ? c.collapsed : ''}`}>
       <Sidebar
-        sessions={list}
+        sessions={listed}
         projects={projectList}
         pending={pending}
         current={view.session}
         view={view.view}
         channel={{ text: st.text, ok: st.tone === 'ok' }}
+        channelSwitch={channelSwitch.data ?? null}
+        channelBusy={channelBusy}
+        onChannelToggle={toggleChannel}
         account={account}
         now={now}
         collapsed={collapsed}
+        actions={actions}
         onToggle={() => setCollapsed((x) => !x)}
         onSelect={select}
-        onNew={(path) => setNewSession(path ?? '')}
+        onNew={openNew}
         onSearch={() => setSearch(true)}
         onChannels={() => {
           setView({ view: 'channels' });
           if (narrow()) setCollapsed(true);
         }}
-        onAddProject={() => setAddingProject(true)}
+        onAddProject={() => void addProjectNative()}
         onRenameProject={setRenaming}
         onPinProject={(p) =>
           void api.updateProject(p.id, { pinned: !p.pinned }).then(
@@ -240,7 +356,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
             </button>
           </div>
         )}
-        <SubscriptionBanner onRenew={() => openSettings('account')} />
+        <SubscriptionBanner account={account} onRenew={() => openSettings('account')} />
         <div className={c.mainBody}>
           {view.view === 'channels' ? (
             <ChannelsPane
@@ -252,54 +368,46 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
                 remote.refresh();
               }}
               onSettings={openSettings}
+              channelSwitch={channelSwitch.data ?? null}
+              channelBusy={channelBusy}
+              onChannelToggle={toggleChannel}
             />
           ) : current ? (
             <SessionPane
               session={current}
               approvals={pendingList.filter((x) => x.session_id === current.id)}
               now={now}
-              connectorName={settings.data?.values.connectorName ?? 'BlackHole'}
-              mcpUrl={health.data?.mcp_url ?? null}
+              actions={actions}
               onApprove={setApproving}
               onApprovalsChanged={refreshAll}
               onChanged={refreshAll}
-              confirm={setConfirmSpec}
-              onRotated={setRotated}
+              connectorName={settings.data?.values.connectorName ?? 'BlackHole'}
+            />
+          ) : sessions.data ? (
+            <NewChatPane
+              key={newChat.key}
+              initialPath={newChat.path}
+              projects={projectList}
+              sessions={list}
+              actions={actions}
+              onOpen={(id) => {
+                opening.current = id;
+                refreshAll();
+                projects.refresh();
+                setView({ session: id, view: 'session' });
+              }}
             />
           ) : (
             <div className={c.center}>
-              <div className={c.emptyCard}>
-                {sessions.data ? (
-                  <>
-                    <h2>开始第一个会话</h2>
-                    <p>选择一个文件夹，把生成的提示词发给网页版 AI，它就能在这个文件夹里工作。</p>
-                    <button type="button" className={c.btnPrimary} onClick={() => setNewSession('')}>
-                      <Icon name="plus" size={14} /> 新建会话
-                    </button>
-                  </>
-                ) : (
-                  <p>加载中…</p>
-                )}
-              </div>
+              <p>加载中…</p>
             </div>
           )}
         </div>
       </main>
 
-      {newSession !== null && (
-        <NewSessionDialog
-          initialPath={newSession || undefined}
-          onClose={() => setNewSession(null)}
-          onCreated={(id) => {
-            refreshAll();
-            projects.refresh();
-            setView({ session: id, view: 'session' });
-          }}
-        />
-      )}
       {search && (
         <SearchPalette
-          sessions={list}
+          sessions={listed}
           projects={projectList}
           onClose={() => setSearch(false)}
           onPick={(kind, id) => {
@@ -308,7 +416,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
             const p = projectList.find((x) => x.id === id);
             const inside = p && list.find((x) => underPath(x.workspace_path, p.path) && x.status !== 'revoked' && x.status !== 'archived');
             if (inside) select(inside.id);
-            else if (p) setNewSession(p.path);
+            else if (p) openNew(p.path);
           }}
         />
       )}
@@ -324,6 +432,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         />
       )}
       {confirmSpec && <ConfirmDialog spec={confirmSpec} onClose={() => setConfirmSpec(null)} />}
+      <PairPrompt toast={toast} />
       {renaming && (
         <PromptDialog
           title="重命名项目"
@@ -337,17 +446,35 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
           }}
         />
       )}
+      {renamingSession && (
+        <PromptDialog
+          title="重命名会话"
+          label="名称"
+          initial={renamingSession.name ?? sessionTitle(renamingSession)}
+          action="保存"
+          onClose={() => setRenamingSession(null)}
+          onSubmit={async (name) => {
+            await api.renameSession(renamingSession.id, name);
+            toast('已重命名');
+            refreshAll();
+          }}
+        />
+      )}
       {addingProject && <AddProjectDialog onClose={() => setAddingProject(false)} onAdded={projects.refresh} />}
       {rotated && <RotatedDialog id={rotated} onClose={() => setRotated(null)} />}
       {view.settings && (
         <SettingsModal
           section={view.settings}
+          account={account}
+          onAccountChange={setAccount}
+          refreshAccount={loadAccount}
+          onSignOut={() => onAccount('signout')}
           onSection={(s: SettingsSection) => setView({ settings: s })}
           onClose={() => {
             setView({ settings: null });
             health.refresh();
             settings.refresh();
-            loadAccount();
+            void loadAccount();
           }}
         />
       )}

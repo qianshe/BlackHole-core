@@ -47,9 +47,16 @@ const LOGIN_ERRORS: Record<string, string> = {
 function Login({ reason, onDone }: { reason: string; onDone: (a: Auth) => void }) {
   const [phase, setPhase] = useState<'idle' | 'waiting'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [setup, setSetup] = useState<'loading' | 'present' | 'absent' | 'unknown'>('loading');
+  const [setupSkipped, setSetupSkipped] = useState(() => { try { return localStorage.getItem('blackhole.setupSkipped.v1') === '1'; } catch { return false; } });
   const run = useRef(0);
   useEffect(() => () => void run.current++, []);
 
+  useEffect(() => {
+    let alive = true;
+    void api.setupSummary().then((v) => { if (alive) setSetup(v.configuration); }, () => { if (alive) setSetup('unknown'); });
+    return () => { alive = false; };
+  }, []);
   const start = useCallback(async () => {
     const mine = ++run.current;
     setError(null);
@@ -80,6 +87,22 @@ function Login({ reason, onDone }: { reason: string; onDone: (a: Auth) => void }
     }
   }, [onDone]);
 
+  const chooseSetup = (kind: 'direct' | 'cloudflare' | 'openai'): void => {
+    try { sessionStorage.setItem('blackhole.pendingSetup.v1', kind); } catch { /* optional browser storage */ }
+    history.replaceState(null, '', window.location.pathname + '?set=connections');
+    void start();
+  };
+  const clearPendingSetup = (): void => {
+    let hadPending = false;
+    try { hadPending = sessionStorage.getItem('blackhole.pendingSetup.v1') !== null; sessionStorage.removeItem('blackhole.pendingSetup.v1'); } catch { /* optional browser storage */ }
+    if (hadPending) history.replaceState(null, '', window.location.pathname);
+  };
+  const skipSetup = (): void => {
+    clearPendingSetup();
+    try { localStorage.setItem('blackhole.setupSkipped.v1', '1'); } catch { /* optional browser storage */ }
+    setSetupSkipped(true);
+  };
+
   return (
     <main className={s.center}>
       <div className={s.card}>
@@ -90,17 +113,31 @@ function Login({ reason, onDone }: { reason: string; onDone: (a: Auth) => void }
         {phase === 'idle' ? (
           <>
             <p className={s.cardText}>{reason === 'account_required' ? '这台电脑的 BlackHole 需要登录账号。' : '登录后使用。'}</p>
-            <Button icon="login" onClick={() => void start()}>
+            <Button icon="login" onClick={() => { clearPendingSetup(); void start(); }}>
               {reason === 'signed_out' ? '进入' : '登录'}
             </Button>
             {reason !== 'signed_out' && <p className={s.cardHint}>将在浏览器中完成登录。</p>}
+            {setup === 'absent' && !setupSkipped && (
+              <section className={s.setupBlock} aria-label="连接渠道（可选）">
+                <div className={s.setupTitle}>连接渠道（可选）</div>
+                <p className={s.setupText}>也可以先跳过。选择后会先完成登录，再进入受保护的连接页继续准备。</p>
+                <div className={s.setupGrid}>
+                  <button type="button" onClick={() => chooseSetup('direct')}><strong>配置直连</strong><span>使用局域网、组网或自建 HTTPS。</span></button>
+                  <button type="button" onClick={() => chooseSetup('cloudflare')}><strong>安装 Cloudflare</strong><span>登录后自动开始安装 runtime，不自动启动公网渠道。</span></button>
+                  <button type="button" onClick={() => chooseSetup('openai')}><strong>安装 OpenAI</strong><span>登录后自动准备 tunnel-client，不依赖 Cloudflare。</span></button>
+                </div>
+                <button type="button" className={s.skipSetup} onClick={skipSetup}>跳过渠道安装</button>
+              </section>
+            )}
+            {setup === 'present' && <p className={s.cardHint}>已检测到保存的连接配置；登录后直接进入工作区，不重复安装。</p>}
+            {setup === 'unknown' && <p className={s.cardHint}>暂时无法确认连接配置；不会自动安装任何渠道。</p>}
           </>
         ) : (
           <>
             <p className={s.cardText} role="status">
               请在浏览器中完成登录，完成后这里会自动进入。
             </p>
-            <Button onClick={() => { run.current++; setPhase('idle'); }}>取消</Button>
+            <Button onClick={() => { run.current++; clearPendingSetup(); setPhase('idle'); }}>取消</Button>
           </>
         )}
         {error && (

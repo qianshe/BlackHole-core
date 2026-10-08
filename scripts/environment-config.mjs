@@ -1,11 +1,14 @@
-// Public CLIENT build profiles only. No filesystem, dotenv, deployment identity or credentials.
-// Official trust is unchanged. The test default is deliberately a non-service example domain.
+// Public CLIENT build profiles only. No dotenv, ambient environment, deployment identity or secrets.
+// Production identity is versioned JSON shared with standalone runtime defaults.
+// Optional ignored test.json holds ONLY the public test origin/key.
+// The fallback fixture is for offline source-build tests, never an installable/release artifact.
 import { createPublicKey } from 'node:crypto';
-export const PRODUCTION_ORIGIN = 'https://blackhole.stellarbridge.dpdns.org';
-export const PRODUCTION_KEY = 'MCowBQYDK2VwAyEAhdJo6ndymroW5cuo/tsGYqB+Ge0GQos0gkUmjHo7Jk0=';
-const TEST_ORIGIN = 'https://blackhole-build-fixture.example.org';
-// Throwaway verification key only; no private counterpart is distributed or used by a service.
-const TEST_KEY = 'MCowBQYDK2VwAyEALlwA8WacXutuxBJ7hA4ISMQ6hDPw1QoI0ydHBKFuHYA=';
+import { readFileSync } from 'node:fs';
+const productionProfile = Object.freeze(JSON.parse(readFileSync(new URL('../src/environments/production.json', import.meta.url), 'utf8')));
+const testFixture = Object.freeze(JSON.parse(readFileSync(new URL('./fixtures/cloud-test-profile.json', import.meta.url), 'utf8')));
+export const PRODUCTION_ORIGIN = productionProfile.origin;
+export const PRODUCTION_KEY = productionProfile.entitlementPublicKey;
+const TEST_KEY = testFixture.entitlementPublicKey;
 const fields = ['schema', 'environment', 'clientTarget', 'origin', 'entitlementPublicKey'].sort();
 const fail = () => { throw new Error('Invalid public client profile; values omitted. Deployment configuration is not supported.'); };
 export function validateOrigin(origin) {
@@ -26,7 +29,7 @@ export function validateProfiles(profiles) {
   if (!profiles || typeof profiles !== 'object' || Object.keys(profiles).sort().join(',') !== 'production,test') fail();
   for (const name of ['production', 'test']) {
     const p = profiles[name];
-    if (!p || typeof p !== 'object' || Object.keys(p).sort().join(',') !== fields.join(',') || p.schema !== 1 || p.environment !== name || !['production', 'test'].includes(p.clientTarget)) fail();
+    if (!p || typeof p !== 'object' || Object.keys(p).sort().join(',') !== fields.join(',') || p.schema !== 1 || p.environment !== name || p.clientTarget !== name) fail();
     if (p.origin !== null) validateOrigin(p.origin);
     if (p.entitlementPublicKey !== null) validatePublicKey(p.entitlementPublicKey);
   }
@@ -35,12 +38,37 @@ export function validateProfiles(profiles) {
   if (t.origin === PRODUCTION_ORIGIN || t.entitlementPublicKey === PRODUCTION_KEY) fail();
   return profiles;
 }
-export function readProfiles() {
-  // New values on every call. No developer-specific config/environments directory is required.
-  return validateProfiles({
-    production: { schema: 1, environment: 'production', clientTarget: 'production', origin: PRODUCTION_ORIGIN, entitlementPublicKey: PRODUCTION_KEY },
-    test: { schema: 1, environment: 'test', clientTarget: 'test', origin: TEST_ORIGIN, entitlementPublicKey: TEST_KEY },
-  });
+export function readProfiles({loadTest = true, testProfilePath = new URL('../config/environments/test.json', import.meta.url)} = {}) {
+  const profiles = {
+    production: { ...productionProfile },
+    test: { ...testFixture },
+  };
+  if (loadTest) {
+    let text;
+    try { text = readFileSync(testProfilePath, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') fail(); }
+    if (text !== undefined) {
+      try { if (Buffer.byteLength(text) > 8192) fail(); profiles.test = JSON.parse(text); }
+      catch { fail(); }
+    }
+  }
+  return validateProfiles(profiles);
+}
+/** Distribution gate, separate from offline fixture validation. Never infer service readiness from a filename. */
+export function assertServiceBuild(build) {
+  if (!build || !['production', 'test'].includes(build.environment)) fail();
+  const origin = validateOrigin(build.origin), host = new URL(origin).hostname;
+  validatePublicKey(build.entitlementPublicKey);
+  if (/(?:^|\.)example\.(?:com|net|org)$|(?:^|\.)(?:example|invalid|test|localhost)$/i.test(host)
+      || /(?:^|[.-])(?:ci-fixture|build-fixture)(?:[.-]|$)/i.test(host)
+      || build.entitlementPublicKey === TEST_KEY) {
+    throw new Error('Fixture/example configuration cannot be packaged or installed. Set config/environments/test.json or pass --cloud-origin AND --cloud-public-key; use --environment production for the official service.');
+  }
+  if (build.environment === 'production' && (origin !== PRODUCTION_ORIGIN || build.entitlementPublicKey !== PRODUCTION_KEY)) fail();
+  if (build.environment === 'test' && (origin === PRODUCTION_ORIGIN || build.entitlementPublicKey === PRODUCTION_KEY)) {
+    throw new Error('A test package must use independent test origin and signing trust, never production.');
+  }
+  return build;
 }
 export function requireComplete(target) {
   if (!target || target.origin === null || target.entitlementPublicKey === null) throw new Error('Client environment target is incomplete; configure an independent test origin and public key.');
@@ -49,6 +77,10 @@ export function requireComplete(target) {
 export function clientTarget(environment, profiles = readProfiles()) {
   validateProfiles(profiles);
   if (!['production', 'test'].includes(environment)) fail();
-  // Explicit test fixtures may select the official client target; deployment routing is absent.
-  return Object.freeze({ ...requireComplete(profiles[profiles[environment].clientTarget]) });
+  // No test-to-production alias. Environment names select independent client trust.
+  return Object.freeze({ ...requireComplete(profiles[environment]) });
 }
+
+// Reject malformed, secret-bearing, or fixture-valued checked-in production configuration.
+validateProfiles({ production: { ...productionProfile }, test: { ...testFixture } });
+assertServiceBuild(productionProfile);

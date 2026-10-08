@@ -4,7 +4,7 @@ import { env, window, workspace } from 'vscode';
 import type { ControlApi, SessionAction, SessionInfo } from './controlApi';
 import type { DaemonManager } from './daemonManager';
 import { getConfig } from './config';
-import { renderPrompt, type TemplateKind } from './templates';
+import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL, type TemplateKind } from './templates';
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -34,71 +34,49 @@ async function pickFolder(): Promise<string | undefined> {
   return pick ? real(pick.fsPath) : undefined;
 }
 
-/**
- * Optional task text: doubles as the session's display name and is inserted
- * into the copied prompt templates. Empty keeps the default behavior.
- */
-async function askTask(): Promise<string | undefined> {
-  const task = await window.showInputBox({
-    title: '任务内容（可选）',
-    prompt: '一句话描述要交给远程 AI 的任务；留空则稍后在提示词里手动填写',
-    placeHolder: '例：修复 src/api.ts 里登录接口的空指针并补一个测试',
-    ignoreFocusOut: false,
-  });
-  // undefined = cancelled the whole creation; '' = no task (default behavior)
-  return task;
-}
-
 const DAEMON_NOT_READY = 'BlackHole: daemon 正在启动或配置交接中，尚未确认就绪。请稍后重试；如持续失败，请查看输出面板。';
 
 /**
- * The channel is user-driven: never start/stop it behind the user's back.
- * A listener attached solely for an upgrade is not ready for session writes.
- * Verify the same live daemon health that provides the public URL against the
- * manager's lifecycle revision, version and launch fingerprint first.
+ * Session creation is local state and must not be gated by a public channel.
+ * We still verify that the manager and /health describe the same live daemon so
+ * an upgrade/restart race cannot write into the wrong process.
  */
-async function requireChannelReady(api: ControlApi, daemon: DaemonManager): Promise<string | undefined> {
+async function requireDaemonReady(api: ControlApi, daemon: DaemonManager): Promise<boolean> {
   if (daemon.currentState !== 'running') {
     void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
+    return false;
   }
   const observation = daemon.captureHealthObservation();
-  let h: Awaited<ReturnType<ControlApi['health']>>;
   try {
-    h = await api.health(8_000, observation.port);
-  } catch {
-    void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
-  }
-  if (!daemon.observeHealth(h, observation) || daemon.currentState !== 'running') {
-    void window.showWarningMessage(DAEMON_NOT_READY);
-    return undefined;
-  }
-  if (h.tunnel === 'online' && h.tunnel_url) return h.tunnel_url;
-  if (h.public_base_url) return h.public_base_url;
-  void window.showWarningMessage(
-    'BlackHole: 公网渠道未启动。请点击右下角状态图标打开设置，启动「持久」或「临时」渠道后再创建会话。',
-  );
-  return undefined;
+    const h = await api.health(8_000, observation.port);
+    if (daemon.observeHealth(h, observation) && daemon.currentState === 'running') return true;
+  } catch { /* reported below */ }
+  void window.showWarningMessage(DAEMON_NOT_READY);
+  return false;
 }
 
-export async function createSession(api: ControlApi, daemon: DaemonManager, after: () => void): Promise<void> {
+/**
+ * New session = a draft: the daemon only reserves id + credential. It is stored once the web AI
+ * makes its first tool call; closing the draft in the sidebar discards it. `after` opens it.
+ */
+export async function createSession(api: ControlApi, daemon: DaemonManager, after: (created?: SessionInfo) => void): Promise<void> {
   const folder = await pickFolder();
   if (!folder) return;
-  const task = await askTask();
-  if (task === undefined) return;
   if (!(await daemon.ensureRunning())) return;
-  const publicUrl = await requireChannelReady(api, daemon);
-  if (!publicUrl) return;
+  if (!(await requireDaemonReady(api, daemon))) return;
 
   let created;
   try {
-    created = await api.createSession(folder, task);
+    created = await api.createSession(folder, undefined, true);
   } catch (e) {
     void window.showErrorMessage(`BlackHole: 创建会话失败 — ${msg(e)}`);
     return;
   }
-  after();
+  after(created);
+  if (created.draft) {
+    window.setStatusBarMessage(`BlackHole: 新会话（${sessionLabel(created)}）：复制提示词，或在输入框发送新开网页 AI 会话`, 5000);
+    return;
+  }
   // 纯反馈走状态栏：几秒自动消失，不再堆常驻通知
   window.setStatusBarMessage(
     `BlackHole: 会话已创建（${sessionLabel(created)}）— 右键或点 ⋯ 复制提示词`,
@@ -141,20 +119,80 @@ function isLoopbackUrl(url: string): boolean {
   }
 }
 
-/** Copy the machine-level MCP URL — stable, so this needs no session credential. */
+/** Copy the resolved identifier; never consult a second settings source here. */
+async function offerTunnelId(message: string, resolvedId: string | null | undefined): Promise<void> {
+  const id = (resolvedId || '').trim();
+  const copy = '复制 Tunnel ID';
+  if ((await (id ? window.showInformationMessage(message, copy) : window.showInformationMessage(message))) !== copy) return;
+  await env.clipboard.writeText(id);
+  window.setStatusBarMessage('BlackHole: Tunnel ID 已复制', 3000);
+}
+
+/** Copy the operator-selected MCP route — stable, so this needs no session credential. */
 export async function copySessionUrl(api: ControlApi, node: SessionInfo): Promise<void> {
+  return copyCurrentConnection(api, node);
+}
+
+export async function copyCurrentConnection(api: ControlApi, node?: SessionInfo): Promise<void> {
   const h = await api.health().catch(() => undefined);
-  const url = h?.mcp_url;
-  if (!url) {
+  if (!h?.mcp_url) {
     void window.showErrorMessage('BlackHole: 无法获取 MCP 链接（daemon 未运行）');
     return;
   }
-  await env.clipboard.writeText(url);
-  if (isLoopbackUrl(url)) {
-    void window.showWarningMessage('BlackHole: 已复制的 MCP 链接当前是本机回环地址——公网渠道未启动，网页 AI 无法访问。请先在设置页启动渠道（点击右下角状态图标进入）。');
+  const target = connectionTarget(h);
+  if (target.needsChoice) {
+    const directCandidates = target.mcpCandidates.filter((c) => c.kind === 'direct');
+    const pick = await window.showQuickPick(
+      directCandidates.map((c) => ({ label: c.label, description: new URL(c.url).origin, url: c.url })),
+      { title: '选择直连地址', placeHolder: '仅用于本次复制；选择目标 Agent 能访问的地址，不会修改设置或切换渠道' },
+    );
+    if (!pick) return;
+    const current = (await api.health().catch(() => undefined))?.connection_routes;
+    if (current?.selected_route !== 'direct' || !current.mcp_candidates?.some((c) => c.kind === 'direct' && c.url === pick.url)) {
+      void window.showWarningMessage('BlackHole: 连接状态已变化，未复制旧地址，请重新选择。'); return;
+    }
+    await env.clipboard.writeText(pick.url);
+    window.setStatusBarMessage('BlackHole: 直连 MCP 链接已复制', 3000);
     return;
   }
-  window.setStatusBarMessage(`BlackHole: MCP 链接已复制（所有会话共用，${sessionLabel(node)} 用各自的 id 区分）`, 3000);
+  const url = !h.connection_routes && target.openai === 'ready' && isLoopbackUrl(h.mcp_url) ? null : target.mcpUrl;
+  if (!url) {
+    if (target.selectedRoute === 'openai') {
+      const id = h.connection_routes ? target.tunnelId : target.tunnelId || getConfig().openaiTunnelId;
+      if (!id) { void window.showWarningMessage('BlackHole: daemon 尚未保存 Tunnel ID；请到“连接与渠道”填写并保存。'); return; }
+      await offerTunnelId(
+        'BlackHole: 当前选择的是 OpenAI Tunnel。复制 daemon 保存的 Tunnel ID；渠道停止时也可配置连接器，实际调用前仍需启动。',
+        id,
+      );
+      return;
+    }
+    if (target.reason === 'direct_unavailable') {
+      void window.showWarningMessage('BlackHole: 已选择局域网直连，但直连监听当前不可用。请到“直连”检查端口/监听状态；不会改用 Cloudflare。');
+      return;
+    }
+    if (target.reason === 'custom_unavailable') {
+      void window.showWarningMessage('BlackHole: 当前选择自定义地址，但尚未配置可用地址；不会改用其它渠道。');
+      return;
+    }
+    // Legacy/local-only fallback remains available for same-machine clients.
+    if (!h.connection_routes && isLoopbackUrl(h.mcp_url)) {
+      await env.clipboard.writeText(h.mcp_url);
+      void window.showWarningMessage('BlackHole: 已复制本机回环 MCP 链接；它只能供这台电脑上的客户端使用。');
+      return;
+    }
+    void window.showWarningMessage('BlackHole: 当前选择的连接方式没有可复制的 MCP 地址。');
+    return;
+  }
+  if (isLoopbackUrl(url)) {
+    await env.clipboard.writeText(url);
+    void window.showWarningMessage('BlackHole: 已复制本机回环 MCP 链接；它只能供这台电脑上的客户端使用。');
+    return;
+  }
+  await env.clipboard.writeText(url);
+  window.setStatusBarMessage(
+    `BlackHole: ${target.mcpKind === 'direct' ? '直连 ' : ''}MCP 链接已复制${node ? `（${sessionLabel(node)}）` : ''}`,
+    3000,
+  );
 }
 
 /**
@@ -163,25 +201,66 @@ export async function copySessionUrl(api: ControlApi, node: SessionInfo): Promis
  * the daemon each time — nothing lives in extension memory, so a rotated
  * session automatically serves its fresh id on the next copy.
  */
-export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind): Promise<void> {
+export async function copyTemplateSession(api: ControlApi, node: SessionInfo, kind: TemplateKind, message?: string): Promise<void> {
   const [h, s] = await Promise.all([
     api.health().catch(() => undefined),
     api.getSession(node.id).catch(() => undefined),
   ]);
-  const url = h?.mcp_url;
-  const sessionId = s?.session_id;
-  if (!url || !sessionId) {
-    void window.showErrorMessage('BlackHole: 无法获取 MCP 链接或会话 id（daemon 未运行或会话不存在）');
+  let sessionId = s?.session_id;
+  if (!h?.mcp_url || !sessionId) {
+    void window.showErrorMessage('BlackHole: 无法获取连接状态或会话 id（daemon 未运行或会话不存在）');
     return;
   }
   const connectorName = getConfig().connectorName || 'BlackHole';
-  await env.clipboard.writeText(renderPrompt(kind, url, sessionId, node.name, connectorName));
-  if (isLoopbackUrl(url)) {
-    void window.showWarningMessage('BlackHole: 提示词已复制，但其中的 MCP 链接当前是本机回环地址——公网渠道未启动，网页 AI 无法访问。请先在设置页启动渠道（点击右下角状态图标进入）后再复制。');
+  const target = connectionTarget(h);
+  let url = kind === 'sandbox' ? target.sandboxMcpUrl : (target.mcpUrl ?? h.mcp_url);
+  if (kind === 'sandbox' && target.needsChoice) {
+    const pick = await window.showQuickPick(target.mcpCandidates.filter(c => c.kind === 'direct').map(c => ({ label: c.label, description: new URL(c.url).origin, url: c.url })),
+      { title: '选择直连地址', placeHolder: '仅用于本次复制；通用云沙箱需要可从公网访问的地址' });
+    if (!pick) return;
+    const current = (await api.health().catch(() => undefined))?.connection_routes;
+    const candidate = current?.mcp_candidates?.find(c => c.kind === 'direct' && c.url === pick.url);
+    if (current?.selected_route !== 'direct' || !candidate) { void window.showWarningMessage('BlackHole: 连接状态已变化，未复制旧地址。'); return; }
+    if (candidate.scope !== 'public') { void window.showWarningMessage('BlackHole: 所选地址仅限私网；通用云沙箱需要它能访问的对外地址。未复制。'); return; }
+    url = candidate.url;
+    sessionId = (await api.getSession(node.id).catch(() => undefined))?.session_id;
+    if (!sessionId) { void window.showWarningMessage('BlackHole: 会话已不可用，未复制。'); return; }
+  }
+
+  if (kind === 'sandbox' && !url) {
+    const extra = target.needsChoice
+      ? '存在多个直连地址，需要选择云沙箱实际能访问的地址。'
+      : target.reason === 'direct_unavailable'
+        ? '当前选择的是直连且监听不可用。'
+        : '';
+    void window.showWarningMessage(`BlackHole: ${SANDBOX_NEEDS_PUBLIC_URL}${extra ? ' ' + extra : ''} 未复制。`);
+    return;
+  }
+
+  // Connector bootstrap is URL-free; it can be prepared before the selected route
+  // becomes ready. The URL argument is ignored for connector rendering.
+  await env.clipboard.writeText(renderPrompt(kind, url ?? h.mcp_url, sessionId, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
+
+  if (kind === 'connector' && target.needsChoice) {
+    void window.showWarningMessage('BlackHole: 连接器提示词已复制；检测到多个直连地址，请在配置连接器/MCP 地址时选择目标 Agent 能访问的那个地址。不会改用 Cloudflare。');
+    return;
+  }
+  if (kind === 'connector' && !target.connector) {
+    const note = target.openai === 'starting'
+      ? 'OpenAI Tunnel 正在启动。'
+      : target.reason === 'direct_unavailable'
+        ? '局域网直连当前不可用；不会改用 Cloudflare。'
+        : target.reason === 'custom_unavailable'
+          ? '自定义地址尚未配置；不会改用其它渠道。'
+          : '当前选择的连接方式尚未就绪。';
+    void window.showWarningMessage(`BlackHole: 连接器提示词已复制，但 ${note}`);
     return;
   }
   window.setStatusBarMessage(
-    kind === 'connector' ? 'BlackHole: 连接器提示词已复制' : 'BlackHole: 沙箱直连提示词已复制',
-    3000,
+    kind === 'sandbox' ? 'BlackHole: 沙箱提示词已复制'
+      : target.mcpKind === 'direct' ? 'BlackHole: 连接器提示词已复制（直连）'
+        : target.openai === 'ready' && (!target.mcpUrl || isLoopbackUrl(target.mcpUrl)) ? `BlackHole: 连接器提示词已复制（OpenAI Tunnel · @${connectorName}）`
+          : 'BlackHole: 连接器提示词已复制',
+    4000,
   );
 }

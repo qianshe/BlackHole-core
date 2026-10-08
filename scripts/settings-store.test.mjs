@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { MachineStateRepo } from '../dist/storage/machineState.js';
 import { applySettingsToConfig, normalizeSettingsPatch, pendingRestartKeys, unseededKeys, SettingsStore, DEFAULT_SETTINGS, DEFAULT_WEB_AGENTS, V1_SETTING_KEYS, SETTINGS_KEY } from '../dist/settings/store.js';
 import { readFileSync } from 'node:fs';
-import { migrateSettings, patchSettings } from '../dist/settings/service.js';
+import { migrateSettings, patchSettings, putCourierSite, removeCourierSite } from '../dist/settings/service.js';
 
 const repo = () => {
   const db = new DatabaseSync(':memory:');
@@ -16,13 +16,24 @@ const deps = (store) => ({ settings: store, startedSettings: { ...DEFAULT_SETTIN
 
 test('validation: allowed values, normalization and rejects', () => {
   assert.deepEqual(normalizeSettingsPatch({ connectorName: ' @@Me ', publicBaseUrl: 'https://x.example.com/' }).values, { connectorName: 'Me', publicBaseUrl: 'https://x.example.com' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessUrl: 'https://bh.example.test/' }).values, { directAccessUrl: 'https://bh.example.test' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessUrl: 'http://bh.example.test:7307/' }).values, { directAccessUrl: 'http://bh.example.test:7307' });
+  assert.deepEqual(normalizeSettingsPatch({ channelProxyUrl: ' http://127.0.0.1:7890/ ' }).values, { channelProxyUrl: 'http://127.0.0.1:7890' });
+  assert.deepEqual(normalizeSettingsPatch({ aiDefaultRoute: 'openai' }).values, { aiDefaultRoute: 'openai' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessEnabled: true }).values, { directAccessEnabled: true });
   for (const bad of [
     { unknown: 'x' },
     { publicBaseUrl: 'ftp://x' },
     { publicBaseUrl: 'https://u:p@x.example.com' },
     { publicBaseUrl: 'https://x.example.com/path' },
     { publicBaseUrl: 'https://x.example.com/?a=1' },
+    { directAccessUrl: 'https://bh.example.test/path' },
     { channelMode: 'tailscale' },
+    { aiDefaultRoute: 'magic' },
+    { directAccessEnabled: 'true' },
+    { channelProxyUrl: 'socks5://127.0.0.1:7890' },
+    { channelProxyUrl: 'http://user:pass@127.0.0.1:7890' },
+    { channelProxyUrl: 'http://127.0.0.1' },
     { openaiTunnelId: 'https://api.openai.com/v1/tunnels/x' },
     { openaiTunnelId: 'tun 1' },
     { openaiTunnelId: 'tun_abc-123' },
@@ -72,6 +83,28 @@ test('patch service: revision required for Web, 409 carries current values, pend
   assert.equal(conflict.body.current.revision, 1);
   assert.deepEqual(pendingRestartKeys(DEFAULT_SETTINGS, DEFAULT_SETTINGS), []);
 });
+
+test('unified direct access does not require an advertised URL and has no enabling aliases', () => {
+  const s = new SettingsStore(repo());
+  const d = deps(s);
+  const on = patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false);
+  assert.equal(on.status, 200);
+  assert.equal(on.body.values.directAccessEnabled, true);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: 'https://192.168.1.9' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: '' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { publicDirectEnabled: true } }, 'web', false).status, 400, 'unpublished aliases are not part of the production API');
+});
+
+test('direct re-apply receives immutable settings snapshots, not a callback reading newer state', () => {
+  const s = new SettingsStore(repo());
+  const calls = [];
+  const d = { ...deps(s), directAccess: { apply(config) { calls.push(config); return Promise.resolve(); } } };
+  assert.equal(patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: 'https://bh.example.test' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directPort: 8100 } }, 'web', false).status, 200);
+  assert.deepEqual(calls.map((c) => [c.enabled, c.port, c.advertisedUrl]), [[true, 7307, ''], [true, 7307, 'https://bh.example.test'], [true, 8100, 'https://bh.example.test']]);
+});
+
 
 test('startup overlay: daemon values win, explicit overrides win, tunnel is never switched on', () => {
   const base = () => ({ publicBaseUrl: 'https://env.example.com', cloudflaredBin: '/bundled/cloudflared', skillsDir: '/env', semantic: 'explicit', tunnel: 'off' });
@@ -136,4 +169,59 @@ test('seeding: legacy record seeds v1 keys only; migrate fills unseeded keys onc
   assert.equal(cfg.tunnelName, 'mine');
   assert.equal(cfg.tunnelProbeProxy, 'http://env:1', 'unseeded key keeps the launcher value');
   assert.equal(env.BLACKHOLE_GIT_USR_BIN, 'C:/env');
+});
+
+test('courierSites: daemon-owned, validated like Courier profiles, one per origin, at most 20', () => {
+  const site = (o = {}) => ({ id: 'c-kimi-com', name: 'Kimi', origin: 'https://kimi.com', newChatPath: '/', dom: { editor: 'div.editor', send: 'div.send', stop: null }, key: { prefix: '/chat/' }, detectedAt: 5, v: 1, ...o });
+  assert.deepEqual(DEFAULT_SETTINGS.courierSites, []);
+  const ok = normalizeSettingsPatch({ courierSites: [site()] });
+  assert.ok('values' in ok);
+  assert.deepEqual(ok.values.courierSites[0].dom, { editor: 'div.editor', send: 'div.send', stop: null, model: null });
+  for (const bad of [site({ origin: 'http://kimi.com' }), site({ origin: 'https://chatgpt.com' }), site({ id: 'kimi' }), site({ dom: { editor: '', send: 'x' } }),
+    site({ newChatPath: 'chat' }), site({ key: { prefix: '/chat' } }), site({ origin: 'https://kimi.com/path' }), site({ name: '' })]) {
+    assert.ok('error' in normalizeSettingsPatch({ courierSites: [bad] }), JSON.stringify(bad).slice(0, 90));
+  }
+  assert.ok('error' in normalizeSettingsPatch({ courierSites: [site(), site({ id: 'c-other' })] }), 'same origin twice');
+  assert.ok('error' in normalizeSettingsPatch({ courierSites: Array.from({ length: 21 }, (_, i) => site({ id: `c-s${i}`, origin: `https://s${i}.example.com` })) }));
+  const s = new SettingsStore(repo());
+  s.update({ connectorName: 'x' });
+  assert.ok(!unseededKeys(s.get()).includes('courierSites'), 'the VS Code extension never hands courierSites over');
+});
+
+test('courierSites from Courier: put keeps one entry per origin, remove deletes, every change is pushed back', () => {
+  const s = new SettingsStore(repo());
+  let pushed = 0;
+  const d = { ...deps(s), courier: { pushSites: () => { pushed++; } } };
+  const site = (o = {}) => ({ id: 'c-kimi-com', name: 'Kimi', origin: 'https://kimi.com', newChatPath: '/', dom: { editor: 'div.editor', send: 'div.send', stop: null }, key: null, detectedAt: 1, v: 1, ...o });
+  assert.deepEqual(putCourierSite(d, site()), { ok: true });
+  assert.equal(pushed, 1);
+  assert.deepEqual(putCourierSite(d, site({ id: 'c-kimi-2', dom: { editor: 'div.editor', send: 'div.send', stop: 'div.stop' }, detectedAt: 2 })), { ok: true });
+  assert.deepEqual(s.get().values.courierSites.map((x) => [x.id, x.dom.stop]), [['c-kimi-com', 'div.stop']], 'same origin: updated in place, id kept');
+  assert.equal(putCourierSite(d, site({ origin: 'http://kimi.com' })).ok, false);
+  assert.deepEqual(removeCourierSite(d, 'c-kimi-com'), { ok: true });
+  assert.deepEqual(s.get().values.courierSites, []);
+  assert.equal(pushed, 3);
+  assert.deepEqual(removeCourierSite(d, 'c-gone'), { ok: true }, 'removing an unknown site is a no-op');
+  assert.equal(pushed, 3);
+  // The Web settings delete path: a plain PATCH also reaches Courier.
+  putCourierSite(d, site());
+  const r = patchSettings(d, { values: { courierSites: [] }, revision: s.get().revision }, 'web', true);
+  assert.equal(r.status, 200);
+  assert.equal(pushed, 5);
+});
+
+test('canonical direct switch and port are validated, daemon-owned and applied live', () => {
+  assert.equal(DEFAULT_SETTINGS.directAccessEnabled, false);
+  assert.equal(DEFAULT_SETTINGS.directPort, 7307);
+  assert.ok('values' in normalizeSettingsPatch({ directAccessEnabled: true, directPort: 8000 }));
+  for (const bad of [{ directAccessEnabled: 'yes' }, { directAccessEnabled: 1 }, { directPort: 80 }, { directPort: 70000 }, { directPort: 8000.5 }, { directPort: '8000' }]) assert.ok('error' in normalizeSettingsPatch(bad), JSON.stringify(bad));
+  const s = new SettingsStore(repo()); s.update({ connectorName: 'x' });
+  const unseeded = unseededKeys(s.get());
+  assert.ok(!unseeded.includes('directAccessEnabled') && !unseeded.includes('directPort'));
+  const applied = [];
+  const d = { ...deps(s), directAccess: { apply: (config) => { applied.push(config); return Promise.resolve(); } } };
+  assert.equal(patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directPort: 9000 } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { connectorName: 'y' } }, 'web', false).status, 200);
+  assert.deepEqual(applied.map((c) => c.port), [7307, 9000], 'unrelated saves do not re-apply the listener');
 });

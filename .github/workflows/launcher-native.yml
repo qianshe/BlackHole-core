@@ -2,35 +2,34 @@ name: Desktop launcher CI
 
 on:
   pull_request:
+    branches: [main]
+    # Launcher code only; the daemon side of the bootstrap runs in Core Runtime CI (Linux-x64).
     paths:
       - 'packages/desktop-launcher/**'
       - 'packages/host-runtime/**'
       - 'packages/contracts/**'
-      - 'src/**'
-      - 'scripts/fixtures/**'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/launcher-native.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'packages/desktop-launcher/**'
-      - 'packages/host-runtime/**'
-      - 'packages/contracts/**'
-      - 'src/**'
-      - 'scripts/fixtures/**'
-      - 'pnpm-lock.yaml'
       - '.github/workflows/launcher-native.yml'
   workflow_dispatch:
+    inputs:
+      build_artifacts:
+        description: 'Build development launchers after tests (not a VSIX or a release)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: desktop-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Go format/vet/test on every OS the launcher ships to, plus the bootstrap
   # against an isolated daemon (never port 7306 or a real ~/.blackhole).
   # Dev artifacts only: no signing, no release secrets.
   test:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -39,18 +38,20 @@ jobs:
     env:
       GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.1'
           cache-dependency-path: packages/desktop-launcher/go.sum
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.0.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 22.20.0
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -68,12 +69,14 @@ jobs:
         run: go -C packages/desktop-launcher vet ./...
       - name: go test
         run: go -C packages/desktop-launcher test ./...
-      - name: Build daemon
-        run: pnpm build
+      - name: Build daemon and Local Web assets
+        run: pnpm build && pnpm --dir packages/web build
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
 
   build:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_artifacts
+    timeout-minutes: 25
     needs: test
     # Windows is pure Go (WebView2 + tray). macOS (WKWebView, tray) and Linux
     # (WebKitGTK window) need cgo, so they build natively on their own runners.
@@ -86,14 +89,16 @@ jobs:
         target:
           - { goos: windows, goarch: amd64, ext: .exe, ldflags: '-H windowsgui -s -w', runner: ubuntu-latest, cgo: '0' }
           - { goos: windows, goarch: arm64, ext: .exe, ldflags: '-H windowsgui -s -w', runner: ubuntu-latest, cgo: '0' }
-          - { goos: darwin, goarch: amd64, ext: '', ldflags: '-s -w', runner: macos-latest, cgo: '1' }
+          - { goos: darwin, goarch: amd64, ext: '', ldflags: '-s -w', runner: macos-15-intel, cgo: '1' }
           - { goos: darwin, goarch: arm64, ext: '', ldflags: '-s -w', runner: macos-latest, cgo: '1' }
           # Linux app window uses WebKitGTK via cgo: build natively per arch.
           - { goos: linux, goarch: amd64, ext: '', ldflags: '-s -w', runner: ubuntu-latest, cgo: '1' }
           - { goos: linux, goarch: arm64, ext: '', ldflags: '-s -w', runner: ubuntu-24.04-arm, cgo: '1' }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.1'
           cache-dependency-path: packages/desktop-launcher/go.sum
@@ -112,7 +117,7 @@ jobs:
           out="launcher/${GOOS}-${GOARCH}"
           go -C packages/desktop-launcher build -trimpath -ldflags="${{ matrix.target.ldflags }}" -o "../../${out}/blackhole${{ matrix.target.ext }}" ./cmd/blackhole
           ( cd "$out" && shasum -a 256 blackhole* > SHA256SUMS && printf 'commit=%s\ngo=%s\ntarget=%s/%s\nprotocol=1\n' "$GITHUB_SHA" "$(go version)" "$GOOS" "$GOARCH" > BUILDINFO )
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: blackhole-launcher-dev-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
           path: launcher/

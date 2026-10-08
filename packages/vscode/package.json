@@ -2,7 +2,7 @@
   "name": "blackhole-vscode",
   "displayName": "BlackHole",
   "description": "Connect Web Agents to your local workspace, shell and MCP tools with explicit execution boundaries.",
-  "version": "0.3.181",
+  "version": "0.3.197",
   "private": true,
   "publisher": "qianshe",
   "icon": "media/icon.png",
@@ -48,7 +48,7 @@
     "watch:test": "node esbuild.mjs --watch --environment test",
     "watch:production": "node esbuild.mjs --watch --environment production",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "pnpm run package:test",
+    "package": "pnpm run package:production",
     "package:test": "node ../../scripts/package-vsix.mjs --environment test",
     "package:production": "node ../../scripts/package-vsix.mjs --environment production",
     "vscode:prepublish": "node esbuild.mjs --environment production && node ../../scripts/check-webview.mjs && node ../../scripts/proxy-sync-unit.mjs",
@@ -251,12 +251,6 @@
         "category": "BlackHole"
       },
       {
-        "command": "blackhole.openWebAgent",
-        "title": "Open Web Agent",
-        "category": "BlackHole",
-        "icon": "$(globe)"
-      },
-      {
         "command": "blackhole.openLocalWeb",
         "title": "打开本地 Web",
         "category": "BlackHole",
@@ -316,15 +310,7 @@
         }
       ]
     },
-    "menus": {
-      "view/title": [
-        {
-          "command": "blackhole.openLocalWeb",
-          "when": "view == blackhole.sidebar",
-          "group": "navigation"
-        }
-      ]
-    }
+    "menus": {}
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -332,6 +318,7 @@
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.25.0",
     "javascript-obfuscator": "4.1.1",
+    "mermaid": "11.17.2",
     "qrcode-generator": "1.4.4",
     "typescript": "^5.7.2"
   }

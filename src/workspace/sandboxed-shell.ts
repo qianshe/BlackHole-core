@@ -2,6 +2,7 @@ import koffi from 'koffi';
 import { AclSandbox, streamPipe } from '../win32/acl-sandbox.js';
 import { cleanupOrphanSandboxTemps as cleanupOrphan } from '../win32/acl-sandbox.js';
 import { allocUint32, decodeUint32, win32, type NativePtr, type Win32Bindings } from '../win32/ffi.js';
+import { psAsciiString } from './shell-codepage.js';
 import { PersistentShell, powerShellEnvironment, type ShellProcessBackend, type ShellRunResult } from './pwsh.js';
 
 /** Re-export: the router reaches the orphan sweep through this module. */
@@ -37,6 +38,8 @@ export class SandboxedPersistentShell extends PersistentShell {
       cwd: opts.cwd,
       bin: opts.bin,
       timeoutMs: opts.timeoutMs,
+      // speak the console code page the confined shell really uses
+      detectCodePage: true,
       // the backend closure runs lazily at the first ensure(), so the sandbox
       // is guaranteed initialized before any spawn
       backend: (cwd) => {
@@ -52,7 +55,8 @@ export class SandboxedPersistentShell extends PersistentShell {
         // read-only grants no temp, so the variables stay ambient (writes
         // there are denied by the token anyway).
         const tempDir = sandbox.tempDir;
-        if (tempDir) backend.write(`$env:TEMP = ${JSON.stringify(tempDir)}; $env:TMP = $env:TEMP\n`);
+        // ASCII-only literal: a non-ASCII user profile path survives any stdin code page.
+        if (tempDir) backend.write(`$env:TEMP = ${psAsciiString(tempDir)}; $env:TMP = $env:TEMP\n`);
         return backend;
       },
     });
@@ -109,13 +113,14 @@ export class SandboxedPersistentShell extends PersistentShell {
 /** Keep native pipe I/O and exit waiting off the daemon event loop so its deadline can fire. */
 function confinedBackend(native: { pid: number; process: NativePtr; stdoutRead: NativePtr; stderrRead: NativePtr; stdinWrite: NativePtr; job: NativePtr }): ShellProcessBackend {
   const api = win32();
-  let stdoutCb: ((chunk: string) => void) | undefined;
-  let stderrCb: ((chunk: string) => void) | undefined;
+  let stdoutCb: ((chunk: Buffer) => void) | undefined;
+  let stderrCb: ((chunk: Buffer) => void) | undefined;
   let exitCb: ((code: number | null) => void) | undefined;
   let stopped = false, exiting = false, jobClosed = false;
   let writes: Promise<void> = Promise.resolve();
-  const out = streamPipe(api, native.stdoutRead, chunk => stdoutCb?.(chunk.toString('utf8')));
-  const err = streamPipe(api, native.stderrRead, chunk => stderrCb?.(chunk.toString('utf8')));
+  // raw bytes: PersistentShell decodes them in the shell's code page (and never splits a character)
+  const out = streamPipe(api, native.stdoutRead, chunk => stdoutCb?.(Buffer.from(chunk)));
+  const err = streamPipe(api, native.stderrRead, chunk => stderrCb?.(Buffer.from(chunk)));
   const close = (handle: NativePtr) => { try { api.closeHandle(handle); } catch { /* already released */ } };
   const closeJob = () => { if (!jobClosed) { jobClosed = true; close(native.job); } };
   const finish = (code: number | null) => {
@@ -152,7 +157,7 @@ function confinedBackend(native: { pid: number; process: NativePtr; stdoutRead: 
   return {
     write: line => {
       writes = writes.then(async () => {
-        const input = Buffer.from(line, 'utf8');
+        const input = Buffer.isBuffer(line) ? line : Buffer.from(line, 'utf8');
         for (let offset = 0; offset < input.length && !stopped;) {
           const chunk = input.subarray(offset, offset + 8192);
           offset += await writePipe(api, native.stdinWrite, chunk);

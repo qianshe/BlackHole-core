@@ -1,0 +1,217 @@
+// Session actions shared by the session header menu and the sidebar row menu,
+// so both places behave (and confirm) the same way.
+import { useMemo } from 'react';
+import { api, panel, type Health, type PermissionMode, type SessionView } from '../api';
+import { SANDBOX_NEEDS_PUBLIC_URL, connectionTarget, renderPrompt } from '../../../vscode/src/templates';
+import { PERMISSION_LABEL, sessionTitle } from '../format';
+import { copyText, failText, type ConfirmSpec, type ToastFn } from './common';
+import { chooseCurrentDirectAddress } from '../directAddressPicker';
+import { reloadChat, unpairSession, usePairLink } from './ChatDock';
+import c from './console.module.css';
+
+export interface SessionActions {
+  pauseResume: (s: SessionView, action: 'pause' | 'resume') => Promise<void>;
+  copyConnection: () => Promise<void>;
+  copyPrompt: (s: SessionView, kind: 'connector' | 'sandbox', message?: string | null) => Promise<void>;
+  rotate: (s: SessionView) => void;
+  setMode: (s: SessionView, mode: PermissionMode) => void;
+  revoke: (s: SessionView) => void;
+  /** Cut the session's pairing with its web chat (it only receives afterwards). */
+  unpair: (s: SessionView) => Promise<void>;
+  /** Force-reload the paired web chat page. */
+  reloadChat: (s: SessionView) => Promise<void>;
+  /** Opens the rename dialog. */
+  rename: (s: SessionView) => void;
+}
+
+interface Deps {
+  toast: ToastFn;
+  confirm: (spec: ConfirmSpec) => void;
+  onChanged: () => void;
+  onRotated: (sessionId: string) => void;
+  onRename: (s: SessionView) => void;
+  connectorName: string;
+  mcpUrl: string | null;
+}
+
+export const MODES: ReadonlyArray<readonly [PermissionMode, string]> = [
+  ['read-only', '只读'],
+  ['workspace-write', '工作区可写'],
+  ['danger-full-access', '完全访问'],
+];
+
+export function useSessionActions({ toast, confirm, onChanged, onRotated, onRename, connectorName, mcpUrl }: Deps): SessionActions {
+  return useMemo<SessionActions>(() => {
+    const health = async (): Promise<Health | null> => panel.health().then((h) => h, () => null);
+    return {
+      pauseResume: (s, action) =>
+        api.sessionAction(s.id, action).then(
+          () => {
+            toast(action === 'pause' ? '会话已暂停，AI 暂时无法调用工具' : '会话已恢复');
+            onChanged();
+          },
+          (e: unknown) => toast(failText(e), 'bad'),
+        ),
+      copyConnection: async () => {
+        try {
+          const h = await health();
+          if (!h) return toast('无法读取连接状态', 'warn');
+          const target = connectionTarget(h);
+          const openaiSelected = target.selectedRoute === 'openai';
+          let u = openaiSelected ? target.tunnelId : target.mcpUrl;
+          if (target.needsChoice) {
+            u = await chooseCurrentDirectAddress(h, panel.health);
+            if (!u) return; // cancellation never copies or changes a setting
+          }
+          if (!u && !h.connection_routes && !openaiSelected) u = mcpUrl ?? h.mcp_url;
+          if (!u) {
+            const why = target.reason === 'direct_unavailable' ? '直连监听当前不可用；不会改用 Cloudflare。'
+              : target.reason === 'custom_unavailable' ? '自定义地址尚未配置；不会改用其它渠道。'
+                : target.reason === 'openai_selected' ? 'OpenAI Tunnel 当前还没有可复制的 Tunnel ID。'
+                  : '当前选择的连接方式没有可复制地址。';
+            return toast(why, 'warn');
+          }
+          const ok = await copyText(u);
+          toast(ok ? (openaiSelected ? 'daemon 保存的 Tunnel ID 已复制' : target.selectedRoute === 'direct' ? '直连地址已复制' : '连接地址已复制') : '复制失败，请手动复制', ok ? 'ok' : 'bad');
+        } catch (e) { toast(e instanceof Error ? e.message : failText(e), 'warn'); }
+      },
+      rename: (s) => onRename(s),
+      reloadChat: async (s) => {
+        const r = await reloadChat(s.id);
+        toast(r.ok ? r.message : `刷新网页失败：${r.message}`, r.ok ? 'ok' : 'bad');
+      },
+      unpair: async (s) => {
+        const r = await unpairSession(s.id);
+        toast(r.ok ? '已解除配对，之后只接收' : r.message, r.ok ? 'ok' : 'bad');
+      },
+      copyPrompt: async (s, kind, message) => {
+        try {
+          const h = await health();
+          if (!h?.mcp_url) return toast('还没有可用的连接状态', 'warn');
+          const target = connectionTarget(h);
+          let u = kind === 'sandbox' ? target.sandboxMcpUrl : (target.mcpUrl ?? h.mcp_url);
+          if (kind === 'sandbox' && target.needsChoice) {
+            const chosen = await chooseCurrentDirectAddress(h, panel.health);
+            if (!chosen) return;
+            if (!h.connection_routes?.mcp_candidates.some((item) => item.kind === 'direct' && item.url === chosen && item.scope === 'public')) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
+            u = chosen;
+          }
+          if (kind === 'sandbox' && !u) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
+          // A one-off address picker may remain open while the credential is rotated.
+          const cred = await api.sessionCredential(s.id);
+          const ok = await copyText(renderPrompt(kind, u ?? h.mcp_url, cred.session_id, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
+          if (!ok) return toast('复制失败', 'bad');
+          if (kind === 'connector' && target.needsChoice) {
+            return toast('连接器提示词已复制；但存在多个直连地址，配置 MCP 时需要明确选择，系统不会改用 Cloudflare。', 'warn');
+          }
+          if (kind === 'connector' && !target.connector) {
+            const why = target.reason === 'direct_unavailable' ? '直连当前不可用，不会改用 Cloudflare。'
+              : target.reason === 'custom_unavailable' ? '自定义地址尚未配置，不会改用其它渠道。'
+                : target.openai === 'starting' ? 'OpenAI Tunnel 正在启动。'
+                  : '当前选择的连接方式尚未就绪。';
+            return toast('连接器提示词已复制；' + why, 'warn');
+          }
+          toast(kind === 'connector' ? '连接器提示词已复制，发给 AI 即可开始' : '沙箱提示词已复制，发给 AI 即可开始', 'ok');
+        } catch (e) {
+          toast(failText(e), 'bad');
+        }
+      },
+      rotate: (s) =>
+        confirm({
+          title: '重置会话 ID',
+          body: '旧 ID 会立即失效，会话内容保留。之后需要把新的提示词发给 AI。',
+          action: '重置',
+          run: async () => {
+            const r = (await api.sessionAction(s.id, 'rotate')) as { session_id?: string };
+            onChanged();
+            if (r.session_id) onRotated(r.session_id);
+          },
+        }),
+      setMode: (s, mode) => {
+        if (s.permission_mode === mode) return;
+        const run = async (): Promise<void> => {
+          await api.setSessionMode(s.id, mode);
+          toast(`已切换为${PERMISSION_LABEL[mode]}`);
+          onChanged();
+        };
+        if (mode !== 'danger-full-access') {
+          void run().catch((e) => toast(failText(e), 'bad'));
+          return;
+        }
+        confirm({
+          title: '启用完全访问',
+          body: '完全访问会允许该会话在本机工作区外写入并执行高风险命令，且不再进行常规命令审批。仅对完全信任的 Agent 使用。',
+          action: '启用完全访问',
+          danger: true,
+          run,
+        });
+      },
+      revoke: (s) =>
+        confirm({
+          title: '终止会话',
+          body: `终止「${sessionTitle(s)}」后，AI 无法再用它调用工具，正在运行的命令会被停止。此操作不能撤销。`,
+          action: '终止会话',
+          danger: true,
+          run: async () => {
+            await api.sessionAction(s.id, 'revoke');
+            toast('会话已终止');
+            onChanged();
+          },
+        }),
+    };
+  }, [toast, confirm, onChanged, onRotated, onRename, connectorName, mcpUrl]);
+}
+
+/** Menu body for one session. `withPause` adds pause/resume (the header already has a button for it). */
+export function SessionMenuItems({ s, actions, pick, withPause }: { s: SessionView; actions: SessionActions; pick: (fn: () => void) => () => void; withPause?: boolean }) {
+  const ended = s.status === 'revoked' || s.status === 'archived';
+  const paired = usePairLink(s.id) === 'paired';
+  return (
+    <>
+      {withPause && !ended && (
+        <button type="button" role="menuitem" className={c.menuItem} onClick={pick(() => void actions.pauseResume(s, s.status === 'paused' ? 'resume' : 'pause'))}>
+          {s.status === 'paused' ? '恢复会话' : '暂停会话'}
+        </button>
+      )}
+      <button type="button" role="menuitem" className={c.menuItem} onClick={pick(() => actions.rename(s))}>
+        重命名
+      </button>
+      {/* Same groups, order and wording as the VS Code session menu: 会话 · 提示词 · 网页会话 · 权限 · 会话 ID / 终止 */}
+      <div className={c.menuSep} role="separator" />
+      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'connector'))}>
+        复制连接器提示词
+      </button>
+      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => void actions.copyPrompt(s, 'sandbox'))}>
+        复制沙箱提示词
+      </button>
+      {paired && !ended && (
+        <>
+          <div className={c.menuSep} role="separator" />
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick(() => void actions.reloadChat(s))}>
+            刷新网页
+          </button>
+          <button type="button" role="menuitem" className={c.menuItem} onClick={pick(() => void actions.unpair(s))}>
+            解除配对
+          </button>
+        </>
+      )}
+      <div className={c.menuSep} role="separator" />
+      <div className={c.menuGroupLabel} aria-hidden="true">
+        权限
+      </div>
+      {MODES.map(([mode, label]) => (
+        <button key={mode} type="button" role="menuitemradio" aria-checked={s.permission_mode === mode} className={c.menuItem} disabled={ended} onClick={pick(() => actions.setMode(s, mode))}>
+          <span>{label}</span>
+          {s.permission_mode === mode && <span aria-hidden="true">✓</span>}
+        </button>
+      ))}
+      <div className={c.menuSep} role="separator" />
+      <button type="button" role="menuitem" className={c.menuItem} disabled={ended} onClick={pick(() => actions.rotate(s))}>
+        重置会话 ID
+      </button>
+      <button type="button" role="menuitem" className={c.menuDanger} disabled={ended} onClick={pick(() => actions.revoke(s))}>
+        终止会话
+      </button>
+    </>
+  );
+}

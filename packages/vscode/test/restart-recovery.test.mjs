@@ -10,6 +10,8 @@ const require = createRequire(import.meta.url), ts = require('typescript');
 const compile = name => ts.transpileModule(fs.readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const managerJs = compile('daemonManager'), statusbarJs = compile('statusbar'), sessionActionsJs = compile('sessionActions');
+// Real connection-target decision; only the prompt text is stubbed.
+const templatesModule = () => { const module = { exports: {} }; vm.runInNewContext(compile('templates'), { module, exports: module.exports }); return module.exports; };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function host(options = {}) {
@@ -63,7 +65,7 @@ function sessionActionFor(h, task = 'fixture task', options = {}) {
   const module = {exports:{}};
   vm.runInNewContext(sessionActionsJs, {module, exports:module.exports, console,
     require:name=>name==='vscode'?vscode:name==='./config'?{getConfig:()=>({connectorName:'BlackHole'})}
-      :name==='./templates'?{renderPrompt:()=>''}:require(name)});
+      :name==='./templates'?{...templatesModule(), renderPrompt:()=>''}:require(name)});
   let after = 0;
   h.api.createSession = async (...args) => { created.push(args); return {name:task,workspace_path:args[0]}; };
   return {warnings,errors,created,statuses,inputs,picks,
@@ -86,6 +88,24 @@ test('a real status poll repairs manager state after startup timeout, without sp
   h.api.health = async () => ({ ok: true, version: 'fixture', daemon_id: 'late', tunnel: 'online', start_fingerprint: h.manager.fingerprint() });
   const { bar, item } = barFor(h); t.after(() => bar.dispose()); await bar.refreshHealth(false); await settle(); await settle();
   assert.equal(h.manager.currentState, 'running'); assert.doesNotMatch(item.text, /error/); assert.equal(h.spawns, 1);
+});
+test('a live loopback listener gets bounded startup grace instead of a false 12s failure', async t => {
+  let wall = 0;
+  class Clock extends Date { static now() { wall += 4000; return wall; } }
+  const h = host({ Date: Clock }); t.after(() => h.manager.dispose());
+  h.manager.listenerOpen = async () => true;
+  const wanted = h.manager.fingerprint();
+  let reads = 0;
+  h.api.health = async () => {
+    reads++;
+    if (reads < 4) throw Error('control plane still initializing');
+    return { ok:true, version:'fixture', daemon_id:'late-but-healthy', start_fingerprint:wanted };
+  };
+  assert.equal(await h.manager.ensureRunning(), true);
+  assert.equal(h.manager.currentState, 'running');
+  assert.deepEqual(h.notices, []);
+  assert.match(h.logs.join('\n'), /listener is open but control API is still initializing after 12s/);
+  assert.equal(h.spawns, 1);
 });
 test('health observations made before Stop or disposal cannot revive the manager', async t => {
   const h = host(); t.after(() => h.manager.dispose());
@@ -380,6 +400,22 @@ test('Create Session rejects a health response captured before Stop without revi
   assert.match(action.warnings.join('\n'), /尚未确认就绪/);
 });
 
+test('Create Session requires a healthy daemon but never gates a local draft on public-channel state', async t => {
+  const h = host(); t.after(() => h.manager.dispose());
+  let openai = { status: 'ready' };
+  h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
+    public_base_url:null, tunnel:'off', tunnel_url:null, openai_tunnel:openai});
+  const ready = sessionActionFor(h); await ready.run();
+  assert.equal(ready.created.length, 1); assert.deepEqual(ready.warnings, []);
+  openai = { status: 'starting' };
+  const starting = sessionActionFor(h); await starting.run();
+  assert.equal(starting.created.length, 1); assert.deepEqual(starting.warnings, []);
+  openai = { status: 'error' };
+  const none = sessionActionFor(h); await none.run();
+  assert.equal(none.created.length, 1); assert.deepEqual(none.warnings, []);
+  assert.equal(h.spawns, 0, 'creating drafts must not start public channels or spawn a daemon');
+});
+
 test('Create Session keeps a verified daemon and user-started public channel working', async t => {
   const h = host(); t.after(() => h.manager.dispose());
   h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
@@ -389,7 +425,8 @@ test('Create Session keeps a verified daemon and user-started public channel wor
   assert.equal(h.manager.currentState, 'running');
   assert.equal(action.created.length, 1);
   assert.equal(action.created[0][0], '/fixture/workspace');
-  assert.equal(action.created[0][1], 'fixture task');
+  assert.equal(action.created[0][1], undefined);
+  assert.deepEqual(action.inputs, []);
   assert.equal(action.after, 1);
   assert.deepEqual(action.warnings, []);
 });
@@ -431,19 +468,7 @@ test('poll between legacy attach and upgrade keeps starting, never a false error
   assert.deepEqual(ready, ['new-owner']);
 });
 
-test('Create Session input allows focus-out cancellation without daemon or write side effects', async t => {
-  const h = host(); t.after(() => h.manager.dispose());
-  let starts = 0;
-  h.manager.ensureRunning = async () => { starts++; return true; };
-  const action = sessionActionFor(h, 'ignored', {cancelTask:true});
-  await action.run();
-  assert.equal(action.inputs[0].ignoreFocusOut, false);
-  assert.ok(action.inputs[0].title);
-  assert.equal(starts, 0); assert.deepEqual(action.created, []);
-  assert.equal(action.after, 0); assert.deepEqual(action.statuses, []);
-});
-
-test('Create Session folder selection is titled and cancellation ends before task input', async t => {
+test('Create Session folder selection is titled and cancellation creates nothing', async t => {
   const h = host(); t.after(() => h.manager.dispose());
   let starts = 0; h.manager.ensureRunning = async () => { starts++; return true; };
   const action = sessionActionFor(h, 'ignored', {cancelFolder:true, folders:[
@@ -453,15 +478,6 @@ test('Create Session folder selection is titled and cancellation ends before tas
   assert.ok(action.picks[0].options.title);
   assert.deepEqual(action.inputs, []); assert.deepEqual(action.created, []);
   assert.equal(starts, 0); assert.equal(action.after, 0);
-});
-
-test('Create Session accepts an explicitly empty task, unlike cancellation', async t => {
-  const h = host(); t.after(() => h.manager.dispose());
-  h.api.health = async () => ({ok:true, version:'fixture', daemon_id:'verified', start_fingerprint:h.manager.fingerprint(),
-    public_base_url:'https://current.example.org', tunnel:'off'});
-  const action = sessionActionFor(h, ''); await action.run();
-  assert.equal(action.created.length, 1); assert.equal(action.created[0][1], '');
-  assert.equal(action.after, 1);
 });
 
 test('unreadable listener remains bounded and cannot authorize shutdown or spawn', async t => {

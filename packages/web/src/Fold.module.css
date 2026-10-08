@@ -1,0 +1,5 @@
+/* Folded message: capped height with a fade at the bottom edge (works on any bubble background). */
+.folded { max-height: 200px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent); mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.toggle { display: block; margin: 2px 0 0 auto; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.toggle:hover { text-decoration: underline; }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }

@@ -14,7 +14,9 @@ export function localWebUrl(port: number, pagePath: string, ticket: string): str
   if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) throw new Error('invalid ticket');
   if (pagePath !== '/ui/') throw new Error('invalid page path');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port');
-  return `http://127.0.0.1:${port}${pagePath}#${ticket}`;
+  // localhost, not 127.0.0.1: the page's login state is kept per origin, and the user's
+  // signed-in origin is localhost (127.0.0.1 opened a signed-out page).
+  return `http://localhost:${port}${pagePath}#${ticket}`;
 }
 
 /** Tiny redirect page: keeps the ticket out of the browser's command line. */

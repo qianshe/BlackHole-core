@@ -1,0 +1,240 @@
+/* Authoritative settings appearance, based on unified.html. Both hosts import this file. */
+.settings-shell.settings-shell {
+  --settings-fg: var(--vscode-foreground, #ccc);
+  --settings-muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --settings-bg: var(--vscode-editor-background, #1e1e1e);
+  --settings-card: var(--vscode-sideBar-background, #252526);
+  --settings-border: var(--vscode-panel-border, #3c3c3c);
+  --settings-input: var(--vscode-input-background, #3c3c3c);
+  --settings-input-fg: var(--vscode-input-foreground, #f0f0f0);
+  --settings-input-border: var(--vscode-input-border, #555);
+  --settings-accent: var(--vscode-charts-blue, #3794ff);
+  --settings-focus: var(--vscode-focusBorder, #007fd4);
+  --settings-danger: var(--vscode-errorForeground, #e51400);
+  --settings-button: var(--vscode-button-background, #0e639c);
+  --settings-secondary: var(--vscode-button-secondaryBackground, #3a3d41);
+  width: min(1040px, calc(100vw - 40px)); grid-template-columns: 190px minmax(0, 1fr);
+  background: var(--settings-bg); color: var(--settings-fg); font: 13px/1.55 var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+}
+@media(prefers-color-scheme: dark) {
+  .settings-shell.settings-shell { --settings-danger: var(--vscode-errorForeground, #f85149); }
+}
+@media(prefers-color-scheme: light) {
+  .settings-shell.settings-shell { --settings-fg: var(--vscode-foreground, #3b3b3b); --settings-muted: var(--vscode-descriptionForeground, #656565); --settings-bg: var(--vscode-editor-background, #fff); --settings-card: var(--vscode-sideBar-background, #f8f8f8); --settings-border: var(--vscode-panel-border, #ddd); --settings-input: var(--vscode-input-background, #fff); --settings-input-fg: var(--vscode-input-foreground, #333); --settings-input-border: var(--vscode-input-border, #bbb); --settings-secondary: var(--vscode-button-secondaryBackground, #e5e5e5); }
+}
+.settings-shell.settings-shell-collapsed { grid-template-columns: 58px minmax(0,1fr); }
+.settings-shell * { box-sizing: border-box; }
+.settings-shell #settingsNav { padding: 14px 10px; background: var(--settings-card); border-right: 1px solid var(--settings-border); }
+.settings-shell #settingsNav > div { min-height: 36px; gap: 8px; margin-bottom: 8px; }
+.settings-shell #settingsNav > div > button[aria-controls='settingsNav'] { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
+.settings-shell #settingsNav h2 { color: var(--settings-fg); font-size: 14px; font-weight: 650; }
+.settings-shell #settingsNav ul { display: grid; gap: 3px; padding: 0; margin: 0; list-style: none; }
+.settings-shell #settingsNav ul[hidden] { display: none; }
+.settings-shell #settingsNav [data-settings-target] { min-height: 34px; padding: 0 9px; gap: 9px; font-size: 13px; line-height: 1.55; color: var(--settings-muted); border-radius: 6px; }
+.settings-shell #settingsNav [data-settings-target][aria-current='page'] { background: var(--vscode-list-activeSelectionBackground, #04395e); color: var(--vscode-list-activeSelectionForeground, #fff); }
+.settings-shell #settingsNav [data-settings-target]:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); color: var(--settings-fg); }
+.settings-shell > div[tabindex] { width: 100%; max-width: 850px; justify-self: center; padding: 0; background: var(--settings-bg); scrollbar-gutter: stable; }
+/* The home tab is a full-height content column so its version footer stays at the lower-right.
+   Long content still scrolls naturally; no fixed overlay can obscure pairing controls. */
+.settings-shell.settings-shell-home > div[tabindex] { display: flex; flex-direction: column; }
+.settings-shell.settings-shell-home > div[tabindex] > div:last-child { flex: 1 0 auto; display: flex; flex-direction: column; padding-bottom: 16px; }
+.settings-shell.settings-shell-home .bhp-home { flex: 1 0 auto; display: flex; flex-direction: column; }
+.settings-shell .bhp .settings-home-version { align-self: flex-end; margin-top: auto; padding-top: 16px; color: var(--settings-muted); font-size: 10px; line-height: 1.4; letter-spacing: .02em; font-variant-numeric: tabular-nums; user-select: none; }
+.settings-shell > div[tabindex] > div:first-child { min-height: 64px; padding: 0 16px 0 30px; margin: 0; background: var(--settings-bg); border-bottom: 1px solid var(--settings-border); }
+.settings-shell > div[tabindex] > div:first-child > h2 { color: var(--settings-fg); margin: 0; font-size: 18px; line-height: 1.4; font-weight: 650; }
+.settings-shell > div[tabindex] > div:last-child { padding: 16px 24px 60px 30px; overflow: visible; }
+.settings-shell.settings-shell .bhp {
+  --vscode-foreground: var(--settings-fg); --vscode-descriptionForeground: var(--settings-muted);
+  --vscode-editor-background: var(--settings-bg); --vscode-sideBar-background: var(--settings-card);
+  --vscode-panel-border: var(--settings-border); --vscode-widget-border: var(--settings-border);
+  --vscode-errorForeground: var(--settings-danger);
+  --vscode-input-background: var(--settings-input); --vscode-input-foreground: var(--settings-input-fg); --vscode-input-border: var(--settings-input-border);
+  --vscode-dropdown-background: var(--settings-input); --vscode-dropdown-foreground: var(--settings-input-fg);
+  --vscode-charts-blue: var(--settings-accent); --vscode-focusBorder: var(--settings-focus); --vscode-button-background: var(--settings-button); --vscode-button-secondaryBackground: var(--settings-secondary); --vscode-button-secondaryForeground: var(--settings-fg);
+  max-width: none; padding: 0; margin: 0; min-height: 0; font: inherit;
+}
+.settings-shell.settings-shell .bhp .sec { margin: 20px 0 8px; color: var(--settings-muted); font-size: 11.5px; line-height: 1.55; font-weight: 600; }
+.settings-shell.settings-shell .bhp .sec small { display: inline; margin: 0 0 0 8px; font-size: 11px; font-weight: 400; opacity: .8; }
+.settings-shell .bhp .card { margin-bottom: 10px; padding: 12px 14px; border: 1px solid var(--settings-border); border-radius: 8px; }
+/* Action-button geometry must not leak into switches, tags or icon controls.
+   :where() keeps the exclusions neutral; specialised controls own their sizes. */
+.settings-shell .bhp button:where(:not([role='switch'], .pchip, .pxe, .agchip, .home-signout, .activity-cell, .pair-close, .del, .pair-inline-action)),
+.settings-shell .bhp .card button:where(:not([role='switch'], .pchip, .pxe, .agchip, .home-signout, .activity-cell, .pair-close, .del, .pair-inline-action)) { min-height: 32px; padding: 5px 13px; border-radius: 6px; font-size: 13px; line-height: 1.55; }
+.settings-shell .bhp button.secondary { background: var(--settings-secondary); color: var(--settings-fg); }
+.settings-shell .bhp button.secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--settings-secondary) 85%, var(--settings-fg)); }
+.settings-shell .bhp button.secondary.danger-secondary { color: var(--vscode-errorForeground, #f48771); background: transparent; border: 1px solid color-mix(in srgb, var(--vscode-errorForeground, #f48771) 32%, transparent); }
+.settings-shell .bhp button.secondary.danger-secondary:hover:not(:disabled) { color: var(--vscode-errorForeground, #f48771); background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 10%, transparent); border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 48%, transparent); }
+.settings-shell .bhp button:disabled { opacity: .55; cursor: not-allowed; }
+.settings-shell .bhp .chrow, .settings-shell .bhp .btnrow { gap: 8px; flex-wrap: wrap; }
+.settings-shell .bhp .fgrid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px 16px; }
+.settings-shell .bhp .f { min-width: 0; }
+.settings-shell .bhp .f label { margin-bottom: 4px; font-size: 12px; font-weight: 600; }
+.settings-shell.settings-shell .bhp input:not([type='checkbox']), .settings-shell.settings-shell .bhp select { height: 36px; min-width: 0; padding: 0 10px; font: 13px/1.55 var(--vscode-font-family, inherit); border-radius: 6px; border: 1px solid var(--settings-input-border); background-color: var(--settings-input); color: var(--settings-input-fg); }
+.settings-shell.settings-shell .bhp textarea { width: 100%; min-width: 0; padding: 7px 10px; font: 13px/1.55 var(--vscode-font-family, inherit); border-radius: 6px; border: 1px solid var(--settings-input-border); background-color: var(--settings-input); color: var(--settings-input-fg); resize: vertical; }
+.settings-shell.settings-shell .bhp select { padding-right: 30px; }
+.settings-shell.settings-shell .bhp :is(button,input,select,textarea,summary):focus-visible { outline: 2px solid var(--settings-focus); outline-offset: 2px; }
+.settings-shell.settings-shell .bhp :is(input,select,textarea):focus-visible { border-color: var(--settings-focus); }
+/* Disclosures clip an outside outline: use only a 2px inside ring, not outline + shadow together. */
+.settings-shell.settings-shell .bhp :is(.connection-disclosure, .connection-more) > summary:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--settings-focus); }
+.settings-shell .bhp .hint { margin-top: 6px; font-size: 11px; line-height: 1.55; }
+/* Description spacing is block-only; inline helpers and indicators have separate layout. */
+.settings-shell .bhp div.d { margin-top: 4px; font-size: 11px; line-height: 1.55; }
+.settings-shell .bhp .btnrow { align-items: center; }
+.settings-shell .bhp :is(.chrow, .btnrow) > :is(.hint, .d) { margin: 0; }
+.settings-shell .bhp .channel-mode { gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.settings-shell .bhp .card .agchip, .settings-shell .bhp .agchip { min-height: 28px; padding: 3px 11px; font-size: 11px; border-radius: 999px; border: 1px solid var(--settings-input-border); }
+.settings-shell .bhp .agchip.on { border-color: color-mix(in srgb, var(--settings-accent) 65%, var(--settings-border)); background: color-mix(in srgb, var(--settings-accent) 10%, transparent); color: var(--settings-fg); }
+.settings-shell .bhp .cockpit .cell { padding: 11px 15px; }
+.settings-shell.settings-shell .bhp .cockpit .home-account { flex: 1.2; }
+.settings-shell.settings-shell .bhp .cockpit .home-channel { flex: .8; }
+/* One cockpit rhythm: a title + right-aligned metric, then identity/state + actions. */
+.settings-shell .bhp .ck-head { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 18px; margin-bottom: 4px; }
+.settings-shell .bhp .ck-head > .ck-k { margin: 0; flex: 0 0 auto; }
+.settings-shell .bhp .ck-summary { flex: 0 1 auto; min-width: 0; max-width: calc(100% - 28px); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--settings-muted); font-size: 11px; line-height: 1.55; font-variant-numeric: tabular-nums; }
+.settings-shell .bhp .activity-head.ck-head { margin-bottom: 0; }
+.settings-shell.settings-shell .bhp .home-account-row { width: 100%; gap: 7px; }
+.settings-shell.settings-shell .bhp .home-account-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-shell.settings-shell .bhp .home-account-remaining { font-size: 10.5px; }
+.settings-shell.settings-shell .bhp .home-signout { width: 28px; height: 28px; min-width: 28px; min-height: 28px; margin-left: 0; padding: 0; }
+.settings-shell .bhp .activity-cell { min-height: 0; padding: 0; border-radius: 2px; }
+.settings-shell .bhp .scan-head { margin: 0; }
+.settings-shell .bhp .scan-copy { flex: 1 1 150px; min-width: 0; }
+.settings-shell .bhp .pair-card { margin-top: 18px; }
+.settings-shell .bhp .pair-card-title { margin: 0; color: var(--settings-fg); font-size: 12.5px; font-weight: 600; line-height: 1.55; }
+.settings-shell .bhp .pair-card .scan-head > button { flex: 0 0 auto; margin-left: auto; }
+.settings-shell .bhp .pair-access-row { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 7px; padding-left: 50px; }
+.settings-shell .bhp .pair-access-caption { flex: 0 0 auto; color: var(--settings-muted); font-size: 11px; }
+.settings-shell .bhp .pair-access-text { display: block; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--settings-muted); font-size: 11px; }
+.settings-shell.settings-shell .bhp .pair-access-row select { flex: 1 1 auto; width: auto; max-width: 100%; height: 30px; padding: 0 28px 0 9px; font-size: 11px; }
+.settings-shell .bhp .pair-issue { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 9px; color: var(--settings-muted); font-size: 11px; line-height: 1.5; }
+.settings-shell .bhp .pair-issue > span { flex: 1 1 190px; min-width: 0; }
+.settings-shell .bhp button.pair-inline-action { flex: 0 0 auto; min-height: 28px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--settings-accent); font-size: 11px; line-height: 1.4; }
+.settings-shell .bhp button.pair-inline-action:hover:not(:disabled) { background: color-mix(in srgb, var(--settings-accent) 10%, transparent); }
+/* One semantic switch skin: ChannelSwitch's CSS Module, Direct and MCP all use it.
+   The 30x16 track matches the Demo; the transparent hit area is 44x32. */
+.settings-shell .bhp button[role='switch'] {
+  position: relative; display: inline-block; box-sizing: border-box; appearance: none;
+  width: 30px; min-width: 30px; max-width: 30px; flex: 0 0 30px;
+  height: 16px; min-height: 16px; max-height: 16px; align-self: center;
+  margin: 0; padding: 0; border: 0; border-radius: 999px;
+  background: #555; box-shadow: none; line-height: 0; vertical-align: middle;
+  transition: background-color .14s ease;
+}
+.settings-shell .bhp button[role='switch']::before { content: ''; position: absolute; inset: -8px -7px; border-radius: 999px; }
+.settings-shell .bhp button[role='switch']::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: #fff; box-shadow: none;
+  transform: translateX(0); transition: transform .14s ease;
+}
+.settings-shell .bhp button[role='switch'][aria-checked='true'] { background: var(--vscode-charts-green, #89d185); }
+.settings-shell .bhp button[role='switch'][aria-checked='true']::after { transform: translateX(14px); }
+.settings-shell .bhp button[role='switch']:is([data-state='warn'], [data-state='starting']) { background: var(--vscode-charts-yellow, #cca700); }
+.settings-shell .bhp button[role='switch'][data-state='error'] { box-shadow: 0 0 0 1px var(--vscode-errorForeground, #f48771); }
+.settings-shell .bhp button[role='switch']:disabled { opacity: .55; cursor: not-allowed; }
+.settings-shell .bhp button[role='switch'][data-state='starting'] { cursor: progress; }
+.settings-shell .bhp button[role='switch']:hover:not(:disabled) { box-shadow: 0 0 0 2px color-mix(in srgb, var(--settings-fg) 15%, transparent); }
+.settings-shell .bhp button[role='switch']:focus-visible { outline: 2px solid var(--settings-focus); outline-offset: 4px; }
+/* Neutral catalogue actions: count is a tag, edit is secondary, delete stays quiet until hovered. */
+.settings-shell .bhp .pxs button.pchip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-height: 28px; height: 28px; padding: 0 9px; border: 1px solid var(--settings-border);
+  border-radius: 999px; background: transparent; color: var(--settings-fg);
+  font-family: inherit; font-size: 11px; line-height: 1.4; white-space: nowrap;
+}
+.settings-shell .bhp .pxs button.pchip:hover:not(:disabled) { border-color: var(--settings-focus); background: color-mix(in srgb, var(--settings-accent) 8%, transparent); }
+.settings-shell .bhp .pxs .pxbtns { gap: 8px; }
+
+.settings-shell .bhp button.pxe {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 28px; height: 28px; padding: 0 10px; border: 1px solid transparent;
+  border-radius: 6px; background: transparent; color: var(--settings-fg);
+  font-family: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap;
+}
+.settings-shell .bhp button.pxe:hover:not(:disabled) { background: var(--settings-secondary); border-color: var(--settings-border); }
+.settings-shell .bhp button.pxe.danger { color: var(--vscode-errorForeground, #f48771); background: transparent; border-color: transparent; }
+.settings-shell .bhp button.pxe.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 10%, transparent); border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 30%, transparent); }
+/* Inline removal/revoke controls are tertiary danger actions, not regular primary buttons. */
+.settings-shell .bhp .ag-row > button.del { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-height: 28px; height: 28px; margin-left: auto; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--vscode-errorForeground, #f48771); font-family: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap; }
+.settings-shell .bhp .ag-row > button.del:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 10%, transparent); border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 30%, transparent); }
+@media (forced-colors: active) {
+  .settings-shell .bhp button[role='switch'] { background: GrayText; outline: 1px solid ButtonText; }
+  .settings-shell .bhp button[role='switch'][aria-checked='true'] { background: Highlight; }
+  .settings-shell .bhp button[role='switch']::after { background: ButtonText; forced-color-adjust: none; }
+  .settings-shell .bhp button[role='switch'][aria-checked='true']::after { background: HighlightText; }
+}
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp button[role='switch'] { outline: 1px solid var(--vscode-contrastBorder, currentColor); }
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp button[role='switch']:focus-visible { outline: 2px solid var(--settings-focus); }
+.settings-shell .bhp .row-setting { padding: 10px 0; margin: 0 0 12px; border-bottom: 1px solid var(--settings-border); }
+.settings-shell .bhp .row-setting > div { flex: 1; }
+.settings-shell .bhp .address-preview { margin: 10px 0 0; padding: 9px 10px; border-radius: 6px; color: var(--settings-muted); font: 11px/1.6 var(--vscode-editor-font-family, monospace); }
+.settings-shell .bhp .route-note { margin-top: 10px; padding: 9px 10px; border-left: 2px solid var(--settings-accent); background: color-mix(in srgb,var(--settings-accent) 7%,transparent); font-size: 11px; line-height: 1.6; color: var(--settings-muted); }
+.settings-shell .bhp .connection-disclosure { margin: 12px 0 0; }
+.settings-shell .bhp .connection-disclosure > summary { padding: 14px 15px; }
+.settings-shell .bhp .connection-disclosure > summary small { font-size: 11px; }
+.settings-shell .bhp .account-card { padding: 22px; border-radius: 12px; }
+.settings-shell .bhp .account-head { padding-bottom: 16px; }
+.settings-shell .bhp .account-grid { margin: 20px 0; gap: 20px; }
+.settings-shell .bhp .account-note { margin-top: 16px; padding-top: 13px; }
+.settings-shell .bhp .connector-field { max-width: 500px; }
+.settings-shell .bhp .connection-current { margin: 0; }
+.settings-shell .bhp .host-notice { margin: 0 0 14px; padding: 8px 10px; border: 1px solid var(--settings-border); border-radius: 6px; color: var(--settings-muted); font-size: 11px; overflow-wrap: anywhere; }
+.settings-shell .bhp .settings-page-save { display: flex; align-items: center; gap: 10px; margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--settings-border); }
+.settings-shell .bhp .settings-page-save .hint { flex: 1; margin: 0; }
+.settings-shell .bhp .runtime-install-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.settings-shell .bhp .runtime-install-copy { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.settings-shell .bhp .runtime-install-row > button { flex: 0 0 auto; }
+@media(max-width:720px) {
+  .settings-shell.settings-shell { width: 100%; grid-template-columns: minmax(0,1fr); }
+  .settings-shell > div[tabindex] { padding: 0; }
+  .settings-shell #settingsNav { padding: 56px 10px 14px; }
+  .settings-shell #settingsNav [data-settings-target] { min-height: 44px; }
+  .settings-shell > div[tabindex] > div:first-child { min-height: 56px; padding: 0 12px 0 10px; }
+  .settings-shell > div[tabindex] > div:last-child { padding: 12px 14px 50px; }
+  .settings-shell > div[tabindex] > div:first-child > button[aria-controls='settingsNav'] { position: static; flex: 0 0 40px; width: 40px; height: 40px; border: 1px solid transparent; border-radius: 8px; background: transparent; box-shadow: none; }
+  .settings-shell > div[tabindex] > div:first-child > button[aria-controls='settingsNav']:is(:hover, [aria-expanded='true']) { background: var(--settings-secondary); }
+  .settings-shell .bhp .fgrid { grid-template-columns: minmax(0,1fr); }
+}
+@media(max-width:540px) {
+  .settings-shell .bhp .cockpit { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); }
+  .settings-shell .bhp .cockpit .cell { padding: 10px 9px; }
+  .settings-shell .bhp .cockpit .cell + .cell { border-left: 0; }
+  .settings-shell .bhp .cockpit .cell:nth-child(2) { border-left: 1px solid var(--settings-border); }
+  .settings-shell .bhp .cockpit .cell.wide { grid-column: 1/-1; border-top: 1px solid var(--settings-border); }
+  .settings-shell .bhp .account-grid { grid-template-columns: minmax(0,1fr); gap: 12px; }
+  .settings-shell .bhp .scan-head { flex-wrap: wrap; }
+  .settings-shell.settings-shell .bhp .sec small { display: block; margin: 4px 0 0; }
+  .settings-shell.settings-shell .bhp .home-account-remaining { font-size: 10px; }
+  /* Deliberately place controls on a predictable second row for long MCP names. */
+  .settings-shell .bhp .pxs .hd { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; column-gap: 8px; row-gap: 7px; }
+  .settings-shell .bhp .pxs .hd > .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .settings-shell .bhp .pxs .hd > .pxb { grid-column: 2; grid-row: 1; justify-self: end; }
+  .settings-shell .bhp .pxs .hd > button.pchip { grid-column: 1; grid-row: 2; justify-self: start; }
+  .settings-shell .bhp .pxs .hd > .pxbtns { grid-column: 2; grid-row: 2; justify-self: end; margin-left: 0; }
+}
+@media(prefers-reduced-motion:reduce) { .settings-shell *, .settings-shell *::after { transition: none !important; animation: none !important; } }
+
+.settings-shell .bhp .rs { margin-left: 6px; padding: 0 5px; border: 1px solid var(--settings-border); border-radius: 8px; font-size: 10px; font-weight: 400; color: var(--settings-muted); }
+.settings-shell .pair-dialog { width: min(380px,calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; border: 1px solid var(--settings-border); border-radius: 14px; background: var(--settings-card); color: var(--settings-fg); box-shadow: 0 22px 70px #0009; }
+.settings-shell .pair-dialog-inner { padding: 20px; }
+.settings-shell .pair-dialog-header { display: flex; align-items: center; gap: 12px; }
+.settings-shell .pair-dialog-title { flex: 1; min-width: 0; margin: 0; font-size: 16px; line-height: 1.4; font-weight: 600; }
+.settings-shell .bhp .pair-close { display: grid; place-items: center; width: 32px; height: 32px; min-width: 32px; padding: 0; background: transparent; color: var(--settings-muted); }
+.settings-shell .pair-dialog-body { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 18px 0 0; text-align: center; }
+.settings-shell .pair-dialog .bhp-qr { display: block; width: 176px; height: 176px; flex: 0 0 176px; padding: 8px; border-radius: 8px; background: #fff; }
+.settings-shell .pair-dialog .bhp-qr-expired { display: grid; place-items: center; width: 176px; height: 176px; border: 1px dashed var(--settings-border); border-radius: 8px; color: var(--settings-muted); font-size: 12px; }
+.settings-shell .pair-dialog-status { margin: 0; color: var(--settings-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.settings-shell .pair-dialog-instruction { color: var(--settings-fg); font-size: 12px; line-height: 1.5; }
+.settings-shell .pair-dialog-meta { color: var(--settings-muted); font-size: 11px; line-height: 1.4; }
+.settings-shell .pair-dialog-actions { display: flex; justify-content: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--settings-border); }
+.settings-shell .pair-help { margin-top: 16px; padding-top: 11px; border-top: 1px solid var(--settings-border); color: var(--settings-muted); font-size: 11px; }
+.settings-shell .pair-help > summary { cursor: pointer; font-size: 11px; font-weight: 400; }
+.settings-shell .pair-help-content { display: grid; justify-items: start; gap: 8px; margin-top: 10px; line-height: 1.5; }
+.settings-shell .pair-help-content .pair-origin { margin: 0; max-width: 100%; overflow-wrap: anywhere; font: 11px/1.5 var(--vscode-editor-font-family,monospace); }
+.settings-shell .pair-help-content .pair-help-warning { color: var(--vscode-errorForeground, #f48771); }
+.settings-shell .pair-help-content > button { margin-top: 2px; }
+.settings-shell .pair-requests { margin: 12px 0; }
+@media(max-width:540px) {
+  .settings-shell .bhp .pair-access-row { padding-left: 0; }
+  .settings-shell .pair-dialog-inner { padding: 16px; }
+  .settings-shell .pair-dialog .bhp-qr, .settings-shell .pair-dialog .bhp-qr-expired { width: 152px; height: 152px; flex-basis: 152px; }
+}

@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import * as settingsNavigation from '../../contracts/src/settings-navigation.ts';
+import { previewBootstrap } from '../../../scripts/fixtures/settings-preview.mjs';
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-function harness(endpoint = { environment: 'production', origin: 'https://blackhole.stellarbridge.dpdns.org' }) {
-  const panels = [], polls = new Set(), errors = [], notices = [], warnings = [], clipboard = [], infoReplies = [];
+function harness(endpoint = { environment: 'production', origin: 'https://blackhole.stellarbridge.dpdns.org' }, uiState, requestedPage) {
+  const panels = [], polls = new Set(), errors = [], notices = [], warnings = [], clipboard = [], infoReplies = [], warningReplies = [];
   const installCalls = [], settingsWrites = [], tunnelCalls = [], infoDialogs = [], openaiCalls = [];
   const settings = {};
   let restarts = 0, installer = async () => { throw Error('installation must be explicitly requested'); };
@@ -31,7 +33,7 @@ function harness(endpoint = { environment: 'production', origin: 'https://blackh
     commands: { executeCommand: async () => ({ state: 'logged_out' }) },
     ViewColumn: { One: 1 }, ConfigurationTarget: { Global: 1 },
     workspace: { getConfiguration: () => ({ get: key => settings[key], update: async (...args) => { settingsWrites.push(args); settings[args[0]] = args[1]; } }) },
-    window: { createWebviewPanel: makePanel, showErrorMessage: msg => errors.push(msg), showInformationMessage: async (msg, ...options) => { notices.push(msg); infoDialogs.push(options); return infoReplies.shift(); }, showWarningMessage: async msg => { warnings.push(msg); return '重置'; } },
+    window: { createWebviewPanel: makePanel, showErrorMessage: msg => errors.push(msg), showInformationMessage: async (msg, ...options) => { notices.push(msg); infoDialogs.push(options); return infoReplies.shift(); }, showWarningMessage: async msg => { warnings.push(msg); return warningReplies.length ? warningReplies.shift() : '重置'; } },
     env: { clipboard: { writeText: async value => clipboard.push(value) } },
   };
   const source = fs.readFileSync(new URL('../src/configPanel.ts', import.meta.url), 'utf8');
@@ -46,9 +48,18 @@ function harness(endpoint = { environment: 'production', origin: 'https://blackh
     if (name === './openaiTunnelInstall') return { initializeOpenAITunnelClient: async value => { openaiCalls.push(value); return openaiInstaller(value); } };
     if (name === './proxySync') return { EMPTY_ANCHORS: { daemonId: null }, readAnchors: x => ({ daemonId: x.daemon_id }), mergeAnchors: (_, x) => x, decideSyncAction: () => 'none' };
     if (name === './cloudEnvironment') return { PRODUCTION_CLOUD_ORIGIN: 'https://blackhole.stellarbridge.dpdns.org', resolveCloudEndpoint: () => endpoint };
+    if (name === '../../contracts/src/settings-navigation') return settingsNavigation;
+    if (name === './config') return { getConfig: () => ({ ...settings }) };
+    if (name === './sessionActions' || name === './templates') {
+      const source = fs.readFileSync(new URL('../src/' + name.slice(2) + '.ts', import.meta.url), 'utf8');
+      const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+      const child = { exports: {} };
+      vm.runInNewContext(compiled, { module: child, exports: child.exports, require: load, console, URL });
+      return child.exports;
+    }
     return require(name);
   };
-  vm.runInNewContext(js, { module, exports: module.exports, require: load, console, setTimeout, clearTimeout, AbortController });
+  vm.runInNewContext(js, { module, exports: module.exports, require: load, console, setTimeout, clearTimeout, AbortController, URL });
   let daemonStateListener;
   const daemon = { currentState: 'running', onDidChangeState(fn) { daemonStateListener = fn; return { dispose() { daemonStateListener = undefined; } }; } };
   const poller = { onTick(fn) { polls.add(fn); return { dispose: () => polls.delete(fn) }; } };
@@ -56,14 +67,136 @@ function harness(endpoint = { environment: 'production', origin: 'https://blackh
   const info = { configured: true, disabled: ['off'], config: [{ name: 'on', enabled: true }, { name: 'off', enabled: false }], status: [{ name: 'on', status: 'online', tools: [], catalogCount: 0 }, { name: 'off', status: 'disabled', tools: [] }] };
   const toolCalls = [];
   let rotateCalls = 0;
-  const api = { health: async () => health, semanticInfo: async () => ({}), approvalGrants: async () => ({ always: [], sessions: [] }), proxies: async () => info, rotateMcpToken: async () => { rotateCalls++; return { mcp_url: 'https://example.test/mcp/token' }; }, proxiesTools: async (...args) => { toolCalls.push(args); return { configured: true, name: args[0], daemonId: 'fixture', tools: [], cachedOnly: true }; } };
-  const instance = new module.exports.ConfigPanel(api, daemon, poller);
+  const api = { health: async () => health, semanticInfo: async () => ({}), approvalGrants: async () => ({ always: [], sessions: [] }), proxies: async () => info, rotateMcpToken: async () => { rotateCalls++; return { mcp_url: 'https://example.test/mcp/token' }; }, installRuntime: async (runtime, value) => { if (runtime === 'cloudflared') { installCalls.push(value); return installer(value); } openaiCalls.push(value); return openaiInstaller(value); }, proxiesTools: async (...args) => { toolCalls.push(args); return { configured: true, name: args[0], daemonId: 'fixture', tools: [], cachedOnly: true }; } };
+  const instance = new module.exports.ConfigPanel(api, daemon, poller, undefined, uiState, requestedPage);
   daemon.restart = async () => { restarts++; return true; };
   api.tunnelStart = async (...args) => { tunnelCalls.push(args); return {}; };
   return { instance, api, panels, polls, errors, notices, warnings, clipboard, get rotateCalls(){return rotateCalls;}, toolCalls, health, info,
-    installCalls, settingsWrites, tunnelCalls, infoReplies, infoDialogs, settings, daemon, vscode, get restarts(){return restarts;}, setInstaller(fn){installer=fn;},
+    installCalls, settingsWrites, tunnelCalls, infoReplies, warningReplies, infoDialogs, settings, daemon, vscode, get restarts(){return restarts;}, setInstaller(fn){installer=fn;},
     openaiCalls, setOpenaiInstaller(fn){openaiInstaller=fn;} };
 }
+test('settings account summary distinguishes unknown, signed-out and known offline identity', async t => {
+  const h = harness(); t.after(() => h.panels[0].close());
+  await h.instance.dispatch({ type: 'ready' });
+  const cases = [
+    [{ state: 'unavailable' }, '账号状态待确认', false, null],
+    [{ state: 'saved' }, '账号状态待确认', false, null],
+    [{ state: 'logged_out', userId: 'old', remainingSeconds: 900, account: { name: 'Old' } }, '未登录', false, null],
+    [{ state: 'unavailable', userId: 'fixture-user' }, 'fixture-user', true, null],
+    [{ state: 'verified', userId: 'fixture-user', remainingSeconds: 300, account: { name: 'Fixture', status: 'active' } }, 'Fixture', true, 300],
+  ];
+  for (const [view, name, canSignOut, remaining] of cases) {
+    h.vscode.commands.executeCommand = async () => view;
+    await h.instance.accountStatus();
+    const message = h.panels[0].messages.findLast(m => m.type === 'cloudAccount');
+    assert.equal(message.summary.displayName, name);
+    assert.equal(message.summary.canSignOut, canSignOut);
+    assert.equal(message.summary.remainingSeconds, remaining);
+  }
+  assert.equal(h.restarts, 0);
+  assert.equal(h.settingsWrites.length, 0);
+});
+
+
+test('manual page save only applies submitted fields and preserves other pages', async t => {
+  const h = harness(); t.after(() => h.panels[0].close());
+  Object.assign(h.settings, { channelMode: 'openai', cloudflaredPath: '/fixture/cloudflared', publicBaseUrl: 'https://fixture.example', skillsDir: '/fixture/old', port: 7306, connectorName: 'Fixture' });
+  await h.instance.dispatch({ type: 'ready' });
+  await h.instance.dispatch({ type: 'save', values: { skillsDir: '/fixture/new' } });
+  assert.deepEqual(h.settingsWrites, [['skillsDir', '/fixture/new', 1]]);
+  assert.equal(h.settings.channelMode, 'openai');
+  assert.equal(h.settings.port, 7306);
+  assert.equal(h.settings.cloudflaredPath, '/fixture/cloudflared');
+});
+
+test('saving another page does not validate or replace an untouched custom channel', async t => {
+  const h = harness(); t.after(() => h.panels[0].close());
+  Object.assign(h.settings, { channelMode: 'custom', publicBaseUrl: 'https://fixture.example', port: 7306 });
+  await h.instance.dispatch({ type: 'ready' });
+  await h.instance.dispatch({ type: 'save', values: { tunnelProbeProxy: 'http://127.0.0.1:7890' } });
+  assert.deepEqual(h.settingsWrites, [['tunnelProbeProxy', 'http://127.0.0.1:7890', 1]]);
+  assert.equal(h.errors.length, 0);
+  assert.equal(h.settings.channelMode, 'custom');
+  assert.equal(h.settings.publicBaseUrl, 'https://fixture.example');
+});
+
+test('settings layout has unique connection controls and page-scoped actions', async t => {
+  const h = harness(); t.after(() => h.panels[0].close());
+  Object.assign(h.settings, { channelMode: 'cloudflare', port: 7306, connectorName: 'BlackHole' });
+  await h.instance.dispatch({ type: 'ready' });
+  const html = h.panels[0].webview.html;
+  const markup = html.split('<script nonce=')[0];
+  assert.equal((markup.match(/id="mcpCopy"/g) || []).length, 1);
+  assert.match(markup, /id="settingsActions" hidden/);
+  assert.doesNotMatch(markup, /<details[^>]*data-page="connections"/);
+  const positions = ['currentConnectionSec', 'channelSec', 'aiRouteSec', 'mcpSec'].map(id => markup.indexOf(`id="${id}"`));
+  assert.ok(positions.every(p => p >= 0));
+  assert.deepEqual([...positions].sort((a,b) => a-b), positions);
+  assert.equal((markup.match(/data-settings-target=/g) || []).length, 7);
+  assert.match(markup, /<dialog class="pair-modal" id="rmModal"/);
+  assert.match(markup, /id="directAccessToggle"[^>]*role="switch"/);
+  assert.doesNotMatch(markup, /publicDirectToggle|lanToggle|lanUrl/);
+  assert.ok(markup.includes('id="channelSecTitle">公网渠道</span>'));
+  assert.match(markup, /id="settingsMobileMenu"[^>]*aria-controls="settingsNav"/);
+  assert.match(markup, /id="settingsNavScrim"/);
+  assert.ok(html.includes('body.settings-nav-mobile-open .settings-nav { transform:translateX(0); visibility:visible;'), 'narrow settings navigation opens as a side drawer');
+  assert.ok(!html.includes('.settings-nav-list { display:flex;'), 'narrow settings navigation is not converted to a top strip');
+  assert.match(markup, /<section data-page="advanced">[\s\S]*id="restart"/);
+  // Optional browser fixture: synthetic state, no daemon requests or settings writes.
+  if (process.env.BH_UI_FIXTURE === '1') {
+    const nonce = /<script nonce="([^"]+)"/.exec(html)[1];
+    const frames = [...h.panels[0].messages, { type:'settingsNavigate',page:'connections' }];
+    const qr = require('qrcode-generator')(0,'M'); qr.addData('FIXTURE_NOT_A_REAL_PAIRING'); qr.make();
+    const n = qr.getModuleCount(); let qrPath = '';
+    for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(qr.isDark(y,x))qrPath+=`M${x} ${y}h1v1h-1z`;
+    const boot = `<script nonce="${nonce}">${previewBootstrap(frames,{n,path:qrPath})}</script>`;
+    const theme = `<style>:root{--vscode-font-family:system-ui;--vscode-editor-font-family:monospace;--vscode-foreground:#ddd;--vscode-descriptionForeground:#aaa;--vscode-editor-background:#1e1e1e;--vscode-sideBar-background:#252526;--vscode-panel-border:#444;--vscode-input-background:#333;--vscode-input-foreground:#eee;--vscode-input-border:#555;--vscode-button-background:#0869b0;--vscode-button-foreground:#fff;--vscode-button-secondaryBackground:#3c3c3c;--vscode-button-secondaryForeground:#eee;--vscode-focusBorder:#4aa3df;--vscode-textLink-foreground:#66b7ef;--vscode-list-hoverBackground:#333;--vscode-list-activeSelectionBackground:#174969;--vscode-list-activeSelectionForeground:#fff;--vscode-charts-green:#8cc489;--vscode-charts-yellow:#dec377;--vscode-charts-red:#ef8c89;--vscode-errorForeground:#ef8c89}</style>`;
+    const dir = new URL('../../../.tmp/ui-refinement/', import.meta.url);
+    fs.mkdirSync(dir, { recursive: true });
+    const fixtureHtml = html.replace('</head>', theme + '</head>').replace(`<script nonce="${nonce}">`, boot + `<script nonce="${nonce}">`)
+      .replace('<body>', '<body><aside role="note" style="margin:0 0 12px;font-size:12px">生产界面验证夹具 · 合成数据，不连接 daemon</aside>');
+    fs.writeFileSync(new URL('settings.html', dir), fixtureHtml);
+    const previewDir = new URL('../../../.tmp/settings-vscode-demo/', import.meta.url);
+    fs.mkdirSync(previewDir,{recursive:true}); fs.writeFileSync(new URL('production-vscode.html',previewDir),fixtureHtml);
+  }
+});
+
+function uiMemory() {
+  const values = new Map([['blackhole.settingsLastPage.v1', 'account'], ['blackhole.settingsNavCollapsed.v1', true]]);
+  return { get: (key, fallback) => values.has(key) ? values.get(key) : fallback, update: async (key, value) => { values.set(key, value); } };
+}
+
+test('deep links into an open panel survive disposal and preserve collapsed preference', async () => {
+  const state = uiMemory();
+  const h = harness(undefined, state);
+  try {
+    await h.instance.dispatch({ type: 'ready' });
+    await h.instance.navigate('connections');
+    assert.equal(state.get('blackhole.settingsLastPage.v1'), 'connections');
+    assert.equal(state.get('blackhole.settingsNavCollapsed.v1'), true);
+    assert.equal(h.panels[0].messages.findLast(m => m.type === 'settingsNavigate').page, 'connections');
+    assert.equal(h.restarts, 0); assert.equal(h.settingsWrites.length, 0);
+  } finally { h.panels[0].close(); }
+  const reopened = harness(undefined, state);
+  try {
+    await reopened.instance.dispatch({ type: 'ready' });
+    const restored = reopened.panels[0].messages.findLast(m => m.type === 'settingsUiRestore');
+    assert.equal(restored.page, 'connections');
+    assert.equal(restored.collapsed, true);
+  } finally { reopened.panels[0].close(); }
+});
+
+test('deep link on initial creation wins over stored page and becomes last page', async t => {
+  const state = uiMemory();
+  const h = harness(undefined, state, 'network'); t.after(() => h.panels[0].close());
+  await h.instance.dispatch({ type: 'ready' });
+  const restored = h.panels[0].messages.findLast(m => m.type === 'settingsUiRestore');
+  assert.equal(restored.page, 'network');
+  assert.equal(state.get('blackhole.settingsLastPage.v1'), 'network');
+  assert.equal(restored.collapsed, true);
+  assert.equal(h.restarts, 0); assert.equal(h.settingsWrites.length, 0);
+});
+
 test('cloudflared initialization is explicit and only returns a draft path', async t => {
   const h=harness();t.after(()=>h.panels[0].close());
   await h.instance.dispatch({type:'ready'});await h.instance.poll();
@@ -529,4 +662,224 @@ test('OpenAI runtime controls: key goes to the daemon only, start is bound to sa
   await h.instance.dispatch({type:'openaiTunnel',action:'start'});
   assert.match(result().message,/重启 daemon/);
   assert.equal(h.restarts,0,'OpenAI controls never restart the daemon');
+});
+
+test('OpenAI start: a Tunnel ID changed in Web settings is never overwritten by the stale VS Code copy', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const OLD='tunnel_'+'a'.repeat(32),NEW='tunnel_'+'b'.repeat(32),CLIENT='C:\\bin\\tunnel-client-runtime.exe',EDIT='D:\\rt\\tunnel-client-runtime.exe';
+  const calls=[];const view={status:'off',run_id:null,credential_configured:true,credential_revision:4,pending_restart:false,reason_code:null,reason:null};
+  const daemonSettings={revision:9,values:{openaiTunnelId:NEW,openaiTunnelClientPath:CLIENT}};
+  h.health.openai_tunnel_api_version=1;h.health.openai_tunnel=view;
+  Object.assign(h.api,{
+    openaiTunnel:async()=>view,
+    settings:async()=>daemonSettings,
+    patchSettings:async(values,rev)=>{calls.push(['patch',values,rev]);return daemonSettings;},
+    openaiTunnelStart:async(...a)=>{calls.push(['start',...a]);return {...view};},
+  });
+  // What this window last pulled from the daemon, before Web settings saved NEW.
+  const baseline={openaiTunnelId:OLD,openaiTunnelClientPath:CLIENT};
+  h.instance.settingsSync={
+    flush:async()=>{calls.push(['flush']);},
+    baseline:()=>baseline,
+    sync:async()=>{calls.push(['sync']);Object.assign(baseline,daemonSettings.values);Object.assign(h.settings,daemonSettings.values);},
+  };
+  h.settings.openaiTunnelId=OLD;h.settings.openaiTunnelClientPath=CLIENT;
+  const result=()=>h.panels[0].messages.findLast(m=>m.type==='openaiTunnelResult');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:OLD,clientPath:CLIENT});
+  assert.equal(result().ok,false);assert.match(result().message,/别处/);
+  assert.deepEqual(calls.map(c=>c[0]),['flush','sync'],'stale copy: no patch, no start');
+  assert.equal(h.settings.openaiTunnelId,NEW,'the daemon value is taken into VS Code');
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:CLIENT});
+  assert.equal(result().ok,true);
+  assert.deepEqual(calls.at(-1),['start','fixture',9,4],'confirmed value starts on the daemon revision');
+  assert.ok(!calls.some(c=>c[0]==='patch'));
+  // A real edit made in this window (differs from the baseline) is still written, bound to the revision checked.
+  h.settings.openaiTunnelClientPath=EDIT;
+  await h.instance.dispatch({type:'openaiTunnel',action:'start',tunnelId:NEW,clientPath:EDIT});
+  const patch=calls.find(c=>c[0]==='patch');
+  assert.deepEqual([patch[0],{...patch[1]},patch[2]],['patch',{openaiTunnelClientPath:EDIT},9]);
+});
+
+test('OpenAI connection card: saved Tunnel ID shown and copied offline, fixed onboarding links only', async t => {
+  const h=harness();t.after(()=>h.panels[0]?.close());const opened=[],TID='tunnel_0123456789abcdef0123456789abcdef';
+  h.vscode.env.openExternal=async u=>{opened.push(u);return true;};h.vscode.Uri={parse:s=>({href:s})};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[]);assert.match(h.warnings.at(-1),/尚未保存 Tunnel ID/);
+  h.settings.openaiTunnelId='tunnel_'+'a'.repeat(32);h.api.health=async()=>{throw Error('offline');};
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[],'unreachable daemon must not copy a stale VS Code mirror');
+  assert.match(h.warnings.at(-1),/无法确认 daemon/);
+  const routes={saved_tunnel_id:TID,selected_route:'openai',preferred_mcp_url:null,connector_kind:null,reason:'openai_selected',openai:'off'};
+  h.api.health=async()=>({...h.health,connection_routes:routes,openai_tunnel:{status:'off',active_tunnel_id:null}});
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[TID],'stopped runtime copies the current daemon-owned ID, not its mirror');
+  await h.instance.dispatch({type:'ready'});await settle();await settle();
+  const overview=h.panels[0].messages.map(m=>m.overview).filter(Boolean).at(-1);
+  assert.equal(overview.openai_tunnel_id,TID);
+  routes.saved_tunnel_id=null;
+  await h.instance.dispatch({type:'copyTunnelId'});
+  assert.deepEqual(h.clipboard,[TID],'clearing the daemon ID must not resurrect the mirror');
+  for(const target of ['platform','chatgpt','constructor','__proto__','https://evil.example'])await h.instance.dispatch({type:'openLink',target});
+  assert.deepEqual(opened.map(u=>u.href),['https://platform.openai.com/settings/organization/tunnels','https://chatgpt.com/plugins']);
+  const html=h.panels[0].webview.html;
+  for(const id of ['mcpSec','oaLinkPlatform','oaLinkChatgpt'])assert.ok(html.includes('id="'+id+'"'),id);
+  const card=html.slice(html.indexOf('id="channelOpenai"'),html.indexOf('id="channelCustom"'));
+  assert.match(card,/Tunnels Read\/Use/);assert.match(card,/不支持沙箱直连/);
+});
+
+// 用户 2026-10-03：不需要重启 daemon 的设置自动保存，会重启的仍由「保存」按钮提交。
+test('autosave writes only no-restart settings, quietly, without re-sending the form', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  const before=h.panels[0].messages.length;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare',connectorName:' Mine ',pollIntervalMs:'1500',publicBaseUrl:'https://evil.example',cloudflaredPath:'/x',port:'9'}});
+  assert.deepEqual(h.settingsWrites,[['channelMode','cloudflare',1],['connectorName','Mine',1],['pollIntervalMs',1500,1]]);
+  assert.equal(h.restarts,0);assert.deepEqual(h.notices,[]);assert.deepEqual(h.errors,[]);
+  const sent=h.panels[0].messages.slice(before);
+  assert.equal(sent.some(m=>m.type==='init'),false,'other fields being edited are not overwritten');
+  // 面板代码跑在 vm 沙箱里，数组原型不同：经 JSON 比较结构。
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))),{type:'autosaved',ok:true,keys:['channelMode','connectorName','pollIntervalMs'],values:{channelMode:'cloudflare',connectorName:'Mine',pollIntervalMs:1500},message:'已自动保存'});
+  h.settingsWrites.length=0;
+  await h.instance.dispatch({type:'autosave',values:{channelMode:'cloudflare'}});
+  assert.equal(h.settingsWrites.length,0,'unchanged values are not rewritten');
+  assert.equal(h.panels[0].messages.at(-1).message,'');
+});
+
+test('autosave rejects invalid values with an inline message and writes nothing for them', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());await h.instance.dispatch({type:'ready'});
+  await h.instance.dispatch({type:'autosave',values:{openaiTunnelId:'https://platform.openai.com/x',openaiTunnelClientPath:'relative/tunnel.exe',pollIntervalMs:'10'}});
+  assert.equal(h.settingsWrites.length,0);
+  const last=h.panels[0].messages.at(-1);
+  assert.equal(last.type,'autosaved');assert.equal(last.ok,false);assert.match(last.message,/未保存/);
+  await h.instance.dispatch({type:'autosave',values:{},webAgents:['ChatGPT']});
+  assert.equal(h.panels[0].messages.at(-1).ok,true);
+});
+
+test('auto-saved settings never restart the daemon; restart settings are marked and stay on the Save button', t => {
+  const source=fs.readFileSync(new URL('../src/configPanel.ts',import.meta.url),'utf8');
+  const auto=JSON.parse(source.match(/const AUTO_SAVE_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  const restart=JSON.parse(source.match(/const RESTART_KEYS = new Set\((\[[^\]]*\])\)/)[1].replace(/'/g,'"'));
+  assert.deepEqual(auto.filter(k=>restart.includes(k)),[]);
+  // daemon 启动指纹里的设置一变就会自动重启 daemon：自动保存的设置一个都不能在里面。
+  const dm=fs.readFileSync(new URL('../src/daemonManager.ts',import.meta.url),'utf8');
+  const fp=dm.slice(dm.indexOf('private fingerprint('),dm.indexOf('private async liveFingerprintMatches'));
+  for(const k of auto)assert.doesNotMatch(fp,new RegExp('\\bc\\.'+k+'\\b'),k);
+  const h=harness();t.after(()=>h.panels[0].close());
+  const html=h.panels[0].webview.html;
+  for(const k of ['cloudflaredPath','publicBaseUrl','skillsDir'])assert.match(html,new RegExp('<label for="'+k+'">[^<]+<span class="rs"[^>]*>需重启</span></label><input id="'+k+'"'),k);
+  assert.doesNotMatch(html,/<label for="connectorName">连接器名称<span class="rs"/);
+  assert.match(html,/id="autoNote"/);
+  assert.match(html,/if \(channelMode !== before\) \{ channelDraftPending = true; autosave\(\{ channelMode \}\); \}/);
+  assert.match(html,/el\.classList\.toggle\('on'\); autosave\(\{\}, collectWebAgents\(\)\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
+});
+
+function directHarness(t) {
+  const h = harness(); t.after(() => h.panels[0].close());
+  let revision = 4;
+  let values = { directAccessEnabled:false, directPort:7307, directAccessUrl:'', channelProxyUrl:'', aiDefaultRoute:'auto' };
+  const patches = [];
+  h.api.settings = async () => ({ revision, values: { ...values } });
+  h.api.patchSettings = async (patch, expected) => {
+    assert.equal(expected, revision);
+    patches.push([JSON.parse(JSON.stringify(patch)), expected]); values = { ...values, ...patch }; revision++;
+    return { revision, values: { ...values } };
+  };
+  h.health.direct_access = { enabled:false, port:7307, listening:false, state:'off', mode:'off', origin:null, proxy_origin:null, bind_host:null, target:'http://127.0.0.1:7307', addresses:[], error:null };
+  return { h, patches, get values(){ return values; }, edit(patch){ values = { ...values, ...patch }; revision++; } };
+}
+
+test('direct advertised URL is saved without enabling; status uses only canonical fields', async t => {
+  const { h, patches } = directHarness(t);
+  await h.instance.dispatch({type:'ready'});
+  await h.instance.dispatch({type:'directAccessUrl',url:' https://mcp.example.test '});
+  assert.deepEqual(patches, [[{directAccessUrl:'https://mcp.example.test'},4]]);
+  const frame = h.panels[0].messages.findLast(m => m.type === 'directAccess');
+  assert.equal(frame.on, false); assert.equal(frame.url, 'https://mcp.example.test'); assert.equal(frame.port, 7307);
+  assert.doesNotMatch(h.panels[0].webview.html, /lanAccess|lanUrl|publicDirectEnabled|directGatewayUrl/);
+  assert.equal(h.restarts, 0); assert.equal(h.tunnelCalls.length, 0);
+});
+
+test('one direct switch accepts empty/HTTP/HTTPS and disables without discarding the address', async t => {
+  const d = directHarness(t), { h, patches } = d;
+  await h.instance.dispatch({type:'directAccessToggle',on:true,url:'ftp://fixture.example'});
+  assert.equal(patches.length, 0); assert.match(h.warnings.at(-1), /HTTP\(S\)/);
+  for (const url of ['', 'http://public.example.test:7307', 'https://public.example.test']) {
+    h.warningReplies.push('开启');
+    await h.instance.dispatch({type:'directAccessToggle',on:true,url});
+    assert.deepEqual(patches.at(-1)[0], {directAccessEnabled:true,directAccessUrl:url});
+    await h.instance.dispatch({type:'directAccessToggle',on:false});
+    assert.deepEqual(patches.at(-1)[0], {directAccessEnabled:false});
+    assert.equal(d.values.directAccessUrl,url);
+  }
+  assert.match(h.warnings.find(x => x.includes('开启直连')), /手机扫码后仍须在电脑上允许/);
+  assert.equal(h.restarts,0); assert.equal(h.settingsWrites.length,0);
+});
+
+test('direct confirmation cancellation, duplicate clicks and changed settings cannot write unexpectedly', async t => {
+  const d = directHarness(t), { h, patches } = d;
+  h.warningReplies.push(undefined);
+  await h.instance.dispatch({type:'directAccessToggle',on:true,url:''}); assert.equal(patches.length,0);
+  const wait = deferred(); h.warningReplies.push(wait.promise);
+  const operation = h.instance.dispatch({type:'directAccessToggle',on:true,url:'https://draft.example'});
+  await settle();
+  await h.instance.dispatch({type:'directAccessToggle',on:true,url:'https://duplicate.example'});
+  d.edit({directAccessUrl:'https://external.example'}); wait.resolve('开启'); await operation;
+  assert.equal(patches.length,0); assert.equal(d.values.directAccessUrl,'https://external.example');
+  assert.match(h.warnings.at(-1),/已在别处修改/);
+});
+
+test('direct confirmation cannot save after the settings panel is closed', async t => {
+  const { h, patches } = directHarness(t); const wait = deferred(); h.warningReplies.push(wait.promise);
+  const operation = h.instance.dispatch({type:'directAccessToggle',on:true,url:''});
+  await settle(); h.panels[0].close(); wait.resolve('开启'); await operation;
+  assert.equal(patches.length,0);
+});
+
+test('canonical setting writes serialize, apply only their fields and preserve conflicts', async t => {
+  const { h, patches } = directHarness(t);
+  await h.instance.dispatch({type:'ready'});
+  await Promise.all([h.instance.dispatch({type:'directPort',port:8307}),h.instance.dispatch({type:'aiDefaultRoute',route:'cloudflare'})]);
+  assert.deepEqual(patches.map(x => x[0]), [{directPort:8307},{aiDefaultRoute:'cloudflare'}]);
+  assert.deepEqual(patches.map(x => x[1]),[4,5]);
+  assert.equal(h.restarts,0);
+  let calls = 0;
+  h.api.patchSettings = async () => { calls++; throw Error('invalid_input'); };
+  await h.instance.dispatch({type:'directPort',port:80});
+  assert.equal(calls,1,'validation errors are not retried');
+  assert.equal(h.panels[0].messages.findLast(m => m.type === 'directSaveState').state,'error');
+});
+
+test('confirmed direct enable never rebases over a revision changed after confirmation', async t => {
+  const d = directHarness(t), { h, patches } = d;
+  await h.instance.dispatch({type:'ready'});
+  let attempts = 0;
+  h.api.patchSettings = async () => { attempts++; d.edit({directAccessUrl:'https://concurrent.example'}); throw Error('revision_conflict'); };
+  h.warningReplies.push('开启');
+  await h.instance.dispatch({type:'directAccessToggle',on:true,url:'https://confirmed.example'});
+  assert.equal(attempts,1); assert.equal(patches.length,0);
+  assert.equal(d.values.directAccessEnabled,false);
+  assert.equal(d.values.directAccessUrl,'https://concurrent.example');
+  assert.equal(h.panels[0].messages.findLast(m=>m.type==='directSaveState').state,'error');
+});
+
+// 用户 2026-10-03：设置页顶部「渠道」格里的总开关，和侧边栏共用 daemon 的 /channel。
+test('cockpit channel switch calls the daemon and reports a missing prerequisite with its code', async t => {
+  const h=harness();t.after(()=>h.panels[0].close());
+  const view={on:false,state:'off',running:[],next:'quick',last:'quick',missing:null,reason:null};
+  const calls=[];h.api.channel=async()=>view;
+  h.api.channelSwitch=async(on)=>{calls.push(on);return calls.length===1?{ok:true,view:{...view,on:true,state:'starting',running:['quick']}}:{ok:false,error:'cloudflared'};};
+  await h.instance.dispatch({type:'ready'});
+  const status=h.panels[0].messages.findLast(m=>m.type==='status'||m.type==='init');
+  assert.equal(JSON.parse(JSON.stringify(status.overview.channel)).next,'quick');
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  let r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.deepEqual(r,{type:'channelToggleResult',ok:true,code:'',message:''});
+  await h.instance.dispatch({type:'channelToggle',on:true});
+  r=JSON.parse(JSON.stringify(h.panels[0].messages.findLast(m=>m.type==='channelToggleResult')));
+  assert.equal(r.ok,false);assert.equal(r.code,'cloudflared');assert.match(r.message,/一键初始化安装/);
+  assert.deepEqual(calls,[true,true]);
+  const html=h.panels[0].webview.html;
+  assert.match(html,/<button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false"/);
+  assert.match(html,/renderCockpitSwitch\(o\.channel, o\.daemon\)/);
+  for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))assert.doesNotThrow(()=>new vm.Script(match[1]));
 });

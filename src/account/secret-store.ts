@@ -1,12 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { openSecretFile } from '../util/secret-file.js';
 import type { SecretPort } from './cloud-auth-client.js';
+import { cloudAuthPrefix } from './cloud-origin.js';
 
 /**
- * Where the daemon keeps cloud credentials. Only the OS credential store is a
- * real backend; there is deliberately no plaintext file fallback. `memory` is
- * for isolated tests (BLACKHOLE_ACCOUNT_SECRETS=memory) and never persists.
+ * Where the daemon keeps the cloud account credential: a user-only file under
+ * the daemon data dir (see util/secret-file.ts). `memory` is for isolated tests
+ * (BLACKHOLE_ACCOUNT_SECRETS=memory) and never persists; `unavailable` means the
+ * data dir cannot hold the file, and signing in is refused rather than degraded.
  */
 export type SecretBackend =
-  | { kind: 'keyring' | 'memory'; port: SecretPort }
+  | { kind: 'file' | 'memory'; port: SecretPort }
   | { kind: 'unavailable'; reason: string };
 
 export function memorySecretPort(): SecretPort {
@@ -18,37 +23,26 @@ export function memorySecretPort(): SecretPort {
   };
 }
 
-interface KeyringModule {
-  AsyncEntry: new (service: string, username: string) => {
-    setPassword(password: string): Promise<void>;
-    getPassword(): Promise<string | undefined | null>;
-    deletePassword(): Promise<boolean>;
-  };
+/** One file per cloud origin so test and production builds never share a login. Throws on an invalid origin. */
+export function accountSecretFile(dataDir: string, origin: string): string {
+  return path.join(dataDir, 'secrets', `account-${cloudAuthPrefix(origin).slice(-16)}.json`);
 }
 
-/** Opens the OS credential store and proves a write/read/delete round-trip before trusting it. */
-export async function openSecretBackend(service: string, mode = process.env.BLACKHOLE_ACCOUNT_SECRETS): Promise<SecretBackend> {
+export function openSecretBackend(file: string, mode = process.env.BLACKHOLE_ACCOUNT_SECRETS): SecretBackend {
   if (mode === 'memory') return { kind: 'memory', port: memorySecretPort() };
   if (mode === 'unavailable') return { kind: 'unavailable', reason: 'disabled' };
-  let mod: KeyringModule;
   try {
-    mod = (await import('@napi-rs/keyring')) as unknown as KeyringModule;
-  } catch {
-    return { kind: 'unavailable', reason: 'keyring_module_missing' };
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  } catch (e) {
+    return { kind: 'unavailable', reason: `storage_unwritable: ${(e as NodeJS.ErrnoException).code ?? 'error'}` };
   }
-  const entry = (key: string) => new mod.AsyncEntry(service, key);
-  try {
-    // Read-only probe: reaching the store is enough, and nothing is written to the user's keychain.
-    await entry('probe').getPassword();
-  } catch {
-    return { kind: 'unavailable', reason: 'keyring_unavailable' };
-  }
+  const store = openSecretFile(file);
   return {
-    kind: 'keyring',
+    kind: 'file',
     port: {
-      get: async (key) => (await entry(key).getPassword()) ?? undefined,
-      store: async (key, value) => { await entry(key).setPassword(value); },
-      delete: async (key) => { await entry(key).deletePassword().catch(() => false); },
+      get: async (key) => store.get(key),
+      store: async (key, value) => store.set(key, value),
+      delete: async (key) => store.delete(key),
     },
   };
 }

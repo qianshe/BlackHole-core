@@ -2,7 +2,7 @@
 // Uses a fake child process only — never starts tunnel-client or reaches OpenAI.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import express from 'express';
 import { OpenAITunnelManager, OpenAITunnelError, classifyLog } from '../dist/tunnel/openai-manager.js';
-import { CredentialStoreError, memoryEntryFactory, openOpenAITunnelCredential, strictStore } from '../dist/tunnel/openai-credential.js';
+import { CredentialStoreError, memoryEntryFactory, openAITunnelSecretFile, openOpenAITunnelCredential, strictStore } from '../dist/tunnel/openai-credential.js';
 import { mountOpenAITunnel, nativeLoopbackRequest } from '../dist/control/openai-tunnel-routes.js';
 
 const ID = 'tunnel_0123456789abcdef0123456789abcdef';
@@ -100,6 +100,48 @@ test('explicit start: key and machine URL only in child env, private profile dir
   assert.equal(off.status, 'off'); assert.equal(off.run_id, null);
   assert.ok(s.fake.calls[0].child.killed >= 1);
   assert.ok(!existsSync(runDir), 'private run dir removed');
+});
+
+test('application proxy overrides only the OpenAI child and preserves loopback bypass', async (t) => {
+  const s = setup({ opts: { proxy: () => 'http://127.0.0.1:7890' } }); t.after(s.done);
+  await s.credential.set(KEY);
+  await s.m.start({ settingsRevision: 3, credentialRevision: s.m.credentialRevision });
+  await until(() => s.fake.calls.length === 1);
+  const env = s.fake.calls[0].opts.env;
+  assert.equal(env.CONTROL_PLANE_HTTP_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(env.HTTPS_PROXY, 'http://proxy:8080', 'ambient proxy remains untouched');
+  assert.match(env.MCP_SERVER_URL, /^http:\/\/127\.0\.0\.1:/, 'local MCP target stays local');
+  await s.m.stop(s.m.view().run_id);
+});
+
+test('proxy edits mark the live run pending and recovery keeps its frozen proxy until explicit restart', async (t) => {
+  let proxy = 'http://127.0.0.1:7890';
+  const s = setup({ opts: { proxy: () => proxy } });
+  t.after(async () => { await s.m.stop(s.m.view().run_id); s.done(); });
+  await s.credential.set(KEY);
+  const start = () => s.m.start({ settingsRevision: s.settings.revision, credentialRevision: s.m.credentialRevision });
+  await start(); await until(() => s.m.status === 'ready');
+  const first = s.m.view().run_id;
+  assert.equal(s.m.view().proxy_pending_restart, false);
+  proxy = 'http://127.0.0.1:7891'; s.settings.revision++;
+  assert.equal(s.m.view().proxy_pending_restart, true);
+  assert.equal(s.m.view().pending_restart, true);
+  assert.equal(s.m.view().run_id, first);
+  assert.equal(s.fake.calls.length, 1, 'saving does not restart or spawn');
+  await assert.rejects(start(), (e) => e.code === 'already_running');
+  s.fake.calls[0].exit(1);
+  await until(() => s.fake.calls.length === 2 && s.m.status === 'ready');
+  assert.equal(s.fake.calls[1].opts.env.CONTROL_PLANE_HTTP_PROXY, 'http://127.0.0.1:7890', 'automatic recovery uses the same snapshot');
+  assert.equal(s.m.view().proxy_pending_restart, true);
+  await s.m.stop(first); await start(); await until(() => s.m.status === 'ready');
+  assert.equal(s.fake.calls[2].opts.env.CONTROL_PLANE_HTTP_PROXY, proxy);
+  assert.equal(s.m.view().pending_restart, false);
+  proxy = ''; s.settings.revision++;
+  assert.equal(s.m.view().proxy_pending_restart, true, 'clearing also needs a runtime restart');
+  await s.m.stop(s.m.view().run_id); await start(); await until(() => s.m.status === 'ready');
+  assert.equal(s.fake.calls[3].opts.env.CONTROL_PLANE_HTTP_PROXY, undefined);
+  assert.equal(s.fake.calls[3].opts.env.HTTPS_PROXY, 'http://proxy:8080', 'ambient variables are untouched');
+  assert.equal(s.m.view().proxy_pending_restart, false);
 });
 
 test('preconditions: fixed codes, stale revisions rejected, nothing spawned', async (t) => {
@@ -243,16 +285,35 @@ test('strict credential store: set reads back, delete is confirmed, failures are
   await s.set(KEY);
   assert.equal(await s.has(), true);
   assert.equal(await s.remove(), 'deleted');
-  const lying = strictStore('keyring', () => ({ setPassword: async () => {}, getPassword: async () => 'other', deletePassword: async () => true }));
+  const lying = strictStore('file', () => ({ setPassword: async () => {}, getPassword: async () => 'other', deletePassword: async () => true }));
   await assert.rejects(lying.set(KEY), (e) => e instanceof CredentialStoreError && e.code === 'credential_store_failed');
   await assert.rejects(lying.remove(), (e) => e.code === 'credential_delete_unconfirmed');
-  const hung = strictStore('keyring', () => ({ setPassword: () => new Promise(() => {}), getPassword: () => new Promise(() => {}), deletePassword: async () => true }), 20);
+  const hung = strictStore('file', () => ({ setPassword: () => new Promise(() => {}), getPassword: () => new Promise(() => {}), deletePassword: async () => true }), 20);
   const keepAlive = setInterval(() => {}, 5); // the store's timer is unref'd (the daemon keeps the loop alive)
   try { await assert.rejects(hung.get(), (e) => e.code === 'credential_store_timeout'); } finally { clearInterval(keepAlive); }
-  const broken = strictStore('keyring', () => ({ setPassword: async () => { throw new Error(`boom ${KEY}`); }, getPassword: async () => undefined, deletePassword: async () => true }));
+  const broken = strictStore('file', () => ({ setPassword: async () => { throw new Error(`boom ${KEY}`); }, getPassword: async () => undefined, deletePassword: async () => true }));
   await assert.rejects(broken.set(KEY), (e) => e.code === 'credential_store_failed' && !e.message.includes(KEY));
-  assert.equal((await openOpenAITunnelCredential(undefined, async () => { throw new Error('no module'); })).kind, 'unavailable');
+  assert.equal((await openOpenAITunnelCredential(undefined)).kind, 'unavailable', 'no data dir, no store');
+  const blocker = path.join(mkdtempSync(path.join(tmpdir(), 'bh-oa-')), 'not-a-dir');
+  writeFileSync(blocker, 'x');
+  assert.equal((await openOpenAITunnelCredential(undefined, path.join(blocker, 'secrets', 'openai-tunnel.json'))).kind, 'unavailable', 'unwritable dir');
+  rmSync(path.dirname(blocker), { recursive: true, force: true });
   assert.equal((await openOpenAITunnelCredential('memory')).kind, 'memory');
+});
+
+test('file credential store: survives a restart, sealed on Windows, delete removes the file', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bh-oa-file-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = openAITunnelSecretFile(dir);
+  const a = await openOpenAITunnelCredential(undefined, file);
+  assert.equal(a.kind, 'file');
+  assert.equal(await a.has(), false);
+  await a.set(KEY);
+  assert.ok(!readFileSync(file, 'utf8').includes(KEY) || process.platform !== 'win32', 'Windows seals the key with DPAPI');
+  const b = await openOpenAITunnelCredential(undefined, file); // a restarted daemon
+  assert.equal(await b.get(), KEY);
+  assert.equal(await b.remove(), 'deleted');
+  assert.equal(existsSync(file), false, 'nothing left on disk');
+  assert.equal(await a.has(), false);
 });
 
 // ---- control routes ------------------------------------------------------
@@ -330,3 +391,4 @@ test('native loopback predicate', () => {
   assert.equal(nativeLoopbackRequest(req('127.0.0.1:7777', {}, '10.0.0.2')), false);
   assert.equal(nativeLoopbackRequest(req('127.0.0.1:7777', { 'cf-connecting-ip': '1.1.1.1' })), false);
 });
+

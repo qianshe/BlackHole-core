@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CourierHub } from '../dist/courier/hub.js';
+import { CourierPairs } from '../dist/courier/pairs.js';
+import { courierGenerating } from '../packages/contracts/dist/courier-state.js';
+
+test('protocol terminal target reaches Core and unlocks UI despite a retained streaming fragment', async t => {
+  let idle = 0;
+  const hub = new CourierHub({ sessions: () => [{ id: 's', name: 'test', status: 'active' }], pairs: new CourierPairs(null), onIdle: () => { idle++; } });
+  t.after(() => hub.close());
+  let deliver;
+  hub.attach({ on: (event, fn) => { if (event === 'message') deliver = fn; }, send: () => true, close: () => {} });
+  const send = m => deliver(JSON.stringify(m));
+  send({ type: 'hello', client: 'blackhole-courier', protocol: 1, version: 'test' });
+  const target = { targetId: 't', site: 'arena', label: 'test', conversationKey: 'c', sessionId: 's', open: true };
+  const publish = extra => send({ type: 'targets', targets: [{ ...target, ...extra }] });
+  const current = async () => (await hub.status(false)).targets[0];
+  publish({ busy: true, turnState: 'running' });
+  assert.equal(courierGenerating(await current(), []), true);
+  publish({ busy: false, turnState: 'done' });
+  assert.equal((await current()).turnState, 'done');
+  assert.equal(idle, 1);
+  assert.equal(courierGenerating(await current(), [{ kind: 'agent', status: 'streaming' }]), false);
+  publish({ busy: true, turnState: 'running' });
+  assert.equal(courierGenerating(await current(), [{ kind: 'agent', status: 'reply' }]), true);
+  publish({ busy: null, turnState: 'invented' });
+  assert.equal((await current()).turnState, null);
+  publish({ busy: false });
+  assert.equal((await current()).turnState, null, 'omission must not retain an earlier terminal state');
+});

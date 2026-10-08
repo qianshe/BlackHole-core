@@ -5,14 +5,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SessionRuntime } from '../runtime.js';
 import { normalizePermissionMode, type Config } from '../config.js';
-import type { DaemonDeps } from '../deps.js';
+import { bhClientSourceUrl, publicBaseUrl, type DaemonDeps } from '../deps.js';
 import { buildAccessRules } from '../workspace/rules.js';
 import { PersistentShell } from '../workspace/pwsh.js';
 import { detectExecutionEnvironment, finiteDescription } from '../execution.js';
 import { deriveAccessToken, isSessionId } from '../util/token.js';
 import { detectShell } from '../workspace/shell.js';
 import { panelHtml, PANEL_RESOURCE_URI, RESOURCE_MIME_TYPE } from '../panel/appHtml.js';
-import { publicBaseUrl } from '../deps.js';
 import { KEYLESS_TOOLS, registerTools } from './tools.js';
 import { VERSION } from '../version.js';
 import { INTEGRITY_MESSAGE, integrityFailures } from '../integrity.js';
@@ -323,6 +322,8 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
     return raw?.split(',')[0]?.trim().replace(/^"(.*)"$/, '$1') || undefined;
   };
   const panelBaseForRequest = (req: Request): string => {
+    const directOrigin = deps.directAccess?.requestOrigin(req);
+    if (directOrigin) return directOrigin;
     const fallback = `http://${deps.cfg.host ?? '127.0.0.1'}:${deps.cfg.port ?? 7306}`;
     const tunnelOrigin = (() => {
       const raw = deps.tunnel?.url;
@@ -485,6 +486,7 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
       ...deps,
       panelBase: () => presentationBase,
       panelResourceUri,
+      sandboxClientUrl: () => bhClientSourceUrl(deps),
     }, machine);
     pair.transport = transport;
     pair.server = server;
@@ -636,15 +638,15 @@ function loadSandboxedShellCtor(): typeof import('../workspace/sandboxed-shell.j
   // createRequire is the ONLY synchronous ESM import channel; the sandbox
   // module (and koffi) loads only on this win32-only call path, never at
   // module scope, so Mac/Linux never touch the FFI dependency graph.
-  // Resolution base: this FILE at runtime. Dev: src/mcp/router.ts (require
-  // ../workspace). vsix bundle: dist/daemon/cli.js with the sandbox chain
-  // shipped as real files at dist/daemon/workspace/ (esbuild external) —
-  // import.meta.url is undefined inside the CJS bundle, so the bundled form
-  // detects itself via __filename and requires the sibling files.
+  // Resolution base: this FILE at runtime. Dev: src/mcp/router.ts → src/workspace/.
+  // vsix bundle: dist/daemon/cli.js → dist/workspace/, the same files the bundle's
+  // static requires (../win32/ffi.js, ../workspace/pwsh.js) load, so the sandbox
+  // chain and koffi exist once per process. import.meta.url is undefined inside
+  // the CJS bundle, so the bundled form uses __filename as the base.
   const bundled = typeof __filename === 'string' && __filename.length > 0 && __filename.endsWith('cli.js');
   const base = bundled ? __filename : import.meta.url;
   const req = createRequire(base);
-  const mod = req(bundled ? './workspace/sandboxed-shell.js' : '../workspace/sandboxed-shell.js') as typeof import('../workspace/sandboxed-shell.js');
+  const mod = req('../workspace/sandboxed-shell.js') as typeof import('../workspace/sandboxed-shell.js');
   // First load = first win32 shell of this daemon lifetime: no live private
   // temp dirs exist yet in THIS process, so every leftover s-* dir under
   // bh-sandbox belongs to a crashed/killed previous lifetime — sweep it.

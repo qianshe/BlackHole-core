@@ -1,6 +1,7 @@
 import type { MachineStateRepo } from '../storage/machineState.js';
 import type { Config } from '../config.js';
 import { SEMANTIC_MODES, type SemanticMode } from '../config.js';
+import { DEFAULT_DIRECT_PORT } from '../../packages/contracts/dist/connections.js';
 
 /**
  * Daemon-owned user settings. The daemon is the source of truth; the VS Code
@@ -21,25 +22,53 @@ export interface CustomWebAgent {
   url: string;
 }
 
+/**
+ * A web agent site added in the Courier extension (检测此页面). Courier owns the shape; the daemon
+ * keeps the list so every UI can offer the site for a new chat and delete it (Courier then
+ * unregisters its page scripts and gives the host permission back).
+ */
+export interface CourierSite {
+  id: string;
+  name: string;
+  origin: string;
+  newChatPath: string;
+  dom: { editor: string; send: string; stop: string | null; model: null };
+  key: { prefix: string } | null;
+  detectedAt: number;
+  v: 1;
+}
+
 export interface Settings {
   connectorName: string;
   publicBaseUrl: string;
   cloudflaredPath: string;
   skillsDir: string;
-  /** Default connection info / editing preference only; never gates whether a channel may run (plan §5.1). */
+  /** Channel editing tab preference; never gates whether a channel may run. */
   channelMode: 'cloudflare' | 'openai' | 'custom';
+  /** Explicit AI route preference. auto preserves compatibility; other values never silently fall back. */
+  aiDefaultRoute: 'auto' | 'direct' | 'cloudflare' | 'custom' | 'openai';
   semanticMode: SemanticMode;
   gitUsrBinPath: string;
   namedTunnelName: string;
   tunnelProbeProxy: string;
+  /** Optional application-layer proxy for supported channel HTTP/control traffic; never mutates daemon-global env. */
+  channelProxyUrl: string;
   webAgents: string[];
   customWebAgents: CustomWebAgent[];
-  /** Phone access over the https public address (plan 6.13 R); off by default. */
+  /** Phone access over the current public HTTP(S) entry (legacy stored toggle; UI is always-on). */
   remoteAccess: boolean;
   /** OpenAI tunnel-client runtime path (plan §4); read at the next explicit OpenAI start. */
   openaiTunnelClientPath: string;
   /** Saved OpenAI Tunnel ID: not a URL and not a secret. */
   openaiTunnelId: string;
+  /** Courier sites added by detection (daemon-owned, not a VS Code setting). */
+  courierSites: CourierSite[];
+  /** One switch for LAN / mesh / user-managed public direct access. */
+  directAccessEnabled: boolean;
+  /** Stable data-plane port, also used by an operator's reverse proxy. */
+  directPort: number;
+  /** Optional advertised HTTP(S) origin; saving it never enables the listener. */
+  directAccessUrl: string;
 }
 
 export interface SettingsRecord {
@@ -52,7 +81,7 @@ export interface SettingsRecord {
 
 /** The first six keys (0.3.174). Records written before `seeded` existed had all of them. */
 export const V1_SETTING_KEYS = ['connectorName', 'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'channelMode', 'semanticMode'] as const;
-export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId'] as const;
+export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'channelProxyUrl', 'aiDefaultRoute', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'directAccessEnabled', 'directPort', 'directAccessUrl'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /**
@@ -74,20 +103,63 @@ export const DEFAULT_SETTINGS: Settings = {
   cloudflaredPath: '',
   skillsDir: '',
   channelMode: 'cloudflare',
+  aiDefaultRoute: 'auto',
   semanticMode: 'explicit',
   gitUsrBinPath: '',
   namedTunnelName: 'blackhole',
   tunnelProbeProxy: '',
+  channelProxyUrl: '',
   webAgents: [...DEFAULT_WEB_AGENTS],
   customWebAgents: [],
-  remoteAccess: false,
+  remoteAccess: true,
   openaiTunnelClientPath: '',
   openaiTunnelId: '',
+  courierSites: [],
+  directAccessEnabled: false,
+  directPort: DEFAULT_DIRECT_PORT,
+  directAccessUrl: '',
 };
 
 const MAX_TEXT = 1000;
 const MAX_AGENTS = 50;
 const MAX_AGENT_NAME = 64;
+export const MAX_COURIER_SITES = 20;
+/** Sites the Courier extension supports without detection. */
+export const BUILTIN_COURIER_SITES = [{ id: 'arena', name: 'Arena', origin: 'https://arena.ai' }, { id: 'chatgpt', name: 'ChatGPT', origin: 'https://chatgpt.com' }] as const;
+const COURIER_SITE_ID = /^c-[a-z0-9-]{1,30}$/;
+const MAX_SELECTOR = 300;
+
+function courierPath(v: unknown): string | null {
+  return typeof v === 'string' && v.startsWith('/') && !v.startsWith('//') && v.length <= 200 && !/[\s?#]/.test(v) ? v : null;
+}
+function selector(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() && v.length <= MAX_SELECTOR && !/[\u0000-\u001f]/.test(v) ? v.trim() : null;
+}
+/** One Courier site profile (same rules as the extension's sites.js cleanProfile), or an error. */
+export function normalizeCourierSite(raw: unknown): { value: CourierSite } | { error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'courierSites items must be objects' };
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.id === 'string' && COURIER_SITE_ID.test(r.id) ? r.id : null;
+  if (!id) return { error: 'courierSites id must look like c-example-com' };
+  const name = typeof r.name === 'string' ? r.name.trim() : '';
+  if (!name || name.length > 40 || /[\u0000-\u001f]/.test(name)) return { error: 'courierSites name must be 1-40 characters' };
+  let origin: URL | null = null;
+  try { origin = new URL(String(r.origin)); } catch { /* invalid */ }
+  if (!origin || origin.protocol !== 'https:' || origin.origin !== r.origin) return { error: 'courierSites origin must be a bare https origin' };
+  if (BUILTIN_COURIER_SITES.some((b) => b.origin === origin!.origin)) return { error: 'courierSites cannot replace a built-in site' };
+  const newChatPath = courierPath(r.newChatPath);
+  if (!newChatPath) return { error: 'courierSites newChatPath must be a path such as /' };
+  const dom = (r.dom && typeof r.dom === 'object' ? r.dom : {}) as Record<string, unknown>;
+  const editor = selector(dom.editor);
+  const send = selector(dom.send);
+  if (!editor || !send) return { error: 'courierSites dom.editor and dom.send are required selectors' };
+  const stop = dom.stop == null ? null : selector(dom.stop);
+  if (dom.stop != null && !stop) return { error: 'courierSites dom.stop must be a selector or null' };
+  const prefix = r.key == null ? null : courierPath((r.key as { prefix?: unknown }).prefix);
+  if (r.key != null && (!prefix || !prefix.endsWith('/'))) return { error: 'courierSites key.prefix must be a path ending in /' };
+  const detectedAt = typeof r.detectedAt === 'number' && Number.isFinite(r.detectedAt) && r.detectedAt >= 0 ? Math.floor(r.detectedAt) : 0;
+  return { value: { id, name, origin: origin.origin, newChatPath, dom: { editor, send, stop, model: null }, key: prefix ? { prefix } : null, detectedAt, v: 1 } };
+}
 
 export function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -139,7 +211,23 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
     }
     return { value: out };
   }
+  if (key === 'courierSites') {
+    if (!Array.isArray(raw)) return { error: 'courierSites must be an array' };
+    if (raw.length > MAX_COURIER_SITES) return { error: `at most ${MAX_COURIER_SITES} courierSites` };
+    const out: CourierSite[] = [];
+    for (const item of raw) {
+      const n = normalizeCourierSite(item);
+      if ('error' in n) return n;
+      if (out.some((x) => x.id === n.value.id || x.origin === n.value.origin)) return { error: `courierSites has ${n.value.origin} twice` };
+      out.push(n.value);
+    }
+    return { value: out };
+  }
   if (key === 'remoteAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'remoteAccess must be true or false' };
+  if (key === 'directAccessEnabled') return typeof raw === 'boolean' ? { value: raw } : { error: 'directAccessEnabled must be true or false' };
+  if (key === 'directPort') {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1024 && raw <= 65535 ? { value: raw } : { error: 'directPort must be an integer between 1024 and 65535' };
+  }
   const t = text(key, raw);
   if ('error' in t) return t;
   const v = t.value;
@@ -153,16 +241,30 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
       if (u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'publicBaseUrl must be a bare origin such as https://example.com' };
       return { value: v.replace(/\/+$/, '') };
     }
+    case 'directAccessUrl': {
+      if (!v) return { value: '' };
+      const u = httpUrl(v);
+      if (!u || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'directAccessUrl must be a bare http(s) origin such as http://203.0.113.10:7307 or https://blackhole.example.com' };
+      return { value: u.origin };
+    }
     case 'tunnelProbeProxy': {
       if (!v) return { value: '' };
       const u = httpUrl(v);
       if (!u || !u.port || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'tunnelProbeProxy must look like http://127.0.0.1:7890' };
       return { value: v.replace(/\/+$/, '') };
     }
+    case 'channelProxyUrl': {
+      if (!v) return { value: '' };
+      const u = httpUrl(v);
+      if (!u || !u.port || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'channelProxyUrl must be an http(s) proxy origin such as http://127.0.0.1:7890; credentials are not accepted' };
+      return { value: u.origin };
+    }
     case 'namedTunnelName':
       return !v || /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v) ? { value: v || 'blackhole' } : { error: 'namedTunnelName may only use letters, digits, dot, dash and underscore (max 64)' };
     case 'channelMode':
       return v === 'cloudflare' || v === 'openai' || v === 'custom' ? { value: v } : { error: 'channelMode must be cloudflare, openai or custom' };
+    case 'aiDefaultRoute':
+      return v === 'auto' || v === 'direct' || v === 'cloudflare' || v === 'custom' || v === 'openai' ? { value: v } : { error: 'aiDefaultRoute must be auto, direct, cloudflare, custom or openai' };
     case 'openaiTunnelId':
       // An identifier from Platform tunnel settings; a URL here is always a mistake (plan R6).
       return !v || /^tunnel_[0-9a-f]{32}$/.test(v) ? { value: v } : { error: 'openaiTunnelId must be the Tunnel ID from Platform tunnel settings (tunnel_ + 32 lowercase hex), not a URL' };
@@ -248,7 +350,7 @@ export function unseededKeys(record: SettingsRecord): SettingKey[] {
 }
 
 /** Owned by the daemon from the start: never handed over by the extension. */
-export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess'];
+export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'directAccessEnabled', 'directPort', 'directAccessUrl', 'channelProxyUrl', 'aiDefaultRoute'];
 
 /**
  * Startup overlay: seeded daemon-owned settings win over the launcher's
