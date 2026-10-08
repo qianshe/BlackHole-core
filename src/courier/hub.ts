@@ -1,3 +1,5 @@
+import type { CourierTurnState } from '../../packages/contracts/dist/courier-state.js';
+import { cleanModelAttribution, type ModelAttribution } from '../../packages/contracts/dist/courier-model.js';
 import { randomUUID } from 'node:crypto';
 import type { WsConnection } from './ws.js';
 import type { CourierMessages, CourierMessage, CourierQuestion } from './messages.js';
@@ -46,8 +48,10 @@ export interface CourierTarget {
   open: boolean;
   ready: boolean | null;
   busy: boolean | null;
+  turnState?: CourierTurnState | null;
   draft: boolean | null;
   model: string | null;
+  modelAttribution?: ModelAttribution;
   /** Title of an open Arena rating card (此任务成功了吗？), null when none. */
   card: string | null;
   /** The BlackHole session this chat is bound to: only that session may send to it. */
@@ -126,8 +130,10 @@ function cleanTargets(raw: unknown): CourierTarget[] {
       open: r.open === true,
       ready: bool(r.ready),
       busy: bool(r.busy),
+      ...(r.site === 'arena' ? { turnState: ['running', 'done', 'stopped'].includes(String(r.turnState)) ? r.turnState as CourierTurnState : null } : {}),
       draft: bool(r.draft),
-      model: str(r.model, 80),
+      model: r.site === 'arena' ? null : r.site === 'chatgpt' ? cleanModelAttribution(r.modelAttribution, 'chatgpt', r.model).label : str(r.model, 80),
+      ...(['arena', 'chatgpt'].includes(String(r.site)) ? { modelAttribution: cleanModelAttribution(r.modelAttribution, String(r.site), r.model) } : {}),
       card: str(r.card, 120),
       sessionId: typeof r.sessionId === 'string' && SESSION_ID.test(r.sessionId) ? r.sessionId : null,
     });
@@ -628,10 +634,11 @@ export class CourierHub {
     const images = imgs.map((x, i) => ({ mime: x!.mime, name: `image-${i + 1}.${x!.mime.split('/')[1]!.replace('jpeg', 'jpg')}`, data: x!.data.toString('base64') }));
     for (const k of ids as string[]) this.images.delete(k);
     const at = Date.now();
+    const sendTimeoutMs = this.opts.sendTimeoutMs ?? 45000;
     const r = await this.request(
       // sessionName: Courier keeps the name on the binding current (a rename since binding) - no polling.
-      { type: 'compose.send', target: { targetId: input.targetId }, sessionId: input.sessionId, sessionName: session.name, text: input.text, ...(images.length ? { images } : {}), options: { activate: input.activate === true } },
-      this.opts.sendTimeoutMs ?? 45000,
+      { type: 'compose.send', deadline: at + Math.max(0, sendTimeoutMs - Math.min(2000, sendTimeoutMs / 10)), target: { targetId: input.targetId }, sessionId: input.sessionId, sessionName: session.name, text: input.text, ...(images.length ? { images } : {}), options: { activate: input.activate === true } },
+      sendTimeoutMs,
     );
     const out = this.outcome(r, input.targetId);
     const id = this.record(input.sessionId, input.text, out, target, at, undefined, images.length);

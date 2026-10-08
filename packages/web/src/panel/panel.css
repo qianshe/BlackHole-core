@@ -1,6 +1,5 @@
-/* Generated from packages/vscode/src/configPanel.ts <style> by .tmp/gencss.mjs — the Web and
- * app settings panel copies the VS Code panel. Colours are VS Code's default Dark/Light Modern
- * theme values, following the system theme. Regenerate instead of editing the copied rules. */
+/* Shared settings component styles. Web and VS Code consume the same React tree.
+ * settings/shared.css is the authoritative Demo-derived geometry and host token layer. */
 .bhp {
   --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --vscode-editor-font-family: Consolas, 'SF Mono', Menlo, 'Courier New', monospace;
@@ -81,12 +80,26 @@
   .bhp .cockpit .cell + .cell { border-left: 1px solid var(--vscode-panel-border); }
   .bhp .ck-k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
   .bhp .ck-v { font-size: 12.5px; display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .bhp .ck-v .d { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-descriptionForeground); flex-shrink: 0; }
-  .bhp .ck-v .d.ok { background: var(--vscode-charts-green); }
-  .bhp .ck-v .d.warn { background: var(--vscode-charts-yellow); }
-  .bhp .ck-v .d.bad { background: var(--vscode-charts-red); }
+  /* Indicators are not field descriptions: never reuse .d or inherit its margins. */
+  .bhp .status-dot { display: block; box-sizing: border-box; width: 6px; height: 6px; flex: 0 0 6px; align-self: center; margin: 0; padding: 0; border: 0; border-radius: 50%; background: currentColor; line-height: 0; }
+  .bhp .status-label { min-width: 0; }
+  .bhp .ck-v .status-dot { width: 7px; height: 7px; flex-basis: 7px; background: var(--vscode-descriptionForeground); }
+  .bhp .ck-v .status-dot.ok { background: var(--vscode-charts-green); }
+  .bhp .ck-v .status-dot.warn { background: var(--vscode-charts-yellow); }
+  .bhp .ck-v .status-dot.bad { background: var(--vscode-charts-red); }
+  .bhp .home-account-row { gap: 7px; }
+  .bhp .home-account-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bhp .home-signout { width: 28px; min-width: 28px; height: 28px; min-height: 28px; flex: 0 0 28px; margin-left: auto; padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
+  .bhp .home-signout:hover:not(:disabled) { border-color: var(--vscode-widget-border); background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+  .bhp .home-signout svg { display: block; }
   .bhp .ck-v code { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .bhp .sec { font-weight: 600; font-size: 11.5px; color: var(--vscode-descriptionForeground); margin: 20px 0 8px; }
+  .bhp .scan-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .bhp .scan-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border: 1px solid color-mix(in srgb, var(--vscode-charts-blue) 32%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); color: var(--vscode-charts-blue); }
+  .bhp .scan-icon svg { display: block; width: 20px; height: 20px; }
+  .bhp .scan-copy { min-width: 0; }
+  .bhp .scan-copy strong { display: block; color: var(--vscode-foreground); font-size: 12.5px; }
+  .bhp .scan-copy .hint { margin-top: 3px; }
   .bhp .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px 14px; }
   .bhp .card button { font-size: 12px; padding: 4px 13px; }
   .bhp .chrow { display: flex; align-items: center; gap: 8px; }
@@ -104,14 +117,11 @@
   .bhp .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
   .bhp .f { margin: 0; }
   .bhp .f label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 12px; }
-  .bhp .f input { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
-  .bhp .f input:focus { outline: 1px solid var(--vscode-focusBorder); }
-  .bhp .f select { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
-  .bhp .f select:focus { outline: 1px solid var(--vscode-focusBorder); }
-  .bhp select:not([multiple]) { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 9px) 55%; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 26px; cursor: pointer; }
+  /* Shared settings owns control geometry, typography, colour and focus. */
+  .bhp .f input, .bhp .f select, .bhp .f textarea { width: 100%; box-sizing: border-box; }
+  .bhp select:not([multiple]) { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 13px) 55%, calc(100% - 9px) 55%; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 30px; cursor: pointer; }
   .bhp select option { background-color: var(--vscode-dropdown-background, var(--vscode-input-background)); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); }
-  .bhp .f textarea { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 6px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; resize: vertical; }
-  .bhp .f textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
+  .bhp .f textarea { resize: vertical; }
   .bhp .f.fwide { grid-column: 1 / -1; }
   .bhp .form-msg { font-size: 11px; align-self: center; }
   .bhp .form-msg.err { color: var(--vscode-errorForeground); }
@@ -134,13 +144,13 @@
   .bhp .mcp-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
   .bhp .mcp-actions button { white-space:nowrap; }
   .bhp .mcp-actions #mcpCopy { color:var(--vscode-button-foreground); background:var(--vscode-button-background); }
-  .bhp .mcp-actions #mcpRotate { color:var(--vscode-button-secondaryForeground); background:var(--vscode-button-secondaryBackground); }
+  /* The MCP reset action is in .channel-install; it uses the shared danger-secondary skin. */
   .bhp .agrid { display: flex; flex-wrap: wrap; gap: 7px; }
   .bhp .agchip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--vscode-input-border); color: var(--vscode-descriptionForeground); cursor: pointer; user-select: none; background: transparent; font-family: inherit; }
   .bhp .agchip:hover { color: var(--vscode-foreground); }
   .bhp .agchip.on { color: var(--vscode-foreground); border-color: color-mix(in srgb, var(--vscode-charts-blue) 55%, transparent); background: color-mix(in srgb, var(--vscode-charts-blue) 10%, transparent); }
-  .bhp .agchip .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .45; }
-  .bhp .agchip.on .d { opacity: 1; background: var(--vscode-charts-blue); }
+  .bhp .agchip .status-dot { opacity: .45; }
+  .bhp .agchip.on .status-dot { opacity: 1; background: var(--vscode-charts-blue); }
   .bhp .subsec { font-size: 11px; color: var(--vscode-descriptionForeground); margin: 14px 0 2px; }
   .bhp .ag-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; font-size: 12px; }
   .bhp .ag-row .mono-g { font-family: var(--vscode-editor-font-family); font-size: 10px; font-weight: 700; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); flex-shrink: 0; }
@@ -148,8 +158,7 @@
   .bhp .ag-row .u { font-size: 11.5px; color: var(--vscode-descriptionForeground); word-break: break-all; }
   .bhp .wa-host { font-size: 11px; color: var(--vscode-descriptionForeground, var(--text-3)); }
   .bhp .wa-tag { font-size: 10px; padding: 1px 6px; border-radius: 5px; color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
-  .bhp .ag-row .del { margin-left: auto; font-family: inherit; font-size: 11px; color: var(--vscode-descriptionForeground); background: transparent; border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; }
-  .bhp .ag-row .del:hover { color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
+  .bhp .ag-row .del { margin-left: auto; }
   .bhp .waadd { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .bhp .waadd input { flex: 1; min-width: 120px; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 5px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
   .bhp .waadd input:focus { outline: 1px solid var(--vscode-focusBorder); }
@@ -158,8 +167,7 @@
   .bhp .pxs { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 9px 12px; margin-top: 8px; }
   .bhp .pxs .hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .bhp .pxs .nm { font-weight: 600; font-size: 12.5px; }
-  .bhp .pxb { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; padding: 1px 8px; border-radius: 999px; flex-shrink: 0; }
-  .bhp .pxb .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .bhp .pxb { display: inline-flex; align-items: center; gap: 5px; min-height: 20px; font-size: 10px; font-weight: 600; line-height: 1.4; padding: 2px 8px; border-radius: 999px; flex-shrink: 0; white-space: nowrap; vertical-align: middle; }
   .bhp .pxb.ok { color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 12%, transparent); }
   .bhp .pxb.warn { color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
   .bhp .pxb.bad { color: var(--vscode-charts-red); background: color-mix(in srgb, var(--vscode-charts-red) 12%, transparent); }
@@ -171,7 +179,7 @@
   .bhp .pxs .pchip { display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--vscode-panel-border); color: var(--vscode-descriptionForeground); flex-shrink: 0; }
   .bhp .pxs .hd { row-gap: 4px; }
   .bhp .pxbtns { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-  .bhp .pxbtns button { box-sizing: border-box; height: 24px; padding: 2px 10px; font-size: 11px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; }
+  .bhp .pxbtns button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
   .bhp .pxbtns .pxsw { width: 30px; height: 16px; padding: 0; align-self: center; }
   .bhp .pxbtns .pxe, .bhp .pxmhd .pxe { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); border: 1px solid transparent; }
   .bhp .pxbtns .pxe:hover:not(:disabled), .bhp .pxmhd .pxe:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 82%, var(--vscode-foreground)); }
@@ -185,13 +193,13 @@
   .bhp .pxsw.on { background: var(--vscode-charts-green); }
   .bhp .pxsw.on::after { left: 16px; }
   .bhp .pxedit { margin-top: 8px; border-top: 1px dashed var(--vscode-panel-border); padding-top: 8px; }
-  .bhp .pxedit textarea { display: block; width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 11.5px; line-height: 1.5; padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 5px; resize: vertical; }
+  .bhp .pxedit textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; }
   .bhp .pxedit .btnrow { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
-  .bhp .pxedit .btnrow button { padding: 2px 10px; font-size: 11px; border-radius: 5px; }
+  /* Proxy edit buttons inherit the shared action sizes. */
   .bhp .pxthr { display: flex; align-items: center; gap: 8px; }
   .bhp .pxth { font-size: 11px; color: var(--vscode-descriptionForeground); }
   .bhp .pxthr .sp { flex: 1; }
-  .bhp .pxthr button { padding: 1px 10px; font-size: 10.5px; border-radius: 5px; }
+  /* Tool-list refresh uses the shared compact .pxe control. */
   .bhp .pxrows { margin-top: 6px; display: grid; gap: 6px; max-height: 340px; overflow: auto; }
   .bhp .pxrow { border: 1px solid var(--vscode-panel-border); border-radius: 5px; padding: 5px 8px; }
   .bhp .pxrn { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -203,13 +211,13 @@
   .bhp .pxmhd { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-panel-border); }
   .bhp .pxmhd .pxmt { font-weight: 600; font-size: 12.5px; }
   .bhp .pxmhd .sp { flex: 1; }
-  .bhp .pxmhd button { padding: 2px 10px; font-size: 11px; border-radius: 5px; }
+  /* Tool-dialog close uses the shared compact .pxe control. */
   .bhp .pxmbody { overflow: auto; padding-top: 4px; }
   .bhp .pxmbody .pxrows { max-height: none; }
   .bhp .pchip.dup { color: var(--vscode-charts-yellow); border-color: color-mix(in srgb, var(--vscode-charts-yellow) 50%, transparent); background: color-mix(in srgb, var(--vscode-charts-yellow) 12%, transparent); }
   .bhp .pxs .pchip[data-tools] { font-family: inherit; background: transparent; cursor: pointer; }
   .bhp .pxs .pchip[data-tools]:hover { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
-  .bhp .pxs .pchip[data-tools]:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  .bhp .pxs .pchip[data-tools]:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .bhp .pxtool-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font: inherit; }
   .bhp .pxtool-toggle input { margin: 0; accent-color: var(--vscode-charts-blue); }
   .bhp .pxrow.muted { opacity: .58; }
@@ -225,7 +233,7 @@
   .bhp .semrow { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
   .bhp .semrow .lbl { font-size: 12px; }
   .bhp .f .chrow { margin-top: 8px; }
-  .bhp .f .chrow button { padding: 3px 10px; font-size: 11px; }
+  /* Inline form actions retain the same button typography as other settings actions. */
   .bhp details { margin-top: 8px; }
   .bhp summary { cursor: pointer; font-weight: 600; opacity: .85; }
   .bhp .actions { margin-top: 26px; display: flex; gap: 10px; }
@@ -258,9 +266,9 @@
   .bhp .account-label { display:block; font-size:11px; color:var(--vscode-descriptionForeground); margin-bottom:8px; }
   .bhp .account-card #cloudSubscription { min-height:36px; display:flex; align-items:center; font-size:15px; line-height:1.4; margin:0; }
   .bhp .plan-line { display:flex; align-items:center; gap:8px; min-width:0; }
-  .bhp .account-card #cloudPlan { flex:1 1 auto; min-width:0; height:36px; padding:0 34px 0 11px; border:1px solid var(--account-border); border-radius:7px; color:var(--vscode-dropdown-foreground,var(--vscode-foreground)); background-color:var(--vscode-dropdown-background); font-family:inherit; font-size:12px; cursor:pointer; }
+  .bhp .account-card #cloudPlan { flex:1 1 auto; min-width:0; height:36px; padding:0 34px 0 11px; border:1px solid var(--account-border); border-radius:7px; color:var(--vscode-dropdown-foreground,var(--vscode-foreground)); background-color:var(--vscode-dropdown-background); font-family:inherit; font-size:13px; cursor:pointer; }
   .bhp .account-card #cloudPlan:hover:not(:disabled) { border-color:var(--vscode-focusBorder); }
-  .bhp .account-card #cloudPlan:focus { outline:1px solid var(--vscode-focusBorder); outline-offset:1px; }
+  .bhp .account-card #cloudPlan:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:2px; }
   .bhp .account-card #cloudPlan:disabled { cursor:not-allowed; color:var(--vscode-disabledForeground); opacity:.72; }
   .bhp .account-card .btnrow { flex-wrap:wrap; gap:8px; }
   .bhp .plan-line #cloudBuyCard { flex:0 0 auto; white-space:nowrap; }
@@ -304,7 +312,7 @@
 .bhp .bhp-qr-expired { width: 220px; height: 220px; display: grid; place-items: center; border: 1px dashed var(--vscode-panel-border); border-radius: 6px; color: var(--vscode-descriptionForeground); }
 .bhp .bhp-readonly { font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 6px 0; color: var(--vscode-descriptionForeground); }
 /* web settings (plan-web-settings): section blurbs, per-field autosave, danger zone, restart bar */
-.bhp .sec small { display: block; margin-top: 3px; font-weight: 400; font-size: 11px; opacity: .8; }
+.bhp .sec small { font-weight: 400; font-size: 11px; opacity: .8; }
 .bhp .bhp-autosave { margin: 8px 2px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .bhp .ck-v.ck-sub { margin-top: 5px; }
 .bhp .bhp-fs { margin-left: 8px; font-weight: 400; font-size: 11px; color: var(--vscode-descriptionForeground); }
@@ -333,4 +341,51 @@
   .bhp .plan-line select, .bhp .waadd input { flex: 1 1 100%; min-width: 0; }
   .bhp .activity-track { overflow-x: auto; }
   .bhp .buy-dialog, .bhp .pxmbox { width: calc(100vw - 24px); }
+}
+
+/* Connection settings: current result first, configuration disclosed on demand. */
+.bhp .connection-current { margin: 18px 0 22px; }
+.bhp .connection-current .sec { margin-top: 0; }
+.bhp .connection-current .mcpurl { align-items: flex-start; flex-direction: column; gap: 14px; }
+.bhp .connection-disclosure { margin: 12px 0; border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow: clip; }
+.bhp .connection-disclosure > summary { padding: 16px; cursor: pointer; line-height: 1.5; font-weight: 600; }
+.bhp .connection-disclosure > summary small { display: block; margin: 4px 0 0 16px; font-size: 12px; font-weight: 400; color: var(--vscode-descriptionForeground); }
+.bhp .connection-disclosure > summary:hover { background: var(--vscode-list-hoverBackground); }
+/* Focus for clipped disclosures is defined once in shared.css. */
+.bhp .connection-disclosure[open] > summary { border-bottom: 1px solid var(--vscode-panel-border); }
+.bhp .connection-disclosure > .card { border: 0; border-radius: 0; margin: 0; box-shadow: none; }
+.bhp .connection-disclosure > .sec { margin: 18px 16px 8px; }
+.bhp .connection-more > summary { cursor: pointer; padding: 7px 10px; min-height: 32px; box-sizing: border-box; color: var(--vscode-descriptionForeground); }
+.bhp .connection-more button { margin: 8px 0 0; }
+.bhp .mcp-actions, .bhp .channel-mode { flex-wrap: wrap; gap: 8px; }
+.bhp .f, .bhp .fgrid > *, .bhp .mcpurl > span { min-width: 0; overflow-wrap: anywhere; }
+.bhp .f input, .bhp .f select { max-width: 100%; box-sizing: border-box; }
+.bhp .connection-disclosure .fgrid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 640px) {
+  .bhp .connection-disclosure > summary { padding: 14px 12px; }
+  .bhp .mcp-actions > button { flex: 1 1 160px; min-height: 40px; }
+  .bhp .connection-disclosure button { min-height: 36px; }
+}
+
+/* Unified settings: cards are flat; only the direct port is an advanced disclosure. */
+.bhp .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.bhp .f input, .bhp .f select, .bhp .chrow > select { min-height: 36px; min-width: 0; border-radius: 6px; }
+.bhp .chrow > select { max-width: 100%; flex: 1 1 220px; }
+/* Focus geometry for fields is defined once in shared.css. */
+.bhp .row-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.bhp .row-setting > div { min-width: 0; }
+/* Direct, MCP and channel switches use the single shared 30×16 skin. */
+.bhp .direct-fields { margin-top: 16px; }
+.bhp .address-preview { margin: 12px 0; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.bhp .direct-advanced > .f { padding: 14px 16px; max-width: 520px; }
+.bhp .connector-field { margin-top: 16px; max-width: 720px; }
+.bhp .home-channel .chrow { flex-wrap: nowrap; align-items: center; }
+.bhp .home-channel .ck-v { min-width: 0; overflow-wrap: anywhere; }
+.bhp .field-label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 12px; }
+.bhp .buy-dialog { max-height: calc(100dvh - 24px); overflow: auto; }
+.bhp .buy-dialog-note { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .bhp .fgrid { grid-template-columns: minmax(0, 1fr); }
+  .bhp .buy-dialog-actions { flex-wrap: wrap; }
+  .bhp .row-setting { align-items: flex-start; }
 }

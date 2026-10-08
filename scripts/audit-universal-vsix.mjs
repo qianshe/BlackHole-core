@@ -18,8 +18,8 @@ export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
   const fail=e=>{zip.close();reject(e);};zip.on('error',fail);zip.on('end',resolve);
   zip.on('entry',entry=>{
    const name=entry.fileName;entries.push(name);
-   if(!['extension/package.json','extension.vsixmanifest','extension/dist/cloud-build.json','extension/dist/extension.js','extension/dist/daemon/cli.js','extension/dist/daemon/process-supervisor.cjs'].includes(name)){zip.readEntry();return;}
-   if(entry.uncompressedSize>((name.endsWith('/extension.js')||name.endsWith('/cli.js'))?32:1)*1024*1024)return fail(new Error('Oversized package metadata/bundle'));
+   if(!['extension/package.json','extension.vsixmanifest','extension/dist/cloud-build.json','extension/dist/extension.js','extension/dist/daemon/cli.js','extension/dist/daemon/process-supervisor.cjs','extension/dist/settings/settings.js','extension/dist/settings/settings.css'].includes(name)){zip.readEntry();return;}
+   if(entry.uncompressedSize>((name.endsWith('/extension.js')||name.endsWith('/cli.js')||name.endsWith('/settings.js'))?32:1)*1024*1024)return fail(new Error('Oversized package metadata/bundle'));
    zip.openReadStream(entry,(err,stream)=>{
     if(err)return fail(err);const chunks=[],hash=createHash('sha256');stream.on('error',fail);
     stream.on('data',chunk=>{hash.update(chunk);chunks.push(chunk);});stream.on('end',()=>{hashes.set(name,hash.digest('hex'));texts.set(name,Buffer.concat(chunks).toString('utf8'));zip.readEntry();});
@@ -45,6 +45,16 @@ assert.ok(!entries.some(name=>name.includes('node_modules/@napi-rs/keyring')),'t
  assert.ok(rawBuild,'build metadata must ship; cannot validate a package by filename alone');
  if(rawBuild){
   const info=JSON.parse(rawBuild);
+  const settingsAssets=[['settingsSha256','extension/dist/settings/settings.js'],['settingsCssSha256','extension/dist/settings/settings.css']];
+  const hasSharedSettings=(texts.get('extension/dist/extension.js')??'').includes('shared-react')
+    || settingsAssets.some(([key,name])=>info[key]!==undefined||entries.includes(name));
+  if(hasSharedSettings){
+    for(const [key,name] of settingsAssets){
+      assert.ok(entries.includes(name),'missing shared settings renderer asset: '+name);
+      assert.ok(typeof info[key]==='string'&&/^[a-f0-9]{64}$/.test(info[key]),'missing or invalid settings renderer hash: '+key);
+      assert.equal(info[key],hashes.get(name),'stale or mixed settings renderer asset: '+name);
+    }
+  }
   const selected=resolveBuildConfig(info.environment,info.environment==='test'?info.origin:undefined,info.environment==='test'?info.entitlementPublicKey:undefined,profiles);
   assert.equal(info.origin,selected.origin);
   assert.equal(info.entitlementPublicKey,selected.entitlementPublicKey);
@@ -67,7 +77,7 @@ assert.ok(!entries.some(name=>name.includes('node_modules/@napi-rs/keyring')),'t
   assert.equal(manifest.displayName,expected.displayName+(selected.environment==='test'?' (Test)':''));
   for(const key of ['blackhole.cloudEnvironment','blackhole.cloudTestOrigin'])assert.equal(manifest.contributes?.configuration?.properties?.[key],undefined,'runtime cloud environment settings must not ship');
   assert.equal(Object.hasOwn(manifest.contributes.configuration.properties,'blackhole.daemonEntry'),selected.environment==='test','daemon override setting must ship only in test builds');
-  buildReport={buildEnvironment:selected.environment,cloudOrigin:selected.origin,usesProductionService:selected.origin===PRODUCTION_CLOUD_ORIGIN,extensionBundleSha256:info.extensionSha256,daemonBundleSha256:info.daemonSha256,entitlementPublicKeySha256:createHash('sha256').update(Buffer.from(info.entitlementPublicKey,'base64')).digest('hex')};
+  buildReport={buildEnvironment:selected.environment,cloudOrigin:selected.origin,usesProductionService:selected.origin===PRODUCTION_CLOUD_ORIGIN,extensionBundleSha256:info.extensionSha256,daemonBundleSha256:info.daemonSha256,...(hasSharedSettings?{sharedSettingsRenderer:true,settingsBundleSha256:info.settingsSha256,settingsCssSha256:info.settingsCssSha256}:{}),entitlementPublicKeySha256:createHash('sha256').update(Buffer.from(info.entitlementPublicKey,'base64')).digest('hex')};
  }
  const bytes=statSync(file).size,sha256=createHash('sha256').update(readFileSync(file)).digest('hex');
  const report={file:path.resolve(file),extensionId:manifest.publisher+'.'+manifest.name,version:manifest.version,target:'universal',cloudflaredBundled:false,files:entries.length,bytes,sha256,...buildReport};

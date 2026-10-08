@@ -1,41 +1,75 @@
 // Prompt templates shared by the daemon (Courier first message), VS Code and the Web console.
 // packages/vscode/src/templates.ts is a copy (its tests load it standalone); scripts/prompt-sync.test.mjs keeps them identical.
+import type { ConnectionHealth as WireHealth, McpRouteCandidate, RouteKind, SelectedRoute } from '../../packages/contracts/dist/connections.js';
 export type TemplateKind = 'connector' | 'sandbox';
+export type ConnectionHealth = WireHealth;
+export type ConnectionRouteCandidate = McpRouteCandidate;
 
-/** Health fields the connection-target decision reads; VS Code and Local Web health both fit. */
-export interface ConnectionHealth {
-  tunnel?: string | null;
-  tunnel_url?: string | null;
-  public_base_url?: string | null;
-  openai_tunnel?: { status?: string | null } | null;
-}
-
-/**
- * One pure decision shared by create-session, copy, handoff and the sidebar
- * (plan section 6). Connector prompts carry no URL, so a public URL or a
- * serving OpenAI tunnel both qualify. Sandbox bootstrap links to the public
- * BlackHole MCP Manual and needs a public URL; a Tunnel ID never substitutes for one. Nothing
- * here starts, stops or switches a channel.
- */
+/** Pure projection. Configuration, selection and running-channel state stay separate. */
 export interface ConnectionTarget {
-  /** Base a web sandbox can reach: Cloudflare online, else the fixed public base. */
   publicUrl: string | null;
-  /** OpenAI Secure MCP Tunnel: ready (incl. recovering), starting, or off/failed. */
+  mcpUrl: string | null;
+  mcpKind: RouteKind | null;
+  sandboxMcpUrl: string | null;
+  mcpCandidates: McpRouteCandidate[];
+  selectedRoute: SelectedRoute | null;
+  /** Saved daemon value for the selected OpenAI route, usable while offline. */
+  tunnelId: string | null;
+  needsChoice: boolean;
+  reason: string | null;
   openai: 'ready' | 'starting' | 'off';
-  /** URL-free connector prompts can reach this machine. */
   connector: boolean;
-  /** HTTP sandbox prompts can reach this machine. */
   sandbox: boolean;
 }
 
+function originOf(url: string | null): string | null {
+  if (!url) return null;
+  try { return new URL(url).origin; } catch { return null; }
+}
+
 export function connectionTarget(h: ConnectionHealth | null | undefined): ConnectionTarget {
+  const routes = h?.connection_routes;
+  if (routes) {
+    const sandboxMcpUrl = routes.sandbox_mcp_url ?? null;
+    const status = routes.openai;
+    const kind = routes.preferred_mcp_kind;
+    const selectedRoute = routes.selected_route ?? (routes.reason === 'openai_selected' ? 'openai' : kind && kind !== 'loopback' ? kind : null);
+    return {
+      publicUrl: originOf(sandboxMcpUrl),
+      mcpUrl: routes.preferred_mcp_url ?? null,
+      mcpKind: kind ?? null,
+      sandboxMcpUrl,
+      mcpCandidates: Array.isArray(routes.mcp_candidates) ? routes.mcp_candidates : [],
+      selectedRoute,
+      tunnelId: selectedRoute === 'openai' ? routes.saved_tunnel_id ?? null : null,
+      needsChoice: routes.needs_choice === true,
+      reason: routes.reason ?? null,
+      openai: status === 'ready' || status === 'starting' ? status : 'off',
+      connector: routes.connector_ready === true,
+      sandbox: !!sandboxMcpUrl,
+    };
+  }
+  // Compatibility for older daemons only; never override a modern route snapshot.
   const publicUrl = (h?.tunnel === 'online' && h.tunnel_url) || h?.public_base_url || null;
   const status = h?.openai_tunnel?.status;
   const openai = status === 'ready' || status === 'recovering' ? 'ready' : status === 'starting' ? 'starting' : 'off';
-  return { publicUrl, openai, connector: !!publicUrl || openai === 'ready', sandbox: !!publicUrl };
+  return {
+    publicUrl,
+    mcpUrl: h?.mcp_url ?? null,
+    mcpKind: null,
+    sandboxMcpUrl: publicUrl ? h?.mcp_url ?? null : null,
+    mcpCandidates: [],
+    selectedRoute: publicUrl ? (h?.tunnel === 'online' ? 'cloudflare' : 'custom') : openai === 'ready' ? 'openai' : null,
+    tunnelId: h?.openai_tunnel?.active_tunnel_id ?? null,
+    needsChoice: false,
+    reason: null,
+    openai,
+    connector: !!publicUrl || openai === 'ready',
+    sandbox: !!publicUrl,
+  };
 }
 
-export const SANDBOX_NEEDS_PUBLIC_URL = '沙箱直连需要公网地址（Cloudflare 渠道或自定义地址）；OpenAI 渠道只支持连接器方式，请改用连接器提示词。';
+export const SANDBOX_NEEDS_PUBLIC_URL = '沙箱提示词需要能同时提供 /bh.md 与 MCP 的公网地址；局域网 MCP 直连和 OpenAI Tunnel 不能直接用于沙箱提示词，请选择 Cloudflare 或自定义公网入口。';
 
 export type PromptPayload =
   | { kind: 'user'; text: string }

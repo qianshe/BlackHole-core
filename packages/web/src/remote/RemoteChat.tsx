@@ -1,3 +1,5 @@
+import { courierGenerating } from '../../../contracts/src/courier-state';
+import { courierModelLabel } from '../../../contracts/src/courier-model';
 // Phone session page and new-chat page, same rules as VS Code and the Web console:
 // a session paired with a web chat gets a composer (sent through the daemon to Courier);
 // an unpaired / prompt-direct session only receives (tool calls and replies).
@@ -84,7 +86,7 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
   const target = st?.target ?? null;
   const link = st?.link ?? (session.draft ? 'new' : 'direct');
   const paired = link === 'paired';
-  const generating = !!target?.busy || msgs.some((m) => m.status === 'streaming');
+  const generating = courierGenerating(target, msgs);
   // 待审批的调用：手机在会话页时不再轮询审批列表，用 feed 里的 awaiting 调用提示，点了跳到审批页
   const awaiting = useMemo(() => snap.calls.filter((c) => c.status === 'awaiting').length, [snap.calls]);
   const title = sessionTitle({ ...session, name: st ? st.name : session.name });
@@ -231,13 +233,8 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
     } catch (e) { setNote({ cls: 'bad', text: failText(e) }); }
   };
 
-  // Same as the Web console: the web AI's model is composer metadata (newest reply of the bound
-  // site), shown next to the status line, never in the thread. 'chatgpt' is only a placeholder.
-  let model: string | null = null;
-  for (let i = msgs.length - 1; i >= 0 && !model; i--) {
-    const m = msgs[i]!;
-    if (m.kind === 'agent' && m.model && m.model !== 'chatgpt' && (!target || m.site === target.site)) model = m.model;
-  }
+  // Only current bound-target attribution; historical replies are not current identity.
+  const model = courierModelLabel(target);
 
   const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
     : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'

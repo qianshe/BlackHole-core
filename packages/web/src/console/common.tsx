@@ -1,3 +1,4 @@
+import { settingsHost } from '../settings/host';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError } from '../api';
 import { errorText } from '../format';
@@ -36,6 +37,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 export const failText = (e: unknown): string => (e instanceof ApiError ? errorText(e.code, e.detail) : errorText('network'));
 
 export async function copyText(text: string): Promise<boolean> {
+  const clipboard = settingsHost().copy;
+  if (clipboard) return clipboard(text).catch(() => false);
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -69,11 +72,16 @@ export function Modal({
   top?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const previousFocus = useRef(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
     const d = ref.current;
     if (d && !d.open) d.showModal();
+    return () => {
+      if (d?.open) d.close();
+      if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true });
+    };
   }, []);
   return (
     <dialog

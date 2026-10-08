@@ -45,7 +45,7 @@ function setup(initialOk) {
   './controlApi':{ControlApi:Api},'./daemonManager':{DaemonManager:Daemon},
   './statusbar':{StatusBarController:class extends Unused {constructor(_daemon,_api,_poller,ready){super();onDaemonReady=ready;}}},'./approvals':{ApprovalsWatcher:Unused},
   './processTerminals':{ProcessTerminalController:class {start(){}show(){}stopSelected(){}stopAndCloseSelected(){}dispose(){}}},
-  './cloudAccount':{registerCloudAccount:()=>{commands.set('blackhole.accountSnapshot',()=>{accountSnapshots++});return disposable()}},'./sessionActions':{},'./courierChat':{chatSend:async()=>({ok:false,message:'',sent:false})},'./configPanel':{},'./webAgents':{},'./localWeb':{},'./settingsSync':{SettingsSync:class {async sync(){}dispose(){}}},
+  './cloudAccount':{registerCloudAccount:()=>{commands.set('blackhole.accountSnapshot',()=>{accountSnapshots++});return disposable()}},'./sessionActions':{},'./courierChat':{chatSend:async()=>({ok:false,message:'',sent:false})},'./sharedConfigPanel':{},'./webAgents':{},'./localWeb':{},'./settingsSync':{SettingsSync:class {async sync(){}dispose(){}}},
   './icons':{sidebarIcons:()=>''},'./callFormat':{},
   './editorNavigation':{editorNavigationPreview:()=>undefined,resolveEditorNavigation:()=>({state:'file_only'})}};
  const modules=new Map();

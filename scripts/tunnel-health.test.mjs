@@ -30,7 +30,7 @@ function fakeSpawner(urls) {
   return { spawnProcess, children };
 }
 
-function make({ probe, ready, urls = [URL1, URL2] }) {
+function make({ probe, ready, urls = [URL1, URL2], probeProxy }) {
   const sp = fakeSpawner(urls);
   const events = [];
   const logs = [];
@@ -39,6 +39,7 @@ function make({ probe, ready, urls = [URL1, URL2] }) {
     enabled: true,
     spawnProcess: sp.spawnProcess,
     probe,
+    probeProxy,
     readyCheck: async (u) => { readyCalls.push(u); return ready(); },
     healthCheckIntervalMs: 10,
     reconnectBackoffBaseMs: 10,
@@ -50,6 +51,23 @@ function make({ probe, ready, urls = [URL1, URL2] }) {
 }
 
 const CF530 = { ok: false, kind: 'http', status: 530, detail: 'Cloudflare 找不到隧道连接器（HTTP 530 / 1033）' };
+test('public self-probes read the application proxy dynamically without changing cloudflared transport', async () => {
+  let current = 'http://127.0.0.1:7890';
+  const seen = [];
+  let calls = 0;
+  const t = make({
+    probe: async (_url, proxy) => { seen.push(proxy); calls++; return { ok: true }; },
+    probeProxy: () => current,
+    ready: () => true,
+  });
+  t.m.start('quick');
+  await until(() => calls >= 2);
+  assert.equal(seen[0], 'http://127.0.0.1:7890');
+  current = 'http://127.0.0.1:7891';
+  await until(() => seen.includes('http://127.0.0.1:7891'));
+  await t.m.stop();
+});
+
 
 test('530 while cloudflared still holds edge connections: no restart for a long streak, URL kept', async () => {
   let n = 0;

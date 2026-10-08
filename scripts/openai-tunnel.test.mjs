@@ -102,6 +102,48 @@ test('explicit start: key and machine URL only in child env, private profile dir
   assert.ok(!existsSync(runDir), 'private run dir removed');
 });
 
+test('application proxy overrides only the OpenAI child and preserves loopback bypass', async (t) => {
+  const s = setup({ opts: { proxy: () => 'http://127.0.0.1:7890' } }); t.after(s.done);
+  await s.credential.set(KEY);
+  await s.m.start({ settingsRevision: 3, credentialRevision: s.m.credentialRevision });
+  await until(() => s.fake.calls.length === 1);
+  const env = s.fake.calls[0].opts.env;
+  assert.equal(env.CONTROL_PLANE_HTTP_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(env.HTTPS_PROXY, 'http://proxy:8080', 'ambient proxy remains untouched');
+  assert.match(env.MCP_SERVER_URL, /^http:\/\/127\.0\.0\.1:/, 'local MCP target stays local');
+  await s.m.stop(s.m.view().run_id);
+});
+
+test('proxy edits mark the live run pending and recovery keeps its frozen proxy until explicit restart', async (t) => {
+  let proxy = 'http://127.0.0.1:7890';
+  const s = setup({ opts: { proxy: () => proxy } });
+  t.after(async () => { await s.m.stop(s.m.view().run_id); s.done(); });
+  await s.credential.set(KEY);
+  const start = () => s.m.start({ settingsRevision: s.settings.revision, credentialRevision: s.m.credentialRevision });
+  await start(); await until(() => s.m.status === 'ready');
+  const first = s.m.view().run_id;
+  assert.equal(s.m.view().proxy_pending_restart, false);
+  proxy = 'http://127.0.0.1:7891'; s.settings.revision++;
+  assert.equal(s.m.view().proxy_pending_restart, true);
+  assert.equal(s.m.view().pending_restart, true);
+  assert.equal(s.m.view().run_id, first);
+  assert.equal(s.fake.calls.length, 1, 'saving does not restart or spawn');
+  await assert.rejects(start(), (e) => e.code === 'already_running');
+  s.fake.calls[0].exit(1);
+  await until(() => s.fake.calls.length === 2 && s.m.status === 'ready');
+  assert.equal(s.fake.calls[1].opts.env.CONTROL_PLANE_HTTP_PROXY, 'http://127.0.0.1:7890', 'automatic recovery uses the same snapshot');
+  assert.equal(s.m.view().proxy_pending_restart, true);
+  await s.m.stop(first); await start(); await until(() => s.m.status === 'ready');
+  assert.equal(s.fake.calls[2].opts.env.CONTROL_PLANE_HTTP_PROXY, proxy);
+  assert.equal(s.m.view().pending_restart, false);
+  proxy = ''; s.settings.revision++;
+  assert.equal(s.m.view().proxy_pending_restart, true, 'clearing also needs a runtime restart');
+  await s.m.stop(s.m.view().run_id); await start(); await until(() => s.m.status === 'ready');
+  assert.equal(s.fake.calls[3].opts.env.CONTROL_PLANE_HTTP_PROXY, undefined);
+  assert.equal(s.fake.calls[3].opts.env.HTTPS_PROXY, 'http://proxy:8080', 'ambient variables are untouched');
+  assert.equal(s.m.view().proxy_pending_restart, false);
+});
+
 test('preconditions: fixed codes, stale revisions rejected, nothing spawned', async (t) => {
   const s = setup(); t.after(s.done);
   const code = async (p, c) => assert.rejects(p, (e) => e instanceof OpenAITunnelError && e.code === c);

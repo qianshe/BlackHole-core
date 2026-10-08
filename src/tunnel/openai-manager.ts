@@ -24,6 +24,8 @@ export interface OpenAITunnelView {
   credential_configured: boolean | null;
   credential_revision: number;
   pending_restart: boolean;
+  /** True only when the live child still uses a different app proxy snapshot. */
+  proxy_pending_restart: boolean;
   reason_code: string | null;
   reason: string | null;
   client_version: string | null;
@@ -49,6 +51,8 @@ interface RunSnapshot {
   credentialRevision: number;
   apiKey: string;
   target: string;
+  /** Frozen for this run, including automatic recovery attempts. */
+  proxyUrl: string;
 }
 
 interface Timing {
@@ -74,6 +78,8 @@ export interface OpenAITunnelManagerOptions {
   timing?: Partial<Timing>;
   /** Source of pass-through system/proxy variables (defaults to process.env). */
   env?: NodeJS.ProcessEnv;
+  /** Optional app-scoped proxy override for this runtime only. */
+  proxy?: () => string | undefined;
 }
 
 const DEFAULT_TIMING: Timing = {
@@ -164,6 +170,7 @@ export class OpenAITunnelManager {
       credential_configured: this.configured,
       credential_revision: this.credRevision,
       pending_restart: this.pendingRestart(),
+      proxy_pending_restart: this.proxyPendingRestart(),
       reason_code: this.reasonCode,
       reason: this.reasonText,
       client_version: this.snapshot?.clientVersion ?? null,
@@ -172,12 +179,16 @@ export class OpenAITunnelManager {
     };
   }
 
+  private proxyPendingRestart(): boolean {
+    return !!this.snapshot && this.live && this.snapshot.proxyUrl !== (this.opts.proxy?.()?.trim() || '');
+  }
+
   /** Only fields that affect the running process, never unrelated settings revisions. */
   private pendingRestart(): boolean {
     const s = this.snapshot;
     if (!s || !this.live) return false;
     const v = this.opts.settings()?.values;
-    return s.credentialRevision !== this.credRevision
+    return s.credentialRevision !== this.credRevision || this.proxyPendingRestart()
       || (v !== undefined && ((v.openaiTunnelId ?? '').trim() !== s.tunnelId || (v.openaiTunnelClientPath ?? '').trim() !== s.clientPath));
   }
 
@@ -235,8 +246,9 @@ export class OpenAITunnelManager {
       if (!current) throw new OpenAITunnelError(503, 'settings_unavailable');
       const tunnelId = (current.values.openaiTunnelId ?? '').trim();
       const clientPath = (current.values.openaiTunnelClientPath ?? '').trim();
+      const proxyUrl = this.opts.proxy?.()?.trim() || '';
       if (this.live && this.snapshot) {
-        const same = this.snapshot.tunnelId === tunnelId && this.snapshot.clientPath === clientPath && this.snapshot.credentialRevision === this.credRevision;
+        const same = this.snapshot.tunnelId === tunnelId && this.snapshot.clientPath === clientPath && this.snapshot.credentialRevision === this.credRevision && this.snapshot.proxyUrl === proxyUrl;
         if (same) return this.view();
         throw new OpenAITunnelError(409, 'already_running');
       }
@@ -269,11 +281,11 @@ export class OpenAITunnelManager {
       // Anything changed while we were reading: never mix old and new (plan §5.2.1).
       const after = this.opts.settings();
       if (gen !== this.stopGen) throw new OpenAITunnelError(409, 'cancelled');
-      if (!after || after.revision !== current.revision) throw new OpenAITunnelError(409, 'settings_changed');
+      if (!after || after.revision !== current.revision || proxyUrl !== (this.opts.proxy?.()?.trim() || '')) throw new OpenAITunnelError(409, 'settings_changed');
       if (req.credentialRevision !== this.credRevision) throw new OpenAITunnelError(409, 'credential_changed');
       this.snapshot = {
         runId: randomUUID(), clientPath, clientVersion, tunnelId, settingsRevision: current.revision,
-        credentialRevision: this.credRevision, apiKey: apiKey as string, target: this.opts.target(),
+        credentialRevision: this.credRevision, apiKey: apiKey as string, target: this.opts.target(), proxyUrl,
       };
       this.restarts = 0;
       this.logLines = [];
@@ -306,6 +318,13 @@ export class OpenAITunnelManager {
     const source = this.opts.env ?? process.env;
     const env: NodeJS.ProcessEnv = {};
     for (const k of PASS_ENV) if (source[k] !== undefined) env[k] = source[k];
+    const proxy = s.proxyUrl;
+    if (proxy) {
+      // tunnel-client officially supports a control-plane-specific proxy. Use
+      // that narrow setting instead of a global HTTP proxy so localhost MCP
+      // forwarding never gets routed through the outbound proxy by this option.
+      env.CONTROL_PLANE_HTTP_PROXY = proxy;
+    }
     // Secrets and the machine-token URL travel only in the child environment, never in argv.
     env.CONTROL_PLANE_API_KEY = s.apiKey;
     env.MCP_SERVER_URL = s.target;

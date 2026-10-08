@@ -1,24 +1,33 @@
-// Web / app settings panel: a copy of the VS Code settings panel (packages/vscode/src/configPanel.ts)
-// — same sections, order, class names and copy — backed by the daemon (plan 6.12 S5).
-// VS Code's native notifications, modal dialogs and quick picks become in-page equivalents.
+// Authoritative settings page tree for Web and the VS Code webview.
+// Hosts supply transport and native-only capabilities, not a second page renderer.
+import { settingsHost } from '../settings/host';
+import { HostRuntimeSection } from '../settings/HostRuntimeSection';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
+import { VERSION } from '../../../../src/version';
 import {
-  api, ApiError, panel,
-  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health, type LanAccessView,
+  api, ApiError, panel, request,
+  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health, type DirectAccessView,
   type ProxiesInfo, type ProxyConfigRow, type ProxyToolsResult, type RevalidateReport, type SemanticInfo, type SettingsValues, type SettingsView,
 } from '../api';
 import { ServiceCard } from '../AccountCard';
+import { SettingsIcon } from '../ui';
 import './panel.css';
 import { OPENAI_TUNNEL_ID } from './openaiCopy';
 import { OpenAISection, openaiStatus } from './OpenAISection';
 import { RemoteSection } from './RemoteSection';
-import { channelSummary } from '../console/ChannelsPane';
+import { HomeChannelCard } from './HomeChannelCard';
+import { chooseCurrentDirectAddress } from '../directAddressPicker';
+import { copyText, Modal } from '../console/common';
+import type { SettingsSection } from '../format';
 
-type TextKey = 'cloudflaredPath' | 'publicBaseUrl' | 'tunnelProbeProxy' | 'gitUsrBinPath' | 'skillsDir' | 'connectorName' | 'namedTunnelName' | 'openaiTunnelClientPath' | 'openaiTunnelId';
+type TextKey = 'cloudflaredPath' | 'publicBaseUrl' | 'directAccessUrl' | 'tunnelProbeProxy' | 'channelProxyUrl' | 'gitUsrBinPath' | 'skillsDir' | 'connectorName' | 'namedTunnelName' | 'openaiTunnelClientPath' | 'openaiTunnelId';
 const FIELD: Record<TextKey, { label: string; desc: string; ph: string }> = {
   cloudflaredPath: { label: 'cloudflared 路径', desc: '公网渠道需要 cloudflared。安装后填写可执行文件的完整路径。', ph: 'cloudflared 可执行文件的完整路径' },
-  publicBaseUrl: { label: '公网地址', desc: '填写 HTTPS Base URL；BlackHole 会自动生成 MCP 链接。', ph: 'https://blackhole.example.com' },
-  tunnelProbeProxy: { label: '公网连通性检测代理（排障用）', desc: '通常留空。仅当提示“公网地址已在线，但本机无法完成检测”，并且电脑正在使用 Clash、mihomo 等本机代理时，填写该代理的本机 HTTP 地址（例如 http://127.0.0.1:7897）。这里只影响公网地址检测，不会修改其他网络连接；修改后需重启本地服务。', ph: '通常留空，例如 http://127.0.0.1:7897' },
+  publicBaseUrl: { label: '公网地址', desc: '填写 HTTP(S) Base URL；BlackHole 会自动生成 MCP 链接。HTTP 为明文传输。', ph: 'https://blackhole.example.com' },
+  directAccessUrl: { label: '对外访问地址（可选）', desc: '复制给 Agent 的 HTTP(S) 地址；留空使用自动发现的本机地址。保存地址不会开启直连。', ph: 'https://bh.example.com 或 http://你的公网IP:7307' },
+  channelProxyUrl: { label: '渠道应用代理（可选）', desc: '用于支持的渠道请求、安装和检测；已运行的 OpenAI 渠道重启后采用新代理。不是系统代理，也不保证 Cloudflare 数据隧道经过它。', ph: 'http://127.0.0.1:7890' },
+  tunnelProbeProxy: { label: '公网连通性检测代理', desc: '通常留空，仅影响公网检测。渠道应用代理已设置时优先使用它；修改此项后需重启本地服务。', ph: '通常留空，例如 http://127.0.0.1:7897' },
   gitUsrBinPath: { label: 'GNU 工具目录 (Git usr/bin)', desc: 'grep/sed/awk/find 所在目录（Git for Windows 安装目录下的 usr/bin）。会加入 BlackHole exec/process 的 PATH，但不会把 shell 切换为 Bash；留空则不改 PATH。', ph: '例如 C:\\Program Files\\Git\\usr\\bin' },
   skillsDir: { label: '自定义 Skill 目录', desc: '留空使用 ~/.agents/skills。填写后替代这个默认库；项目里的 .agents/skills 仍然有效且优先。建议填绝对路径或 ~/ 开头的路径。', ph: '~/.agents/skills' },
   connectorName: { label: '连接器名称', desc: '复制连接器提示词时 @提及的名字。多人共用一个网页 AI 账号时，各自起名区分自己的连接器。留空 = BlackHole。', ph: 'BlackHole' },
@@ -27,6 +36,7 @@ const FIELD: Record<TextKey, { label: string; desc: string; ph: string }> = {
   openaiTunnelId: { label: 'Tunnel ID', desc: '在 OpenAI Platform 的隧道设置中复制的 Tunnel ID（不是 URL，也不是密钥）。', ph: 'tunnel_…' },
 };
 const TEXT_KEYS = Object.keys(FIELD) as TextKey[];
+const NATIVE_MANUAL: Partial<Record<TextKey, SettingsSection>> = { cloudflaredPath: 'connections', publicBaseUrl: 'connections', tunnelProbeProxy: 'network', skillsDir: 'agents', gitUsrBinPath: 'advanced', namedTunnelName: 'advanced' };
 const SEM_MODES = [
   { v: 'off', t: '关闭', title: '彻底不提供语义搜索' },
   { v: 'explicit', t: '手动', title: '使用下方保存的 key 或环境变量里的 key' },
@@ -53,8 +63,12 @@ const orderLabel = (o: BillingOrder) => `${days(o.durationSeconds)} 天 · ${pri
 const DEFAULT_PLANS: { sku: BillingSku; label: string }[] = [{ sku: 'pro_day', label: '1 天 · ¥1.00' }, { sku: 'pro_week', label: '7 天 · ¥5.00' }, { sku: 'pro_month', label: '30 天 · ¥15.00' }];
 const errText = (e: unknown) => (e instanceof ApiError ? e.detail || e.message || e.code : e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function copy(text: string): Promise<boolean> {
-  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+const copy = copyText;
+function httpOrigin(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash ? url.origin : null;
+  } catch { return null; }
 }
 
 // ─── in-page notifications and dialogs ─────────────────────────────────────
@@ -95,15 +109,9 @@ type Ui = ReturnType<typeof useUi>;
 function DialogView({ dialog, close }: { dialog: Dialog; close: (v: string | null) => void }) {
   const [text, setText] = useState('');
   const first = useRef<HTMLButtonElement | HTMLInputElement | null>(null);
-  useEffect(() => {
-    first.current?.focus();
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(null); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [close]);
+  useEffect(() => { first.current?.focus(); }, [close]);
   return (
-    <div className="buy-modal" role="dialog" aria-modal="true" aria-labelledby="bhpDialogTitle" onClick={(e) => { if (e.target === e.currentTarget) close(null); }}>
-      <div className="buy-dialog">
+    <Modal label={dialog.title} onClose={() => close(null)} className="buy-dialog">
         <div className="buy-dialog-head">
           <div className="buy-dialog-eyebrow">BLACKHOLE</div>
           <div className="buy-dialog-title" id="bhpDialogTitle">{dialog.title}</div>
@@ -130,8 +138,7 @@ function DialogView({ dialog, close }: { dialog: Dialog; close: (v: string | nul
           ))}
           {dialog.kind === 'input' && <button type="button" disabled={!text.trim()} onClick={() => close(text.trim())}>{dialog.action}</button>}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -148,7 +155,7 @@ function Activity({ health }: { health: Health | null }) {
   useEffect(() => { const hide = () => setTip(null); window.addEventListener('scroll', hide, true); return () => window.removeEventListener('scroll', hide, true); }, []);
   return (
     <div className="cell wide" id="activity" aria-label={stats ? '活动：最近 7 天，本机统计' : '活动：本地服务未连接'}>
-      <div className="activity-head"><div className="ck-k">活动</div><div className="activity-today">{today}</div></div>
+      <div className="activity-head ck-head"><div className="ck-k">活动</div><div className="activity-today ck-summary" title={today}>{today}</div></div>
       <div className="activity-track"><div className="activity-grid" role="group" aria-label="最近 7 天活动">
         {list.map((d) => {
           const date = new Date(d.start);
@@ -165,20 +172,30 @@ function Activity({ health }: { health: Health | null }) {
 
 // ─── the panel ─────────────────────────────────────────────────────────────
 type Draft = Record<TextKey, string>;
-type SaveKey = TextKey | 'channelMode' | 'semanticMode' | 'courierSites' | 'lanAccess' | 'lanPort' | 'lanUrl';
+type SaveKey = TextKey | 'channelMode' | 'aiDefaultRoute' | 'directAccessEnabled' | 'directPort' | 'semanticMode' | 'courierSites';
 type FieldState = { state: 'saving' | 'saved' | 'error'; msg?: string };
 const draftOf = (v: SettingsValues): Draft => Object.fromEntries(TEXT_KEYS.map((k) => [k, String((v as unknown as Record<string, unknown>)[k] ?? '')])) as Draft;
 const serverText = (v: SettingsValues, k: TextKey) => String((v as unknown as Record<string, unknown>)[k] ?? '');
 const ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/;
 /** Labels for pending_restart keys that are not text fields. */
-const RESTART_LABELS: Record<string, string> = { channelMode: '渠道方式', semanticMode: 'Devin Key 模式', webAgents: 'Web Agent 显示', customWebAgents: '自定义站点', remoteAccess: '手机访问' };
+const RESTART_LABELS: Record<string, string> = { channelMode: '渠道方式', semanticMode: 'Devin Key 模式', webAgents: '客户端站点选择', customWebAgents: '客户端自定义站点', remoteAccess: '手机访问' };
 const restartLabel = (k: string) => (k in FIELD ? FIELD[k as TextKey].label : RESTART_LABELS[k] ?? k);
 
-export function SettingsPanel() {
+export function SettingsPanel({ page, account, onAccountChange, refreshAccount, onSignOut, onNavigate }: {
+  page: SettingsSection;
+  account: AccountView | null;
+  onAccountChange: (view: AccountView | null) => void;
+  refreshAccount: () => Promise<AccountView | null>;
+  onSignOut: () => void;
+  onNavigate?: (page: SettingsSection) => void;
+}) {
   const ui = useUi();
   const [server, setServer] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [channelMode, setChannelMode] = useState<'cloudflare' | 'openai' | 'custom'>('cloudflare');
+  const [directBusy, setDirectBusy] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const directFocusPending = useRef(false);
   const [semMode, setSemMode] = useState<string>('explicit');
   const [semKey, setSemKey] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
@@ -192,6 +209,12 @@ export function SettingsPanel() {
   const [restarting, setRestarting] = useState(false);
   const modeRef = useRef(channelMode);
   modeRef.current = channelMode;
+  useEffect(() => {
+    if (!directBusy && directFocusPending.current) {
+      directFocusPending.current = false;
+      document.getElementById('directAccessToggle')?.focus({ preventScroll: true });
+    }
+  }, [directBusy]);
 
   // Async saves read the latest values through refs, never through a stale render.
   const serverRef = useRef<SettingsView | null>(null);
@@ -213,6 +236,7 @@ export function SettingsPanel() {
    */
   const applyServer = (next: SettingsView, committed: Partial<Record<TextKey, string>> = {}, force: SaveKey[] = []) => {
     const prev = serverRef.current;
+    if (prev && next.revision < prev.revision) return; // A late poll must not roll back a saved edit.
     serverRef.current = next;
     setServer(next);
     const d = draftRef.current;
@@ -232,11 +256,11 @@ export function SettingsPanel() {
   };
 
   /** Save some values, one request at a time; retry once over a revision bump that touched other keys. */
-  const commit = (values: Partial<SettingsValues>, keys: SaveKey[], committed: Partial<Record<TextKey, string>> = {}): Promise<boolean> => {
+  const commit = (values: Partial<SettingsValues>, keys: SaveKey[], committed: Partial<Record<TextKey, string>> = {}, expected?: SettingsView): Promise<boolean> => {
     markField(keys, { state: 'saving' });
     const task = async (): Promise<boolean> => {
       try {
-        let base = serverRef.current ?? (await api.settings());
+        let base = expected ?? serverRef.current ?? (await api.settings());
         for (let attempt = 0; ; attempt++) {
           try {
             applyServer(await api.saveSettings(base.revision, values), committed);
@@ -244,12 +268,12 @@ export function SettingsPanel() {
             setTimeout(() => { if (keys.every((k) => fstateRef.current[k]?.state === 'saved')) markField(keys, null); }, 2500);
             return true;
           } catch (e) {
-            if (!(e instanceof ApiError) || e.code !== 'revision_conflict' || attempt > 0) throw e;
+            if (!(e instanceof ApiError) || e.code !== 'revision_conflict' || expected || attempt > 0) throw e;
             const fresh = await api.settings();
             const changed = (Object.keys(values) as (keyof SettingsValues)[]).filter((k) => JSON.stringify(fresh.values[k]) !== JSON.stringify(base.values[k]));
             if (changed.length) {
-              applyServer(fresh, {}, keys);
-              markField(keys, { state: 'error', msg: '这一项刚在别处被修改，已显示最新值；如仍需修改请重新输入。' });
+              applyServer(fresh);
+              markField(keys, { state: 'error', msg: '这一项已在别处修改，本次未覆盖；已保留你的输入，请核对后重试。' });
               return false;
             }
             applyServer(fresh);
@@ -269,7 +293,9 @@ export function SettingsPanel() {
   };
 
   const validate = (k: TextKey, v: string): string | null => {
-    if (k === 'publicBaseUrl' && modeRef.current === 'custom' && !/^https:\/\/[^\s/]+/i.test(v)) return '自定义公网地址需要填写可访问的 HTTPS Base URL。';
+    if (k === 'publicBaseUrl' && modeRef.current === 'custom' && !v) return '自定义公网入口需要填写 HTTP(S) 地址。';
+    if ((k === 'directAccessUrl' || k === 'publicBaseUrl') && v && !httpOrigin(v)) return '请填写不带路径、凭据或查询参数的 HTTP(S) 地址。';
+    if (k === 'channelProxyUrl' && v && !/^https?:\/\/[^\s/]+:\d+\/?$/i.test(v)) return '渠道应用代理应为带端口的 HTTP(S) 地址，例如 http://127.0.0.1:7890；暂不接收带凭据 URL。';
     if (k === 'openaiTunnelId' && v && !OPENAI_TUNNEL_ID.test(v)) return 'Tunnel ID 应为 OpenAI Platform 隧道设置中的 ID（tunnel_ 加 32 位小写十六进制），不是 URL。';
     if (k === 'openaiTunnelClientPath' && v && !ABSOLUTE_PATH.test(v)) return 'tunnel-client 路径需要填写可执行文件的绝对路径，或留空。';
     return null;
@@ -284,6 +310,7 @@ export function SettingsPanel() {
     if (next === serverText(s.values, k) && !withMode) { if (fstateRef.current[k]?.state === 'error') markField([k], null); return Promise.resolve(true); }
     const bad = validate(k, next);
     if (bad) { markField([k], { state: 'error', msg: bad }); return Promise.resolve(false); }
+    if (settingsHost().kind === 'vscode' && NATIVE_MANUAL[k]) return Promise.resolve(true);
     const values = (withMode ? { publicBaseUrl: next, channelMode: 'custom' } : { [k]: next }) as Partial<SettingsValues>;
     return commit(values, withMode ? [k, 'channelMode'] : [k], { [k]: next } as Partial<Record<TextKey, string>>);
   };
@@ -299,8 +326,6 @@ export function SettingsPanel() {
 
   const loadSettings = useCallback(async () => {
     const s = await api.settings();
-    serverRef.current = null;
-    draftRef.current = null;
     applyServer(s);
     setSemKey('');
     setCustomProbe({ url: '', state: 'idle', detail: '' });
@@ -317,18 +342,24 @@ export function SettingsPanel() {
     let stop = false;
     void (async () => {
       while (!stop) {
-        try { setHealth(await panel.health()); setReachable(true); } catch { setReachable(false); }
+        try {
+          const h = await panel.health();
+          if (stop) break;
+          setHealth(h); setReachable(true);
+          if (!inflight.current.size && h.settings_revision !== undefined && h.settings_revision !== serverRef.current?.revision) {
+            const next = await api.settings();
+            if (!stop) applyServer(next);
+          }
+        } catch { if (!stop) setReachable(false); }
         await sleep(2000);
       }
     })();
-    // Leaving the page with an unsaved (or still saving) field asks first; closing the
-    // settings saves whatever valid text is still in a focused field.
+    // Blur/Enter commits explicitly; leaving must not launch a second save from cleanup.
     const onUnload = (e: BeforeUnloadEvent) => { if (inflight.current.size || dirtyKeys().length) { e.preventDefault(); e.returnValue = ''; } };
     window.addEventListener('beforeunload', onUnload);
     return () => {
       stop = true;
       window.removeEventListener('beforeunload', onUnload);
-      for (const k of dirtyKeys()) void commitText(k);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -346,8 +377,11 @@ export function SettingsPanel() {
   const o = health;
   const t = reachable ? o?.tunnel : 'unreachable';
   const dm: [string, string] = reachable ? ['ok', '运行中' + (o?.version ? ' · v' + o.version : '')] : ['', '未运行'];
-  // Overview: every running channel in one line (持久 · gpt), the same wording as the sidebar.
-  const chSum = channelSummary(reachable ? health : null, channelMode, customProbe.state === 'online');
+  const aiDefaultRoute = server?.values.aiDefaultRoute ?? 'auto';
+  const directEnabled = server?.values.directAccessEnabled === true;
+  const routes = reachable ? o?.connection_routes : null;
+  const routeName = routes?.selected_route === 'direct' ? '直连' : routes?.selected_route === 'openai' ? 'OpenAI Tunnel' : routes?.selected_route === 'custom' ? '自定义公网入口' : 'Cloudflare';
+  const connectionNote = !reachable ? '本地服务未连接' : !routes ? '正在读取连接状态…' : routes.needs_choice ? '已发现多个直连地址，复制时选择目标 Agent 能访问的地址。' : routes.connector_ready ? '默认连接已配置；网络可达性以目标客户端实际连接为准。' : '当前默认入口未就绪；不会自动改用其他渠道。';
   const oaSt = openaiStatus(reachable ? health : null, reachable, draft?.openaiTunnelClientPath ?? '');
   const hasNamed = !!o?.public_base_url;
   let chst: { text: string; cls: string };
@@ -374,10 +408,11 @@ export function SettingsPanel() {
     chst = { text: 'daemon 未运行', cls: 'dim' }; showQ = showN = false;
   } else chst = { text: '未启动', cls: 'dim' };
   const customReady = channelMode === 'custom' && customProbe.state === 'online' && !!customProbe.url;
-  const mcpValue = channelMode === 'custom' ? (customReady && o?.mcp_path ? customProbe.url + o.mcp_path : '') : reachable ? o?.mcp_url || '' : '';
+  const mcpValue = reachable ? (o?.connection_routes?.preferred_mcp_url ?? (!o?.connection_routes ? o?.mcp_url || '' : '')) : '';
+  const selectedOpenAI = o?.connection_routes ? o.connection_routes.selected_route === 'openai' || o.connection_routes.reason === 'openai_selected' : channelMode === 'openai';
   // A loopback link works on this computer only: copyable, but not "ready".
   const mcpLocal = /:\/\/(127\.|localhost|\[::1\])/.test(mcpValue);
-  const savedTunnelId = server?.values.openaiTunnelId ?? '';
+  const savedTunnelId = o?.connection_routes ? o.connection_routes.saved_tunnel_id ?? '' : server?.values.openaiTunnelId ?? '';
 
   // ── actions ──
   const refreshHealth = () => { panel.health().then(setHealth, () => undefined); };
@@ -413,16 +448,19 @@ export function SettingsPanel() {
     setChannelMode(m);
     if (!s) return;
     if (m === s.values.channelMode) { markField(['channelMode'], null); return; }
-    // Custom needs its HTTPS address first; the mode is saved with it (commitText).
-    if (m === 'custom' && !/^https:\/\/[^\s/]+/i.test((draftRef.current?.publicBaseUrl ?? '').trim())) {
-      markField(['channelMode'], { state: 'error', msg: '填写并保存 HTTPS 公网地址后，自定义渠道才会成为默认渠道。' });
+    // Custom needs its HTTP(S) address first; the mode is saved with it (commitText).
+    if (m === 'custom' && !/^https?:\/\/[^\s/]+/i.test((draftRef.current?.publicBaseUrl ?? '').trim())) {
+      markField(['channelMode'], { state: 'error', msg: '填写并保存 HTTP(S) 公网地址后，自定义渠道才会成为默认渠道。' });
       return;
+    }
+    if (m === 'custom' && settingsHost().kind === 'vscode' && (draftRef.current?.publicBaseUrl ?? '').trim() !== serverRef.current?.values.publicBaseUrl) {
+      markField(['channelMode'], { state: 'error', msg: '公网地址尚未保存；点击「保存本页」同时应用地址和自定义渠道。' }); return;
     }
     void commit({ channelMode: m }, ['channelMode']).then((ok) => { if (!ok && serverRef.current) setChannelMode(serverRef.current.values.channelMode); });
   };
   const pickSemMode = (m: string) => {
     setSemMode(m);
-    if (m === serverRef.current?.values.semanticMode) return;
+    if (m === serverRef.current?.values.semanticMode || settingsHost().kind === 'vscode') return;
     void commit({ semanticMode: m as SettingsValues['semanticMode'] }, ['semanticMode']).then((ok) => { if (!ok && serverRef.current) setSemMode(serverRef.current.values.semanticMode); });
   };
   /** Restart in place and wait until a new daemon answers. */
@@ -479,14 +517,19 @@ export function SettingsPanel() {
     if ((await ui.confirm('BlackHole: 重置后旧 MCP 链接立即失效，连接器/沙箱脚本里配置的旧地址全部要换成新链接（会话 ID 不受影响）。确认重置？', ['重置'])) !== '重置') return;
     try {
       const r = await panel.rotateToken();
-      if (r.mcp_url) await copy(r.mcp_url);
-      ui.toast('BlackHole：MCP 链接已重置，新链接已复制；请更新已配置的连接器。');
+      const next = r.connection_routes?.preferred_mcp_url ?? (!r.connection_routes ? r.mcp_url : null);
+      if (next) {
+        await copy(next);
+        ui.toast('BlackHole：MCP 链接已重置，当前选中入口的新链接已复制；请更新已配置的客户端。');
+      } else {
+        ui.toast('BlackHole：MCP 链接已重置。当前入口需要选择或没有 URL，请确认连接后再复制。', 'warn');
+      }
     } catch (e) { ui.toast('BlackHole: 刷新 token 失败 — ' + errText(e), 'bad'); }
     refreshHealth();
   };
   const copyDesc = async () => {
-    await copy(['BlackHole provides access to the current workspace through MCP.', 'Start with guide using the supplied sessionId. Comply with its instructions throughout the session, and use that sessionId on every BlackHole call.'].join('\n'));
-    ui.toast('BlackHole：连接器描述已复制。');
+    const ok = await copy(['BlackHole provides access to the current workspace through MCP.', 'Start with guide using the supplied sessionId. Comply with its instructions throughout the session, and use that sessionId on every BlackHole call.'].join('\n'));
+    ui.toast(ok ? 'BlackHole：连接器描述已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn');
   };
   const grantRemove = async (scope: 'always' | 'session', key: string, sessionId?: string) => {
     if ((await ui.confirm(`BlackHole：删除这条${scope === 'session' ? '会话' : '全局'}授权后，相关操作会重新询问。`, ['删除授权'])) !== '删除授权') return;
@@ -546,13 +589,58 @@ export function SettingsPanel() {
     if (await commit({ courierSites: rest }, ['courierSites'])) ui.toast(`已删除「${site.name}」`);
   };
 
-  // 局域网直连：开启前说清楚风险，由用户决定；守护进程异步开关端口，稍后刷新状态。
-  const toggleLan = async (on: boolean) => {
-    if (on) {
-      const ok = await ui.confirm('BlackHole：开启局域网直连？\n同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', ['开启']);
-      if (ok !== '开启') return;
+  // One switch controls direct listening. An advertised address is optional and
+  // is saved atomically with enable; disabling never discards an address draft.
+  const directLock = useRef(false);
+  const toggleDirect = async (on: boolean) => {
+    if (directLock.current || !serverRef.current) return;
+    directLock.current = true; setDirectBusy(true);
+    try {
+      await Promise.allSettled([...inflight.current]);
+      const before = serverRef.current ?? await api.settings();
+      const entered = (draftRef.current?.directAccessUrl ?? '').trim();
+      const url = entered ? httpOrigin(entered) : '';
+      if (on && entered && !url) {
+        markField(['directAccessUrl'], { state: 'error', msg: '请填写不带路径、凭据或查询参数的 HTTP(S) 地址。' });
+        document.getElementById('directAccessUrl')?.focus(); return;
+      }
+      if (on && (await ui.confirm('开启直连？', ['开启'], '允许能到达本机直连端口的设备使用 MCP、引导页、手机与面板。HTTP 不加密；HTTPS 需自行配置 TLS 入口。MCP 和设备仍需认证，手机扫码后仍须在电脑上允许；本地管理接口不会开放。')) !== '开启') return;
+      const confirmed = await api.settings();
+      if ((['directAccessEnabled', 'directAccessUrl', 'directPort'] as const).some(key => confirmed.values[key] !== before.values[key])) {
+        applyServer(confirmed);
+        markField(['directAccessEnabled'], { state: 'error', msg: '直连设置已在别处修改，本次未覆盖。请核对后重试。' }); return;
+      }
+      const values: Partial<SettingsValues> = on ? { directAccessEnabled: true, directAccessUrl: url || '' } : { directAccessEnabled: false };
+      if (await commit(values, on ? ['directAccessEnabled', 'directAccessUrl'] : ['directAccessEnabled'], on ? { directAccessUrl: entered } : {}, confirmed)) refreshHealth();
+    } catch (e) {
+      markField(['directAccessEnabled'], { state: 'error', msg: '直连操作未完成：' + errText(e) });
+    } finally {
+      directLock.current = false;
+      directFocusPending.current = true;
+      setDirectBusy(false);
     }
-    if (await commit({ lanAccess: on }, ['lanAccess'])) setTimeout(refreshHealth, 500);
+  };
+
+  const copyConnection = async () => {
+    if (copyBusy) return;
+    setCopyBusy(true);
+    try {
+      const fresh = await panel.health();
+      setHealth(fresh);
+      const current = fresh.connection_routes;
+      const openai = current?.selected_route === 'openai';
+      const value = openai ? current.saved_tunnel_id : await chooseCurrentDirectAddress(fresh, panel.health);
+      if (!value) {
+        if (!current?.needs_choice) ui.toast(openai ? '尚未保存 Tunnel ID。' : '当前连接没有可用地址，未改用其他渠道。', 'warn');
+        return;
+      }
+      const ok = await copy(value);
+      ui.toast(ok ? '连接信息已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn');
+    } catch (e) { ui.toast(errText(e), 'warn'); }
+    finally {
+      setCopyBusy(false);
+      requestAnimationFrame(() => document.getElementById('mcpCopy')?.focus({ preventScroll: true }));
+    }
   };
 
   const fieldStatus = (k: SaveKey) => {
@@ -568,7 +656,7 @@ export function SettingsPanel() {
   );
   const field = (k: TextKey, extra?: ReactNode, disabled = false) => (
     <div className="f" key={k}>
-      <label htmlFor={k}>{FIELD[k].label}{fieldStatus(k)}</label>
+      <label htmlFor={k}>{FIELD[k].label}{settingsHost().kind === 'vscode' && NATIVE_MANUAL[k] && <span className="rs">需重启</span>}{fieldStatus(k)}</label>
       {textInput(k, k, disabled)}
       {fieldError(k)}
       <div className="d">{FIELD[k].desc}</div>
@@ -582,115 +670,159 @@ export function SettingsPanel() {
     : { text: '未配置', cls: 'dim', clear: false };
   const hasCfPath = (draft?.cloudflaredPath.trim() ?? '') !== '';
   const port = window.location.port || '7306';
-  const pending = server?.pending_restart ?? [];
+  const restartPage: Record<string, SettingsSection> = {
+    cloudflaredPath: 'connections', publicBaseUrl: 'connections', channelMode: 'connections',
+    tunnelProbeProxy: 'network', skillsDir: 'agents', semanticMode: 'agents',
+  };
+  const pending = (server?.pending_restart ?? []).filter((key) => page === 'advanced' || restartPage[key] === page);
+  const homeAccount = accountSummary(account);
+  const directView = reachable ? o?.direct_access ?? null : null;
+  const directUrl = (draft?.directAccessUrl ?? '').trim();
+  const directOrigin = directUrl ? httpOrigin(directUrl) : null;
+  const directTarget = directView?.target ?? `http://127.0.0.1:${server?.values.directPort ?? 7307}`;
+  const homeIdentity = homeAccount.authState === 'logged_out' ? '未登录' : homeAccount.displayName;
+  const homeRemaining = homeAccount.accountStatus === 'suspended' ? '账号已停用' : homeAccount.accountStatus === 'pending' ? '订阅准备中' : formatRemaining(homeAccount.remainingSeconds);
+  const nativeHost = settingsHost().kind === 'vscode';
+  const manualPageKeys = nativeHost ? TEXT_KEYS.filter(k => NATIVE_MANUAL[k] === page) : [];
+  const manualDirty = manualPageKeys.filter(k => draft && server && draft[k].trim() !== serverText(server.values, k));
+  const semanticDirty = nativeHost && page === 'agents' && server && semMode !== server.values.semanticMode;
+  const saveNativePage = async () => {
+    const s = serverRef.current, d = draftRef.current;
+    if (!s || !d) return;
+    const values: Partial<SettingsValues> = {}, committed: Partial<Record<TextKey, string>> = {}, keys: SaveKey[] = [];
+    for (const k of manualDirty) {
+      const value = d[k].trim(), bad = validate(k, value);
+      if (bad) { markField([k], { state: 'error', msg: bad }); return; }
+      Object.assign(values, { [k]: value }); committed[k] = value; keys.push(k);
+    }
+    if (page === 'connections' && modeRef.current === 'custom' && s.values.channelMode !== 'custom') { values.channelMode = 'custom'; keys.push('channelMode'); }
+    if (semanticDirty) { values.semanticMode = semMode as SettingsValues['semanticMode']; keys.push('semanticMode'); }
+    if (keys.length && await commit(values, keys, committed, s)) ui.toast('本页设置已保存；其他页面的草稿未提交。');
+  };
 
   return (
-    <div className="bhp">
-      <h1>BlackHole 设置<span className="ver">{o?.version ? 'v' + o.version : ''}</span></h1>
-      <div className="cockpit" id="set-overview">
-        <div className="cell"><div className="ck-k">Daemon</div><div className="ck-v"><span className={'d ' + dm[0]} /><span>{dm[1]}</span></div></div>
-        <div className="cell"><div className="ck-k">渠道</div>
-          <div className="ck-v"><span className={'d ' + (chSum.tone === 'muted' ? '' : chSum.tone)} /><span>{chSum.text}</span></div>
-        </div>
-        <Activity health={reachable ? health : null} />
-      </div>
-      <div className="bhp-autosave">修改在离开输入框或按 Enter 后自动保存，Esc 撤销尚未保存的输入。</div>
-
-      <div className="sec" id="set-account">账号与订阅<small>登录状态、订阅时长与购买记录。</small></div>
-      <AccountSection ui={ui} />
-
-      <div className="sec" id="set-channel">公网渠道<small>让网页 AI 连到这台电脑：Cloudflare、OpenAI Secure MCP Tunnel，或你自己的反向代理。</small></div>
-      <div className="card">
-        <div className="channel-mode"><span className="lbl">渠道方式</span>
-          {(['cloudflare', 'openai', 'custom'] as const).map((m) => (
-            <button key={m} type="button" className={'agchip' + (channelMode === m ? ' on' : '')} aria-pressed={channelMode === m} disabled={cf.busy}
-              onClick={() => pickChannel(m)}>{m === 'cloudflare' ? 'Cloudflare' : m === 'openai' ? 'OpenAI' : '自定义'}</button>
-          ))}
-          {fieldStatus('channelMode')}
-        </div>
-        {fieldError('channelMode')}
-        {channelMode === 'cloudflare' ? (
-          <div id="channelCloudflare">
-            <div className="fgrid channel-config">{field('cloudflaredPath', undefined, cf.busy)}{field('publicBaseUrl')}</div>
-            {!hasCfPath && <button id="cfInstall" className="secondary" type="button" disabled={cf.busy} onClick={() => void cfInstall()}>{cf.label}</button>}
-            {(!hasCfPath || cf.cls !== 'hint') && <div id="cfInstallMessage" className={cf.cls} role="status" aria-live="polite">{cf.text}</div>}
-            <div className="channel-required">cloudflared 由 BlackHole 启停；固定公网地址仅用于持久渠道。修改后需重启 daemon。</div>
-          </div>
-        ) : channelMode === 'openai' ? (
-          <OpenAISection health={health} reachable={reachable} clientPath={draft?.openaiTunnelClientPath ?? ''}
-            fields={(installing) => <>{field('openaiTunnelClientPath', undefined, installing)}{field('openaiTunnelId')}</>}
-            confirm={ui.confirm} toast={ui.toast} prepareStart={prepareOpenaiStart} onInstalled={openaiInstalled} />
-        ) : (
-          <div id="channelCustom">
-            <div className="fgrid channel-config">
-              <div className="f"><label htmlFor="customPublicBaseUrl">公网地址{fieldStatus('publicBaseUrl')}</label>
-                <div className="channel-probe-line">
-                  {textInput('publicBaseUrl', 'customPublicBaseUrl', false, () => setCustomProbe({ url: '', state: 'idle', detail: '' }))}
-                  <button className="secondary" type="button" disabled={customProbe.state === 'probing'} onClick={() => void runCustomProbe()}>检测</button>
-                </div>
-                {fieldError('publicBaseUrl')}
-                <div className="d">填写当前公网地址并检测；支持 HTTP/HTTPS、域名或 IP，以及自定义端口。作为默认渠道保存时需要 HTTPS。</div>
-              </div>
-            </div>
-            <div className="channel-custom-note">将公网 HTTPS 流量转发到 <code>{'http://127.0.0.1:' + port}</code>；隧道与反向代理由你自行维护。</div>
-          </div>
-        )}
-        {channelMode !== 'openai' && (
-          <div className="chrow channel-actions">
-            <span className={'chst ' + chst.cls}>{chst.text}</span>
-            <span className="sp" />
-            {showQ && <button className="secondary" type="button" onClick={() => { if (requireCloudflaredPath()) void tunnel('quick'); }}>启动临时</button>}
-            {showN && <button className="secondary" type="button" disabled={!hasNamed} title={hasNamed ? '启动持久渠道（固定域名）' : '持久渠道需先配置固定公网地址'} onClick={() => { if (requireCloudflaredPath()) void tunnel('named'); }}>启动持久</button>}
-            {showS && <button className="secondary" type="button" onClick={() => void tunnel('stop')}>停止</button>}
-            {showC && <button type="button" onClick={() => void tunnel('copy')}>复制链接</button>}
-          </div>
-        )}
-        {channelMode !== 'openai' && cnerr && <div className={'hint ' + cnerr.cls} style={{ display: 'block' }}>{cnerr.text}</div>}
-        {/* Phone access rides on the channel (same card as VS Code); paired phones are under 高级. */}
-        <RemoteSection part="pair" toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)} />
-      </div>
-
-      {channelMode === 'openai' ? (
+    <div className={'bhp' + (page === 'home' ? ' bhp-home' : '')}>
+      {page === 'home' && (
         <>
-          <div className="sec" id="set-mcp">OpenAI 连接<small>OpenAI 渠道没有 MCP 链接：ChatGPT 通过 Tunnel ID 连接。</small></div>
-          <div className="card">
-            <div className="mcpurl"><span>{savedTunnelId ? 'Tunnel ID：' + savedTunnelId : '尚未保存 Tunnel ID'}</span>
-              <div className="mcp-actions">
-                <button id="mcpCopy" type="button" disabled={!savedTunnelId} onClick={() => void copy(savedTunnelId).then((ok) => ui.toast(ok ? 'BlackHole：Tunnel ID 已复制。' : 'BlackHole：复制失败。', ok ? 'info' : 'warn'))}>复制 Tunnel ID</button>
-                <button id="mcpDesc" className="secondary" type="button" onClick={() => void copyDesc()}>复制连接器描述</button>
+          <div className="cockpit" id="set-home">
+            <div className="cell home-account">
+              <div className="ck-head home-account-head">
+                <div className="ck-k">账号</div>
+                <span className="ck-summary home-account-remaining" title={homeRemaining}>{homeRemaining}</span>
+              </div>
+              <div className="ck-v home-account-row">
+                <span className={'status-dot ' + (homeAccount.remainingSeconds === 0 ? 'bad' : homeAccount.remainingSeconds !== null && homeAccount.remainingSeconds < 3 * 86400 ? 'warn' : '')} aria-hidden="true" />
+                <span className="home-account-name" title={homeAccount.email ?? homeIdentity}>{homeIdentity}</span>
+                {homeAccount.canSignOut && <button type="button" className="home-signout" aria-label="退出登录" title="退出登录" onClick={onSignOut}><SettingsIcon name="logout" size={15} /></button>}
               </div>
             </div>
+            <HomeChannelCard health={reachable ? health : null} mode={channelMode} toast={ui.toast} onRefresh={refreshHealth} />
+            <Activity health={reachable ? health : null} />
           </div>
-        </>
-      ) : (
-        <>
-          <div className="sec" id="set-mcp">MCP 连接<small>把 MCP 链接和连接器描述填进网页 AI 的连接器设置。</small></div>
-          <div className="card">
-            <div className="mcpurl"><span>{mcpValue ? (mcpLocal ? 'MCP 链接仅本机可用（公网渠道未启动）' : 'MCP 链接已就绪') : channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪'}</span>
-              <div className="mcp-actions">
-                <button id="mcpCopy" type="button" disabled={!mcpValue} onClick={() => void copy(mcpValue).then(() => ui.toast('BlackHole：MCP 链接已复制。'))}>复制 MCP 链接</button>
-                <button id="mcpDesc" className="secondary" type="button" disabled={!mcpValue} onClick={() => void copyDesc()}>复制连接器描述</button>
-                <button id="mcpRotate" className="secondary" type="button" onClick={() => void rotateToken()}>重置 MCP 链接</button>
-              </div>
-            </div>
-          </div>
+          <div className="card pair-card"><RemoteSection part="pair" toast={ui.toast} confirm={ui.confirm} onConfigure={onNavigate ? () => onNavigate('network') : undefined} /></div>
+          <footer className="settings-home-version" aria-label={`BlackHole 版本 ${VERSION}`} title={`BlackHole v${VERSION}`}>v{VERSION}</footer>
         </>
       )}
 
-      <div className="sec" id="set-lan">局域网直连<small>监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</small></div>
-      <LanAccess
-        on={!!server?.values.lanAccess}
-        port={server?.values.lanPort ?? 7307}
-        url={server?.values.lanUrl ?? ''}
-        lan={reachable ? health?.lan_access ?? null : null}
-        status={<>{fieldStatus('lanAccess')}{fieldStatus('lanPort')}{fieldStatus('lanUrl')}</>}
-        error={<>{fieldError('lanAccess')}{fieldError('lanPort')}{fieldError('lanUrl')}</>}
-        onToggle={(on) => void toggleLan(on)}
-        onPort={(p) => void commit({ lanPort: p }, ['lanPort']).then((ok) => { if (ok) setTimeout(refreshHealth, 500); })}
-        onUrl={(u) => void commit({ lanUrl: u }, ['lanUrl'])}
-        onCopy={(u) => void copy(u).then(() => ui.toast('BlackHole：直连 MCP 链接已复制。'))}
-      />
+      {page === 'account' && (
+        <>
+          <div className="sec" id="set-account">账号与订阅<small>登录状态、订阅时长与购买记录。</small></div>
+          <AccountSection ui={ui} view={account} onView={onAccountChange} refreshAccount={refreshAccount} onSignOut={onSignOut} />
+        </>
+      )}
 
+      {page === 'connections' && (
+        <>
+          <section className="connection-current" aria-label="当前连接">
+            <div className="sec" id="set-current">当前连接</div>
+            <div className="card" role="status"><strong>{routes ? `当前默认：${routeName}` : '连接状态待确认'}</strong><div className="hint">{connectionNote}</div></div>
+          </section>
+          <div className="sec" id="set-channel">公网渠道</div>
+          <div className="card">
+            <div className="channel-mode"><span className="lbl">渠道方式</span>
+              {(['cloudflare', 'openai', 'custom'] as const).map((m) => (
+                <button key={m} type="button" className={'agchip' + (channelMode === m ? ' on' : '')} aria-pressed={channelMode === m} disabled={!server || cf.busy}
+                  onClick={() => pickChannel(m)}>{m === 'cloudflare' ? 'Cloudflare' : m === 'openai' ? 'OpenAI' : '自定义'}</button>
+              ))}
+              {fieldStatus('channelMode')}
+            </div>
+            {fieldError('channelMode')}
+            {channelMode === 'cloudflare' ? (
+              <div id="channelCloudflare">
+                <div className="fgrid channel-config">{field('cloudflaredPath', undefined, cf.busy)}{field('publicBaseUrl')}</div>
+                {(!hasCfPath || cf.cls !== 'hint') && <div className="channel-install runtime-install-row">
+                  <div className="runtime-install-copy"><strong>cloudflared 安装</strong><div id="cfInstallMessage" className={cf.cls} role="status" aria-live="polite">{cf.text}</div></div>
+                  {!hasCfPath && <button id="cfInstall" className="secondary" type="button" disabled={cf.busy} onClick={() => void cfInstall()}>{cf.label}</button>}
+                </div>}
+                <div className="channel-required">固定公网地址用于持久渠道；程序路径修改后需重启本地服务。</div>
+              </div>
+            ) : channelMode === 'openai' ? (
+              <OpenAISection health={health} reachable={reachable} clientPath={draft?.openaiTunnelClientPath ?? ''}
+                fields={(installing) => <>{field('openaiTunnelClientPath', undefined, installing)}{field('openaiTunnelId')}</>}
+                confirm={ui.confirm} toast={ui.toast} prepareStart={prepareOpenaiStart} onInstalled={openaiInstalled} />
+            ) : (
+              <div id="channelCustom">
+                <div className="fgrid channel-config"><div className="f">
+                  <label htmlFor="customPublicBaseUrl">已有公网入口{fieldStatus('publicBaseUrl')}</label>
+                  <div className="channel-probe-line">
+                    {textInput('publicBaseUrl', 'customPublicBaseUrl', false, () => setCustomProbe({ url: '', state: 'idle', detail: '' }))}
+                    <button className="secondary" type="button" disabled={customProbe.state === 'probing' || !reachable} onClick={() => void runCustomProbe()}>检测</button>
+                  </div>
+                  {fieldError('publicBaseUrl')}
+                  <div className="d">已有反向代理或其他公网入口时填写，HTTP/HTTPS 均可。</div>
+                </div></div>
+                <div className="channel-custom-note">反向代理目标：<code>{directTarget}</code>，保留原始 Host。与直连共用一个数据端口，不要代理主 daemon 管理端口。</div>
+              </div>
+            )}
+            {channelMode !== 'openai' && <div className="chrow channel-actions">
+              <span className={'chst ' + chst.cls}>{chst.text}</span><span className="sp" />
+              {showQ && <button className="secondary" type="button" onClick={() => { if (requireCloudflaredPath()) void tunnel('quick'); }}>启动临时</button>}
+              {showN && <button className="secondary" type="button" disabled={!hasNamed} title={hasNamed ? '启动持久渠道（固定域名）' : '持久渠道需先配置固定公网地址'} onClick={() => { if (requireCloudflaredPath()) void tunnel('named'); }}>启动持久</button>}
+              {showS && <button className="secondary" type="button" onClick={() => void tunnel('stop')}>停止</button>}
+              {showC && <button type="button" onClick={() => void tunnel('copy')}>复制渠道地址</button>}
+            </div>}
+            {channelMode !== 'openai' && cnerr && <div className={'hint ' + cnerr.cls}>{cnerr.text}</div>}
+            <div className="channel-install">{field('channelProxyUrl', o?.openai_tunnel?.proxy_pending_restart && <div className="hint warn" role="status">代理已保存；当前 OpenAI 进程仍使用旧配置，停止并重新启动 OpenAI 渠道后生效。</div>)}</div>
+          </div>
+          <div className="sec" id="set-mcp">连接器</div>
+          <div className="card">
+            <div className="mcpurl"><span>{selectedOpenAI ? (savedTunnelId ? 'Tunnel ID 已保存' : '尚未保存 Tunnel ID') : routes?.needs_choice ? '多个直连地址，复制时选择' : mcpValue ? (mcpLocal ? '仅本机可用' : '连接地址已生成') : '当前入口没有可用地址'}</span>
+              <div className="mcp-actions">
+                <button id="mcpCopy" type="button" disabled={copyBusy || !reachable || (selectedOpenAI ? !savedTunnelId : !mcpValue && !routes?.needs_choice)} onClick={() => void copyConnection()}>{copyBusy ? '处理中…' : selectedOpenAI ? '复制 Tunnel ID' : '复制 MCP 链接'}</button>
+                <button id="mcpDesc" className="secondary" type="button" onClick={() => void copyDesc()}>复制连接器描述</button>
+              </div>
+            </div>
+            <div className="connector-field">{field('connectorName')}</div>
+            <div className="channel-install chrow"><span className="hint">重置会使旧 MCP 链接失效。</span><span className="sp" /><button id="mcpRotate" className="secondary danger-secondary" type="button" disabled={!reachable} onClick={() => void rotateToken()}>重置 MCP 链接</button></div>
+          </div>
+          <div className="sec" id="set-default-connection">默认连接</div>
+          <div className="card"><div className="f">
+            <label htmlFor="aiDefaultRoute">默认连接方式{fieldStatus('aiDefaultRoute')}</label>
+            <select id="aiDefaultRoute" value={aiDefaultRoute} disabled={!server || fstate.aiDefaultRoute?.state === 'saving'} onChange={(e) => void commit({ aiDefaultRoute: e.target.value as SettingsValues['aiDefaultRoute'] }, ['aiDefaultRoute'])}>
+              <option value="auto">自动</option><option value="direct">固定使用直连</option><option value="cloudflare">固定使用 Cloudflare</option><option value="custom">固定使用自定义公网入口</option><option value="openai">固定使用 OpenAI Tunnel</option>
+            </select>
+            {fieldError('aiDefaultRoute')}
+            <div className="d">自动：直连开启时使用直连，否则使用上方选择的公网渠道。固定选择不会被其他入口抢占；不可用时提示，不自动换线。</div>
+          </div></div>
+        </>
+      )}
+
+      {page === 'network' && (
+        <>
+          <div className="sec" id="set-direct">直连</div>
+          <DirectAccessCard on={directEnabled} port={server?.values.directPort ?? 7307} view={directView} busy={!server || directBusy || fstate.directAccessEnabled?.state === 'saving'}
+            status={<>{fieldStatus('directAccessEnabled')}{fieldStatus('directPort')}</>} error={<>{fieldError('directAccessEnabled')}{fieldError('directPort')}</>}
+            onToggle={(on) => void toggleDirect(on)} onPort={async (value) => { const ok = await commit({ directPort: value }, ['directPort']); if (ok) refreshHealth(); return ok; }}>
+            {field('directAccessUrl')}
+            <div className="address-preview">{directOrigin ? <>地址预览：<code>{directOrigin}/bh.md</code><br /><code>{directOrigin}/mcp/…</code><div className="hint">{directEnabled ? '默认连接选择直连后，复制地址使用此地址。' : '直连未开启；保存地址不会自动启用。'}</div></> : directUrl ? '地址格式无效，未用于生成连接。' : '留空使用自动发现的本机地址；多个地址在复制时选择。通用云沙箱需要它能访问的对外地址。'}</div>
+          </DirectAccessCard>
+          <div className="sec">检测与诊断</div>
+          <div className="card">{field('tunnelProbeProxy')}</div>
+        </>
+      )}
+
+      {page === 'agents' && (
+        <>
       <div className="sec" id="set-proxies">MCP Proxies<small>把其他 MCP 服务器接入 BlackHole，按需启用它们的工具。</small></div>
       <Proxies ui={ui} />
 
@@ -698,7 +830,6 @@ export function SettingsPanel() {
       <div className="card">
         <div className="fgrid">
           {field('skillsDir', skills && <div className={'hint ' + skills.cls}>{skills.hint}</div>)}
-          {field('connectorName')}
         </div>
         <div className="subsec">Devin Key（语义搜索）</div>
         <div className="fgrid">
@@ -707,12 +838,12 @@ export function SettingsPanel() {
               <input id="semKey" type="password" spellCheck={false} autoComplete="off" placeholder="sk-…" value={semKey} onChange={(e) => setSemKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void semanticSave(); }} />
               <button className="secondary" type="button" disabled={!semKey.trim()} onClick={() => void semanticSave()}>保存 Key</button>
             </div>
-            <div className="chrow"><span className={'chst ' + semStatus.cls}>{semStatus.text}</span><span className="sp" />{semStatus.clear && <button className="secondary" type="button" onClick={() => void semanticClear()}>清除已存</button>}</div>
+            <div className="chrow"><span className={'chst ' + semStatus.cls}>{semStatus.text}</span><span className="sp" />{semStatus.clear && <button className="secondary danger-secondary" type="button" onClick={() => void semanticClear()}>清除已存</button>}</div>
             <div className="d">只保存在本机；不会回显。</div>
           </div>
           <div className="f"><label>凭据来源{fieldStatus('semanticMode')}</label>
             <div className="agrid">
-              {SEM_MODES.map((m) => <button key={m.v} type="button" className={'agchip' + (semMode === m.v ? ' on' : '')} aria-pressed={semMode === m.v} title={m.title} onClick={() => pickSemMode(m.v)}><span className="d" />{m.t}</button>)}
+              {SEM_MODES.map((m) => <button key={m.v} type="button" className={'agchip' + (semMode === m.v ? ' on' : '')} aria-pressed={semMode === m.v} title={m.title} onClick={() => pickSemMode(m.v)}><span className="status-dot" aria-hidden="true" /><span className="status-label">{m.t}</span></button>)}
             </div>
             {fieldError('semanticMode')}
             <div className="d">{SEM_MODES.find((m) => m.v === semMode)?.title ?? ''}；修改后需重启 daemon。</div>
@@ -724,22 +855,31 @@ export function SettingsPanel() {
       <div className="card">
         <CourierSites sites={server?.values.courierSites ?? []} status={fieldStatus('courierSites')} error={fieldError('courierSites')} onRemove={(id) => void removeCourierSite(id)} />
       </div>
+        </>
+      )}
 
+      {page === 'security' && (
+        <>
+      <div className="sec" id="set-devices">已配对设备<small>撤销后该设备需要重新扫码。</small></div>
+      <div className="card"><RemoteSection part="devices" toast={ui.toast} confirm={ui.confirm} /></div>
       <div className="sec" id="set-grants">授权管理<small>全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</small></div>
       <div className="card">
         <Grants info={grants} onRemove={(s, k, id) => void grantRemove(s, k, id)} />
-        <div className="btnrow" style={{ marginTop: 10 }}><button className="secondary" type="button" onClick={() => void grantsClear()}>清除全部全局授权</button></div>
+        <div className="btnrow" style={{ marginTop: 10 }}><button className="secondary danger-secondary" type="button" onClick={() => void grantsClear()}>清除全部全局授权</button></div>
       </div>
+        </>
+      )}
 
-      <div className="sec" id="set-advanced">高级<small>排障与很少需要修改的设置。</small></div>
+      {page === 'advanced' && (
+        <>
+      <HostRuntimeSection />
+      <div className="sec" id="set-advanced">高级</div>
       <div className="card">
         <div className="fgrid">
-          {field('tunnelProbeProxy')}
           {field('gitUsrBinPath')}
-          <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。</div></div>
+          {!nativeHost && <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。</div></div>}
           {field('namedTunnelName')}
         </div>
-        <RemoteSection part="devices" toast={ui.toast} confirm={(title, actions) => ui.confirm(title, actions)} />
         <div className="bhp-danger">
           <div className="bhp-danger-row">
             <div><b>重启 daemon</b><small>让需要重启的设置生效；会短暂中断本地服务和已连接的网页 AI。</small></div>
@@ -748,7 +888,10 @@ export function SettingsPanel() {
           <div className="bhp-service"><ServiceCard /></div>
         </div>
       </div>
+        </>
+      )}
 
+      {nativeHost && (manualDirty.length > 0 || semanticDirty) && <div className="settings-page-save"><span className="hint">仅保存本页标有「需重启」的设置；其他页面的草稿不会提交。</span><button type="button" disabled={!server || manualPageKeys.some(k => fstate[k]?.state === 'saving')} onClick={() => void saveNativePage()}>保存本页</button></div>}
       {pending.length > 0 && (
         <div className="bhp-restartbar" role="status">
           <span>需重启 daemon 生效：{[...new Set(pending.map(restartLabel))].join('、')}</span>
@@ -760,55 +903,49 @@ export function SettingsPanel() {
   );
 }
 
-/** 局域网直连：开关、端口、监听状态和可复制的直连 MCP 链接。 */
-function LanAccess({ on, port, url, lan, status, error, onToggle, onPort, onUrl, onCopy }: {
-  on: boolean; port: number; url: string; lan: LanAccessView | null; status: ReactNode; error: ReactNode;
-  onToggle: (on: boolean) => void; onPort: (port: number) => void; onUrl: (url: string) => void; onCopy: (url: string) => void;
+/** One direct switch, optional advertised address, and one stable advanced port. */
+function DirectAccessCard({ on, port, view, busy, status, error, onToggle, onPort, children }: {
+  on: boolean; port: number; view: DirectAccessView | null; busy: boolean; status: ReactNode; error: ReactNode; children: ReactNode;
+  onToggle: (on: boolean) => void; onPort: (port: number) => Promise<boolean>;
 }) {
   const [portText, setPortText] = useState(String(port));
-  useEffect(() => { setPortText(String(port)); }, [port]);
-  const savePort = () => {
+  const [portError, setPortError] = useState('');
+  const [savingPort, setSavingPort] = useState(false);
+  const focused = useRef(false);
+  const portLock = useRef(false);
+  useEffect(() => { if (!focused.current) setPortText(String(port)); }, [port]);
+  const savePort = async () => {
     const n = Number(portText.trim());
-    if (!Number.isInteger(n) || n < 1024 || n > 65535) { setPortText(String(port)); return; }
-    if (n !== port) onPort(n);
+    if (!portText.trim() || !Number.isInteger(n) || n < 1024 || n > 65535) { setPortError('端口必须是 1024–65535 之间的整数。'); return; }
+    setPortError('');
+    if (n === port || portLock.current) return;
+    portLock.current = true; setSavingPort(true);
+    try { await onPort(n); } finally { portLock.current = false; setSavingPort(false); }
   };
-  const [urlText, setUrlText] = useState(url);
-  useEffect(() => { setUrlText(url); }, [url]);
-  // 格式由守护进程校验（只接受 http(s)://主机[:端口]），错误显示在卡片里。
-  const saveUrl = () => {
-    const next = urlText.trim().replace(/\/+$/, '');
-    if (next !== url) onUrl(next);
-  };
-  // 填了直连域名时，域名链接排在最前面。
-  const urls = on && lan?.listening
-    ? [...(url ? [`${url}${lan.mcp_path}`] : []), ...lan.addresses.map((a) => `http://${a}:${lan.port}${lan.mcp_path}`)]
-    : [];
-  const [cls, text] = !on ? ['', '未开启'] : lan?.error ? ['bad', lan.error] : lan?.listening ? ['ok', `正在监听 0.0.0.0:${lan.port}`] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
+  const ready = on && view?.enabled && view.state === 'listening' && view.mode === 'direct' && view.port === port;
+  const [tone, text] = busy || view?.state === 'applying' ? ['warn', '正在应用…']
+    : !on ? ['', view?.mode === 'proxy' && view.listening ? '直连未开启；反向代理目标可用' : '未开启']
+      : view?.error ? ['bad', view.error] : ready ? ['ok', `监听中 · 0.0.0.0:${port}`] : ['warn', '直连尚未就绪'];
   return (
-    <div className="card">
-      <div className="chrow">
-        <span className={'chst ' + cls}>{text}</span>{status}<span className="sp" />
-        <button type="button" className={on ? 'secondary' : ''} onClick={() => onToggle(!on)}>{on ? '关闭直连' : '开启直连'}</button>
+    <div className="card network-entry">
+      <div className="row-setting">
+        <div><strong>开启直连</strong><div className="hint">局域网、组网和自己配置的公网映射，共用这一个开关。</div></div>
+        <button id="directAccessToggle" type="button" role="switch" className="direct-switch" aria-label="开启直连" aria-checked={on} disabled={busy} onClick={() => onToggle(!on)} />
       </div>
-      <div className="fgrid">
-        <div className="f"><label htmlFor="lanPort">直连端口</label>
-          <input id="lanPort" name="lanPort" inputMode="numeric" spellCheck={false} autoComplete="off" value={portText}
-            onChange={(e) => setPortText(e.target.value)} onBlur={savePort} onKeyDown={(e) => { if (e.key === 'Enter') savePort(); }} />
-          <div className="d">1024–65535，不能与主端口相同；修改后立即生效。</div>
-        </div>
-        <div className="f"><label htmlFor="lanUrl">直连域名（可选）</label>
-          <input id="lanUrl" name="lanUrl" type="text" spellCheck={false} autoComplete="off" placeholder="https://mcp.example.com 或 http://nas.lan:7307" value={urlText}
-            onChange={(e) => setUrlText(e.target.value)} onBlur={saveUrl} onKeyDown={(e) => { if (e.key === 'Enter') saveUrl(); }} />
-          <div className="d">域名映射到这台电脑时填写，下面会列出域名链接。</div>
-        </div>
-      </div>
+      <div className={'chst ' + tone} role="status">{text}{status}</div>
       {error}
-      {urls.map((u) => (
-        <div className="mcpurl" key={u}><span title={u}>{lan ? u.replace(lan.mcp_path, '/mcp/…') : u}</span>
-          <div className="mcp-actions"><button type="button" onClick={() => onCopy(u)}>复制 MCP 链接</button></div>
+      <div className="direct-fields">{children}</div>
+      <details className="connection-disclosure direct-advanced"><summary>高级<small>监听端口，通常不需要修改。</small></summary>
+        <div className="f"><label htmlFor="directPort">监听端口</label>
+          <input id="directPort" name="directPort" inputMode="numeric" spellCheck={false} autoComplete="off" value={portText} disabled={busy || savingPort} aria-invalid={!!portError}
+            onFocus={() => { focused.current = true; }} onChange={(e) => setPortText(e.target.value)}
+            onBlur={() => { focused.current = false; void savePort(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setPortText(String(port)); setPortError(''); } }} />
+          {portError && <div className="bhp-ferr" role="alert">{portError}</div>}
+          <div className="hint">直连与反向代理共用此端口。外部映射端口可以不同；修改会短暂中断已有连接。</div>
         </div>
-      ))}
-      {on && lan?.listening && !urls.length && <div className="d">没有找到可用的本机地址：请用这台电脑在局域网里的 IP 加上端口 {lan.port} 连接。</div>}
+      </details>
+      <div className="route-note"><strong>安全边界：</strong>DNS、端口映射与 TLS 由你配置。仅开放连接所需的数据接口；本地管理 API 不对外开放。</div>
     </div>
   );
 }
@@ -825,7 +962,7 @@ function CourierSites({ sites, status, error, onRemove }: { sites: CourierSiteVi
           <span className="nm" style={{ flex: 1 }}>
             {x.name} <span className="wa-host">{x.origin.replace(/^https:\/\//, '')}</span>
           </span>
-          <button className="del" type="button" title="删除这个网站" onClick={() => onRemove(x.id)}>删除</button>
+          <button className="del" type="button" title="删除这个网站" aria-label={`删除网站 ${x.name}`} onClick={() => onRemove(x.id)}>删除</button>
         </div>
       ))}
       {error}
@@ -845,11 +982,11 @@ function Grants({ info, onRemove }: { info: GrantsInfo | null; onRemove: (scope:
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       {always.length > 0 && <div className="hint" style={{ margin: '2px 0 0' }}><b>全局授权</b> · 重启后仍保留</div>}
-      {always.map((k) => <div className="ag-row" key={'a' + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该全局授权" onClick={() => onRemove('always', k)}>删除</button></div>)}
+      {always.map((k) => <div className="ag-row" key={'a' + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该全局授权" aria-label={`删除全局授权 ${k}`} onClick={() => onRemove('always', k)}>删除</button></div>)}
       {sessions.map((s) => (
         <div key={s.session_id} style={{ display: 'contents' }}>
           <div className="hint" style={{ margin: '4px 0 0' }}><b>会话授权</b> · {s.session_name || s.workspace_path || s.session_id || '未知会话'} · daemon 重启后失效</div>
-          {s.grants.map((k) => <div className="ag-row" key={s.session_id + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该会话授权" onClick={() => onRemove('session', k, s.session_id)}>删除</button></div>)}
+          {s.grants.map((k) => <div className="ag-row" key={s.session_id + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该会话授权" aria-label={`删除会话授权 ${k}`} onClick={() => onRemove('session', k, s.session_id)}>删除</button></div>)}
         </div>
       ))}
     </div>
@@ -857,15 +994,25 @@ function Grants({ info, onRemove }: { info: GrantsInfo | null; onRemove: (scope:
 }
 
 // ─── account and subscription ──────────────────────────────────────────────
-function AccountSection({ ui }: { ui: Ui }) {
-  const [view, setView] = useState<AccountView | null>(null);
+function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
+  ui: Ui;
+  view: AccountView | null;
+  onView: (view: AccountView | null) => void;
+  refreshAccount: () => Promise<AccountView | null>;
+  onSignOut: () => void;
+}) {
+  const [signingIn, setSigningIn] = useState(false);
+  const signIn = async () => {
+    if (signingIn) return; setSigningIn(true);
+    try { onView(await request<AccountView>('/host/sign-in', { method: 'POST', body: '{}' })); }
+    catch (e) { ui.toast('登录未完成：' + errText(e), 'warn'); }
+    finally { setSigningIn(false); }
+  };
   const [plans, setPlans] = useState(DEFAULT_PLANS);
   const [sku, setSku] = useState<BillingSku>('pro_day');
   const [buyOpen, setBuyOpen] = useState(false);
   const [wait, setWait] = useState<BillingOrder | null>(null);
   const waitAbort = useRef<{ stopped: boolean } | null>(null);
-  const load = useCallback(() => api.account().then((v) => { setView(v); return v; }, () => null), []);
-  useEffect(() => { void load(); const t = setInterval(() => void load(), 10000); return () => clearInterval(t); }, [load]);
   const loggedIn = !!view?.userId;
   useEffect(() => {
     if (!loggedIn) return;
@@ -875,19 +1022,23 @@ function AccountSection({ ui }: { ui: Ui }) {
       setSku((s) => (c.plans.some((p) => p.sku === s) ? s : c.plans[0]!.sku));
     }, () => undefined);
   }, [loggedIn]);
-  const refreshView = () => panel.accountRefresh().then(setView, () => undefined);
+  const refreshView = () => panel.accountRefresh().then((next) => { onView(next); return next; }, () => undefined);
   const report = (e: unknown) => {
     const code = e instanceof ApiError ? e.code : '';
     ui.toast('BlackHole：' + (BILLING_ERRORS[code] ?? '购买流程响应不符合预期，已停止。请从购买记录核对原订单，勿重复付款。'), 'warn');
   };
-  const a = view?.account;
-  const n = Math.max(0, Math.floor(view?.remainingSeconds ?? 0));
-  const identity = a ? (a.name || 'BlackHole 用户') + ' · ' + a.email : view?.userId ? 'BlackHole 用户' : view ? '尚未登录' : '读取账号状态…';
-  const subscription = !view ? '订阅状态尚未获取' : !a ? '订阅状态未验证，请登录或手动刷新' : a.status === 'suspended' ? '账号已停用' : a.status === 'pending' ? '订阅准备中'
-    : n > 0 ? '剩余订阅：' + Math.floor(n / 86400) + '天 ' + Math.floor((n % 86400) / 3600) + '小时 ' + Math.floor((n % 3600) / 60) + '分钟' : '订阅已到期';
+  const summary = accountSummary(view);
+  const identity = !view ? '读取账号状态…'
+    : summary.authState === 'logged_out' ? '尚未登录'
+      : summary.email && summary.displayName !== summary.email ? `${summary.displayName} · ${summary.email}` : summary.displayName;
+  const subscription = !view ? '订阅状态尚未获取'
+    : summary.accountStatus === 'suspended' ? '账号已停用'
+      : summary.accountStatus === 'pending' ? '订阅准备中'
+        : summary.remainingSeconds === null ? '时长待确认'
+          : formatRemaining(summary.remainingSeconds).replace(/^剩余 /, '剩余订阅：');
 
   const refresh = async () => {
-    try { setView(await panel.accountRefresh()); ui.toast('BlackHole：订阅状态已刷新。'); } catch (e) { ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); }
+    try { const next = await panel.accountRefresh(); onView(next); ui.toast('BlackHole：订阅状态已刷新。'); } catch (e) { ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); }
   };
   const fulfilled = async (order: BillingOrder) => {
     await refreshView();
@@ -1004,7 +1155,9 @@ function AccountSection({ ui }: { ui: Ui }) {
         </div>
       </div>
       <div className="btnrow">
-        {view?.userId && <button className="secondary" type="button" onClick={() => void copy(view.userId!).then(() => ui.toast('BlackHole：用户 ID 已复制。'))}>复制用户 ID</button>}
+        {settingsHost().kind === 'vscode' && !loggedIn && <button type="button" disabled={signingIn} onClick={() => void signIn()}>{signingIn ? '登录中…' : '登录'}</button>}
+        {summary.canSignOut && <button className="secondary" type="button" onClick={onSignOut}>退出登录</button>}
+        {view?.userId && <button className="secondary" type="button" onClick={() => void copy(view.userId!).then(ok => ui.toast(ok ? 'BlackHole：用户 ID 已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn'))}>复制用户 ID</button>}
         <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refresh()}>刷新订阅</button>
         <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>购买记录</button>
         <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>申请退款</button>
@@ -1037,6 +1190,15 @@ function Proxies({ ui }: { ui: Ui }) {
   const [modal, setModal] = useState<string | null>(null);
   const [modalStatus, setModalStatus] = useState<Msg>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
+  const switchFocus = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (pending.size) return;
+    const target = switchFocus.current;
+    switchFocus.current = null;
+    // Native disabled buttons lose keyboard focus while saving. Restore only
+    // when it fell back to the body, never after the user chose another control.
+    if (target?.isConnected && !target.disabled && document.activeElement === document.body) target.focus({ preventScroll: true });
+  }, [pending]);
   const [editing, setEditing] = useState<string | null>(null);
   const [form, setForm] = useState<'add' | 'import' | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
@@ -1097,13 +1259,13 @@ function Proxies({ ui }: { ui: Ui }) {
       return (
         <div className="pxs" key={s.name}>
           <div className="hd">
-            <span className="nm">{s.name}</span>
-            <span className={'pxb ' + badge[0]}><span className="d" />{badge[1]}</span>
-            {canManage && <button type="button" className={'pchip ' + (count < 0 ? 'cold' : 'filesonly')} aria-label={`管理 ${s.name} 的工具`} onClick={() => openModal(s.name)}>{count < 0 ? '未加载' : count + ' 个工具'}</button>}
+            <span className="nm" title={s.name}>{s.name}</span>
+            <span className={'pxb ' + badge[0]}><span className="status-dot" aria-hidden="true" /><span className="status-label">{badge[1]}</span></span>
+            {canManage && <button type="button" className={'pchip ' + (count < 0 ? 'cold' : 'filesonly')} data-tools={s.name} aria-haspopup="dialog" aria-label={`管理 ${s.name} 的工具`} onClick={() => openModal(s.name)}>{count < 0 ? '未加载' : count + ' 个工具'}</button>}
             <span className="pxbtns">
-              {s.status !== 'config_error' && <button type="button" className={'pxsw' + (isOff ? '' : ' on')} role="switch" aria-label={'启用 ' + s.name} aria-checked={!isOff} title={isOff ? '启用并启动 MCP' : '停用并断开 MCP'} disabled={pending.has(s.name)} onClick={() => void saveFields(s.name, { enabled: isOff })} />}
-              {s.status !== 'config_error' && <button type="button" className="pxe" onClick={() => setEditing((e) => (e === s.name ? null : s.name))}>编辑</button>}
-              <button type="button" className="pxe danger" onClick={() => void remove(s.name)}>删除</button>
+              {s.status !== 'config_error' && <button type="button" className={'pxsw' + (isOff ? '' : ' on')} role="switch" aria-label={'启用 ' + s.name} aria-checked={!isOff} title={isOff ? '启用并启动 MCP' : '停用并断开 MCP'} disabled={pending.has(s.name)} onClick={(e) => { switchFocus.current = document.activeElement === e.currentTarget ? e.currentTarget : null; void saveFields(s.name, { enabled: isOff }); }} />}
+              {s.status !== 'config_error' && <button type="button" className="pxe" aria-label={`编辑 MCP ${s.name}`} onClick={() => setEditing((e) => (e === s.name ? null : s.name))}>编辑</button>}
+              <button type="button" className="pxe danger" aria-label={`删除 MCP ${s.name}`} onClick={() => void remove(s.name)}>删除</button>
             </span>
           </div>
           {s.status === 'config_error' && s.reason && <div className="pxkv bad">校验失败：{s.reason}</div>}
@@ -1165,7 +1327,7 @@ function ToolList({ name, data, cfg, busy, onRefresh, onToggle }: { name: string
   const expose = cfg?.surface?.expose;
   return (
     <>
-      <div className="pxthr"><span className="pxth">{'工具 ' + list.length + (dupN > 0 ? ' · 重名 ' + dupN : '') + (r.cachedOnly ? ' · 缓存' : ' · 实时') + (r.ageMs != null ? ' · ' + Math.round(r.ageMs / 1000) + 's 前' : '')}</span><span className="sp" /><button type="button" disabled={!!r.disabled || data.loading} onClick={onRefresh}>刷新</button></div>
+      <div className="pxthr"><span className="pxth">{'工具 ' + list.length + (dupN > 0 ? ' · 重名 ' + dupN : '') + (r.cachedOnly ? ' · 缓存' : ' · 实时') + (r.ageMs != null ? ' · ' + Math.round(r.ageMs / 1000) + 's 前' : '')}</span><span className="sp" /><button type="button" className="pxe" disabled={!!r.disabled || data.loading} onClick={onRefresh}>刷新</button></div>
       {r.disabled && <div className="pxkv dim">已停用</div>}
       {r.error && <div className="pxkv bad">{r.error}</div>}
       {!list.length ? <div className="pxkv dim">{r.disabled ? '无缓存' : '无工具'}</div> : (

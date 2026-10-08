@@ -5,6 +5,7 @@ import { api, panel, type Health, type PermissionMode, type SessionView } from '
 import { SANDBOX_NEEDS_PUBLIC_URL, connectionTarget, renderPrompt } from '../../../vscode/src/templates';
 import { PERMISSION_LABEL, sessionTitle } from '../format';
 import { copyText, failText, type ConfirmSpec, type ToastFn } from './common';
+import { chooseCurrentDirectAddress } from '../directAddressPicker';
 import { reloadChat, unpairSession, usePairLink } from './ChatDock';
 import c from './console.module.css';
 
@@ -41,7 +42,7 @@ export const MODES: ReadonlyArray<readonly [PermissionMode, string]> = [
 
 export function useSessionActions({ toast, confirm, onChanged, onRotated, onRename, connectorName, mcpUrl }: Deps): SessionActions {
   return useMemo<SessionActions>(() => {
-    const url = async (): Promise<string | null> => mcpUrl ?? (await panel.health().then((h) => h.mcp_url, () => null));
+    const health = async (): Promise<Health | null> => panel.health().then((h) => h, () => null);
     return {
       pauseResume: (s, action) =>
         api.sessionAction(s.id, action).then(
@@ -52,10 +53,27 @@ export function useSessionActions({ toast, confirm, onChanged, onRotated, onRena
           (e: unknown) => toast(failText(e), 'bad'),
         ),
       copyConnection: async () => {
-        const u = await url();
-        if (!u) return toast('还没有可用的连接地址', 'warn');
-        const ok = await copyText(u);
-        toast(ok ? '连接地址已复制' : '复制失败，请手动复制', ok ? 'ok' : 'bad');
+        try {
+          const h = await health();
+          if (!h) return toast('无法读取连接状态', 'warn');
+          const target = connectionTarget(h);
+          const openaiSelected = target.selectedRoute === 'openai';
+          let u = openaiSelected ? target.tunnelId : target.mcpUrl;
+          if (target.needsChoice) {
+            u = await chooseCurrentDirectAddress(h, panel.health);
+            if (!u) return; // cancellation never copies or changes a setting
+          }
+          if (!u && !h.connection_routes && !openaiSelected) u = mcpUrl ?? h.mcp_url;
+          if (!u) {
+            const why = target.reason === 'direct_unavailable' ? '直连监听当前不可用；不会改用 Cloudflare。'
+              : target.reason === 'custom_unavailable' ? '自定义地址尚未配置；不会改用其它渠道。'
+                : target.reason === 'openai_selected' ? 'OpenAI Tunnel 当前还没有可复制的 Tunnel ID。'
+                  : '当前选择的连接方式没有可复制地址。';
+            return toast(why, 'warn');
+          }
+          const ok = await copyText(u);
+          toast(ok ? (openaiSelected ? 'daemon 保存的 Tunnel ID 已复制' : target.selectedRoute === 'direct' ? '直连地址已复制' : '连接地址已复制') : '复制失败，请手动复制', ok ? 'ok' : 'bad');
+        } catch (e) { toast(e instanceof Error ? e.message : failText(e), 'warn'); }
       },
       rename: (s) => onRename(s),
       reloadChat: async (s) => {
@@ -68,24 +86,32 @@ export function useSessionActions({ toast, confirm, onChanged, onRotated, onRena
       },
       copyPrompt: async (s, kind, message) => {
         try {
-          const [cred, h] = await Promise.all([
-            api.sessionCredential(s.id),
-            panel.health().then(
-              (x): Health | null => x,
-              () => null,
-            ),
-          ]);
-          const u = mcpUrl ?? h?.mcp_url ?? null;
-          if (!u) return toast('还没有可用的连接地址', 'warn');
-          // Same gate as the VS Code sidebar: a sandbox needs a public URL (Cloudflare or a
-          // fixed address) and the OpenAI tunnel only serves connector prompts.
-          const target = h ? connectionTarget(h) : null;
-          if (kind === 'sandbox' && target && !target.sandbox) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
-          const ok = await copyText(renderPrompt(kind, u, cred.session_id, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
-          if (ok && kind === 'connector' && target && !target.connector) {
-            return toast('连接器提示词已复制，但还没有在线的渠道：请先启动 Cloudflare 或 OpenAI 渠道', 'warn');
+          const h = await health();
+          if (!h?.mcp_url) return toast('还没有可用的连接状态', 'warn');
+          const target = connectionTarget(h);
+          let u = kind === 'sandbox' ? target.sandboxMcpUrl : (target.mcpUrl ?? h.mcp_url);
+          if (kind === 'sandbox' && target.needsChoice) {
+            const chosen = await chooseCurrentDirectAddress(h, panel.health);
+            if (!chosen) return;
+            if (!h.connection_routes?.mcp_candidates.some((item) => item.kind === 'direct' && item.url === chosen && item.scope === 'public')) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
+            u = chosen;
           }
-          toast(ok ? (kind === 'connector' ? '连接器提示词已复制，发给 AI 即可开始' : '沙箱提示词已复制，发给 AI 即可开始') : '复制失败', ok ? 'ok' : 'bad');
+          if (kind === 'sandbox' && !u) return toast(SANDBOX_NEEDS_PUBLIC_URL, 'warn');
+          // A one-off address picker may remain open while the credential is rotated.
+          const cred = await api.sessionCredential(s.id);
+          const ok = await copyText(renderPrompt(kind, u ?? h.mcp_url, cred.session_id, message?.trim() ? { kind: 'user', text: message } : undefined, connectorName));
+          if (!ok) return toast('复制失败', 'bad');
+          if (kind === 'connector' && target.needsChoice) {
+            return toast('连接器提示词已复制；但存在多个直连地址，配置 MCP 时需要明确选择，系统不会改用 Cloudflare。', 'warn');
+          }
+          if (kind === 'connector' && !target.connector) {
+            const why = target.reason === 'direct_unavailable' ? '直连当前不可用，不会改用 Cloudflare。'
+              : target.reason === 'custom_unavailable' ? '自定义地址尚未配置，不会改用其它渠道。'
+                : target.openai === 'starting' ? 'OpenAI Tunnel 正在启动。'
+                  : '当前选择的连接方式尚未就绪。';
+            return toast('连接器提示词已复制；' + why, 'warn');
+          }
+          toast(kind === 'connector' ? '连接器提示词已复制，发给 AI 即可开始' : '沙箱提示词已复制，发给 AI 即可开始', 'ok');
         } catch (e) {
           toast(failText(e), 'bad');
         }

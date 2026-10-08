@@ -1,6 +1,10 @@
+import { nativeSettingsPath, validSettingsRequest } from '../../contracts/src/settings-host';
+import type { ModelAttribution } from '../../contracts/src/courier-model';
+import type { PhoneEndpoint, DirectAccessView } from '../../contracts/src/connections';
 import type { ProcessSyncInput, ProcessSyncResult, ProcessStopInput, ProcessViewItem } from './processTypes';
 import { apiBase, type ExtConfig } from './config';
 import type { AuthView, Credential } from './cloudAuthClient';
+import type { ConnectionHealth } from './templates';
 
 /**
  * Today's usage counters attached to /health by the daemon (0-point local
@@ -48,7 +52,7 @@ export interface ExecutionRuntime {
     cleanup_guarantee: 'kernel-owned' | 'confirmed-or-unknown' | 'unavailable';
   };
 }
-export interface Health {
+export interface Health extends ConnectionHealth {
   ok: boolean;
   version: string;
   /** Fingerprint of the extension/configuration that spawned this daemon. Older daemons omit it. */
@@ -61,8 +65,8 @@ export interface Health {
   daemon_id?: string;
   /** Daemon-owned settings revision; a change means another client edited them. Older daemons omit it. */
   settings_revision?: number;
-  /** 局域网直连状态（旧版守护进程没有这一项）。 */
-  lan_access?: { enabled: boolean; port: number; listening: boolean; error: string | null; addresses: string[]; mcp_path: string } | null;
+  /** One canonical data-plane listener for direct and operator-managed ingress. */
+  direct_access?: DirectAccessView | null;
   /** v2.6 工具表面代次：reload/目录刷新/预热即自增 → 设置页自动重取工具列表。 */
   proxy_surface_gen?: number | null;
   /** v2.6 MCP 主机连接代次：每次握手（重连）自增 → 设置页自动重新获取工具列表。 */
@@ -102,6 +106,7 @@ export interface OpenAITunnelView {
   credential_configured: boolean | null;
   credential_revision: number;
   pending_restart: boolean;
+  proxy_pending_restart?: boolean;
   reason_code: string | null;
   reason: string | null;
   client_version: string | null;
@@ -168,12 +173,15 @@ export interface HandoffSnapshot {
   available: boolean;
   session: SessionInfo;
   mcp_url: string;
+  /** New daemons include the same route snapshot as /health; older daemons omit it. */
+  connection_routes?: ConnectionHealth['connection_routes'];
   /** Status only; older daemons omit it. Lets handoff accept URL-free connector prompts over OpenAI. */
   openai_tunnel?: { status: OpenAITunnelStatus } | null;
 }
 
 export interface CreatedSession extends SessionInfo {
   mcp_url: string;
+  connection_routes?: ConnectionHealth['connection_routes'];
 }
 
 export interface CallRow {
@@ -392,6 +400,7 @@ export interface RemoteView {
   reason: string | null;
   origin: string | null;
   kind: 'quick' | 'fixed' | null;
+  endpoints?: PhoneEndpoint[];
   devices: RemoteDevice[];
   /** phones that scanned the code and wait for 允许 on this computer */
   requests?: { id: string; name: string; created_at: string; expires_at: string }[];
@@ -406,8 +415,10 @@ export interface CourierTargetView {
   open: boolean;
   ready: boolean | null;
   busy: boolean | null;
+  turnState?: 'running' | 'done' | 'stopped' | null;
   draft: boolean | null;
   model: string | null;
+  modelAttribution?: ModelAttribution | null;
   /** Title of an open Arena rating card, null when none. */
   card?: string | null;
   sessionId: string | null;
@@ -439,6 +450,15 @@ export interface CourierMessageView {
 export class ControlApi {
   constructor(private readonly cfg: () => ExtConfig) {}
 
+  /** Restricted bridge for the shared settings UI, not a general HTTP proxy. */
+  settingsUiRequest(method: string, path: string, body?: unknown): Promise<unknown> {
+    const input = { id: 'native', method, path, ...(body === undefined ? {} : { body }) };
+    const target = nativeSettingsPath(method, path);
+    if (!validSettingsRequest(input) || !target) return Promise.reject(Object.assign(new Error('settings_route_denied'), { status: 403 }));
+    if (method === 'GET' && target === '/health') return this.health();
+    return this.req(method, target, body, target === '/proxies/tools' ? 65_000 : 30_000);
+  }
+
   settings(): Promise<DaemonSettings> {
     return this.req('GET', '/settings', undefined, 4000);
   }
@@ -452,8 +472,12 @@ export class ControlApi {
     return this.req('GET', '/remote', undefined, 4000);
   }
 
-  remotePair(): Promise<{ url: string; expires_at: string; kind: string }> {
-    return this.req('POST', '/remote/pair', undefined, 4000);
+  remoteProbe(origin: string): Promise<RemoteView> {
+    return this.req('POST', '/remote/probe', { origin }, 12_000);
+  }
+
+  remotePair(origin?: string): Promise<{ url: string; expires_at: string; kind: string }> {
+    return this.req('POST', '/remote/pair', origin ? { origin } : undefined, 4000);
   }
 
   remoteDecide(id: string, allow: boolean): Promise<RemoteView> {
@@ -809,8 +833,13 @@ export class ControlApi {
    * the old `/mcp/<token>` URL stops working immediately — connectors must be
    * re-configured with the new URL.
    */
-  rotateMcpToken(): Promise<{ mcp_url: string }> {
+  rotateMcpToken(): Promise<{ mcp_url: string; connection_routes?: ConnectionHealth['connection_routes'] }> {
     return this.req('POST', '/token/rotate');
+  }
+
+
+  installRuntime(runtime: 'cloudflared' | 'openai', configuredPath: string): Promise<{ path: string; installed: boolean; version?: string }> {
+    return this.req('POST', '/runtime/install', { runtime, configured_path: configuredPath }, 150_000);
   }
 
   /** Keep the channel watchdog fed while this extension host is alive. */

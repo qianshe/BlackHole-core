@@ -22,11 +22,16 @@ import type { ApprovalScope, ConfirmationRow } from '../storage/db.js';
 import { VERSION } from '../version.js';
 import { processManagementCapability } from '../execution.js';
 import { createWorkspaceSession, normalizeWritableDirs, type CreateSessionInput } from '../services/sessions.js';
-import { migrateSettings, patchSettings, settingsView } from '../settings/service.js';
+import { migrateSettings, patchSettings, probePublicUrl, settingsView } from '../settings/service.js';
+import { skillDirectoryStatus } from '../settings/skills-status.js';
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
 import { loopbackPeer, mountOpenAITunnel } from './openai-tunnel-routes.js';
 import { mountFeedRoutes } from '../feed/routes.js';
 import { cloudflaredOnDisk, LastChannel, switchOff, switchOn, switchView, type SwitchDeps } from '../tunnel/switch.js';
+import { resolveConnectionRoutes } from '../connection/resolve.js';
+import { initializeCloudflared } from '../tunnel/cloudflared-install.js';
+import { initializeOpenAITunnelClient } from '../tunnel/openai-tunnel-install.js';
+import { withProxyFetch } from '../network/proxy-fetch.js';
 
 /**
  * 设置页「查看工具列表」拉取用的专用 session 键（v2.6）。与 verifyServer 的
@@ -142,8 +147,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       ...(deps.openaiTunnel ? { openai_tunnel_api_version: 1, openai_tunnel: deps.openaiTunnel.view() } : {}),
       // Clients re-read settings when this moves (an edit made in another client).
       ...(deps.settings ? { settings_revision: deps.settings.get().revision } : {}),
-      // 局域网直连状态：是否在监听、本机可用地址和错误（控制接口只对本机开放，可以带 MCP 路径）
-      ...(deps.lan ? { lan_access: { ...deps.lan.view(), mcp_path: mcpPath() } } : {}),
+      ...(deps.directAccess ? { direct_access: deps.directAccess.view() } : {}),
       ...(deps.entitlement ? { cloud_origin: deps.entitlement.cloudOrigin, entitlement_bridge_version: 2 } : {}),
       ...(deps.account ? { account_api_version: ACCOUNT_API_VERSION, account_storage: deps.account.storage } : {}),
       started_at: new Date(bootTime).toISOString(),
@@ -159,6 +163,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       tunnel_reason: deps.tunnel.reason ?? null,
       // machine-level and stable: the same URL for every session on this host
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
       mcp_path: mcpPath(),
       // whether context_search was offered to agents at boot
       semantic_search: deps.semantic.available,
@@ -351,7 +356,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     deps.events.append(null, 'mcp_token_rotated', {});
     // The OpenAI runtime's MCP_SERVER_URL embeds the token: restart a live run on the new target.
     void deps.openaiTunnel?.targetChanged().catch(() => undefined);
-    res.json({ mcp_url: mcpUrl(deps) });
+    res.json({ mcp_url: mcpUrl(deps), connection_routes: resolveConnectionRoutes(deps, mcpPath()) });
   });
 
   // Extension heartbeat: the channel should close when every VS Code window
@@ -449,6 +454,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     res.status(201).json({
       ...publicSession(session),
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
       note: 'Use the numeric session_id as `sessionId` on every tool call so calls stay attached to this session. If it may have leaked, rotate the session: the old id stops resolving immediately while the session continues under a fresh id.',
     });
   });
@@ -466,6 +472,40 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   app.post('/settings/migrate', (req, res) => {
     const r = migrateSettings(deps, req.body);
     res.status(r.status).json(r.body);
+  });
+
+  // The shared settings renderer uses the same validation in both hosts.
+  app.get('/settings/skills', (req, res) => {
+    const dir = typeof req.query.dir === 'string' ? req.query.dir.slice(0, 1000) : (deps.settings?.get().values.skillsDir ?? '');
+    const { cls, hint } = skillDirectoryStatus(dir.trim());
+    res.json({ cls, hint });
+  });
+  app.post('/settings/probe', (req, res) => {
+    const proxy = deps.settings?.get().values.channelProxyUrl || deps.settings?.get().values.tunnelProbeProxy || '';
+    void probePublicUrl((req.body as { url?: unknown } | undefined)?.url, proxy).then(r => res.json(r));
+  });
+  // Runtime installation is daemon-owned so every UI uses the same proxy,
+  // download verification and single network boundary. It never starts a channel.
+  app.post('/runtime/install', async (req, res) => {
+    const body = req.body as { runtime?: unknown; configured_path?: unknown } | undefined;
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((k) => k !== 'runtime' && k !== 'configured_path')
+      || (body.runtime !== 'cloudflared' && body.runtime !== 'openai')
+      || typeof body.configured_path !== 'string'
+      || body.configured_path.length > 4096) {
+      res.status(400).json({ error: 'invalid_body' });
+      return;
+    }
+    const proxy = deps.settings?.get().values.channelProxyUrl || undefined;
+    try {
+      const result = await withProxyFetch(proxy, (fetchFile) =>
+        body.runtime === 'cloudflared'
+          ? initializeCloudflared(body.configured_path as string, { fetch: fetchFile })
+          : initializeOpenAITunnelClient(body.configured_path as string, { fetch: fetchFile }));
+      res.json(result);
+    } catch (error) {
+      res.status(502).json({ error: 'install_failed', message: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get('/sessions', (_req, res) => {
@@ -533,6 +573,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       res.json({
         ...publicSession(updated as NonNullable<typeof updated>),
         mcp_url: mcpUrl(deps),
+        connection_routes: resolveConnectionRoutes(deps, mcpPath()),
         note: 'The old session id no longer resolves; hand the new numeric session_id to the agent. The session (shell, todos, audit trail) continues unchanged.',
       });
       return;
@@ -749,6 +790,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       available: session.status === 'active' && (session.expires_at === null || session.expires_at >= Date.now()),
       session: publicSession(session),
       mcp_url: mcpUrl(deps),
+      connection_routes: resolveConnectionRoutes(deps, mcpPath()),
       // Status only: a URL-free connector prompt also works over the OpenAI tunnel.
       openai_tunnel: deps.openaiTunnel ? { status: deps.openaiTunnel.view().status } : null,
     });
@@ -836,8 +878,19 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     if (!deps.remote) { res.status(503).json({ error: 'remote_unavailable' }); return; }
     res.json(deps.remote.view());
   });
-  app.post('/remote/pair', (_req, res) => {
-    const r = deps.remote?.pair();
+  app.post('/remote/probe', async (req, res) => {
+    const body = req.body as { origin?: unknown } | undefined;
+    if (!body || typeof body.origin !== 'string' || Object.keys(body).some((key) => key !== 'origin')) {
+      res.status(400).json({ error: 'invalid_body' }); return;
+    }
+    const result = await deps.remote?.probe(body.origin);
+    if (!result) { res.status(409).json({ error: 'remote_unavailable' }); return; }
+    res.json(deps.remote!.view());
+  });
+  app.post('/remote/pair', (req, res) => {
+    const origin = (req.body as { origin?: unknown } | undefined)?.origin;
+    if (origin !== undefined && typeof origin !== 'string') { res.status(400).json({ error: 'invalid_body' }); return; }
+    const r = deps.remote?.pair(typeof origin === 'string' ? origin : undefined);
     if (!r) { res.status(409).json({ error: 'remote_unavailable' }); return; }
     res.json(r);
   });

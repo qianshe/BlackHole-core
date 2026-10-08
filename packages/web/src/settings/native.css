@@ -1,0 +1,7 @@
+/* Host frame only. Component geometry and styling belong to shared.css. */
+body.settings-native-host { margin: 0; padding: 0; background: var(--vscode-editor-background); color: var(--vscode-foreground); }
+body.settings-native-host dialog[aria-label='设置'] { width: 100vw; max-width: none; height: 100vh; max-height: none; padding: 0; margin: 0; align-items: stretch; justify-content: stretch; background: var(--vscode-editor-background); }
+body.settings-native-host dialog[aria-label='设置']::backdrop { background: transparent; }
+body.settings-native-host .settings-shell { width: 100%; max-width: none; height: 100%; max-height: none; border: 0; border-radius: 0; box-shadow: none; }
+body.settings-native-host { --surface: var(--vscode-editor-background); --surface-2: var(--vscode-sideBar-background); --surface-3: var(--vscode-input-background); --surface-hover: var(--vscode-list-hoverBackground); --text: var(--vscode-foreground); --text-2: var(--vscode-foreground); --text-3: var(--vscode-descriptionForeground); --text-bright: var(--vscode-foreground); --border: var(--vscode-panel-border); --accent: var(--vscode-textLink-foreground); --focus: var(--vscode-focusBorder); --mono: var(--vscode-editor-font-family); --font: var(--vscode-font-family); }
+body.vscode-high-contrast .settings-shell, body.vscode-high-contrast-light .settings-shell { --settings-border: var(--vscode-contrastBorder, var(--vscode-foreground)); }

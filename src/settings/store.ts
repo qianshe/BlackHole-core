@@ -1,7 +1,7 @@
 import type { MachineStateRepo } from '../storage/machineState.js';
 import type { Config } from '../config.js';
 import { SEMANTIC_MODES, type SemanticMode } from '../config.js';
-import { DEFAULT_LAN_PORT } from '../lan/listener.js';
+import { DEFAULT_DIRECT_PORT } from '../../packages/contracts/dist/connections.js';
 
 /**
  * Daemon-owned user settings. The daemon is the source of truth; the VS Code
@@ -43,15 +43,19 @@ export interface Settings {
   publicBaseUrl: string;
   cloudflaredPath: string;
   skillsDir: string;
-  /** Default connection info / editing preference only; never gates whether a channel may run (plan §5.1). */
+  /** Channel editing tab preference; never gates whether a channel may run. */
   channelMode: 'cloudflare' | 'openai' | 'custom';
+  /** Explicit AI route preference. auto preserves compatibility; other values never silently fall back. */
+  aiDefaultRoute: 'auto' | 'direct' | 'cloudflare' | 'custom' | 'openai';
   semanticMode: SemanticMode;
   gitUsrBinPath: string;
   namedTunnelName: string;
   tunnelProbeProxy: string;
+  /** Optional application-layer proxy for supported channel HTTP/control traffic; never mutates daemon-global env. */
+  channelProxyUrl: string;
   webAgents: string[];
   customWebAgents: CustomWebAgent[];
-  /** Phone access over the https public address (plan 6.13 R); off by default. */
+  /** Phone access over the current public HTTP(S) entry (legacy stored toggle; UI is always-on). */
   remoteAccess: boolean;
   /** OpenAI tunnel-client runtime path (plan §4); read at the next explicit OpenAI start. */
   openaiTunnelClientPath: string;
@@ -59,12 +63,12 @@ export interface Settings {
   openaiTunnelId: string;
   /** Courier sites added by detection (daemon-owned, not a VS Code setting). */
   courierSites: CourierSite[];
-  /** 局域网直连：另开一个 0.0.0.0 监听器，只开放 MCP；默认关闭，由用户决定。改动即时生效。 */
-  lanAccess: boolean;
-  /** 局域网直连监听的端口（不能与主端口相同）。 */
-  lanPort: number;
-  /** 可选：映射到直连端口的域名地址（如 https://mcp.example.com），只用于显示链接和生成面板地址。 */
-  lanUrl: string;
+  /** One switch for LAN / mesh / user-managed public direct access. */
+  directAccessEnabled: boolean;
+  /** Stable data-plane port, also used by an operator's reverse proxy. */
+  directPort: number;
+  /** Optional advertised HTTP(S) origin; saving it never enables the listener. */
+  directAccessUrl: string;
 }
 
 export interface SettingsRecord {
@@ -77,7 +81,7 @@ export interface SettingsRecord {
 
 /** The first six keys (0.3.174). Records written before `seeded` existed had all of them. */
 export const V1_SETTING_KEYS = ['connectorName', 'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'channelMode', 'semanticMode'] as const;
-export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'] as const;
+export const SETTING_KEYS = [...V1_SETTING_KEYS, 'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy', 'channelProxyUrl', 'aiDefaultRoute', 'webAgents', 'customWebAgents', 'remoteAccess', 'openaiTunnelClientPath', 'openaiTunnelId', 'courierSites', 'directAccessEnabled', 'directPort', 'directAccessUrl'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /**
@@ -99,19 +103,21 @@ export const DEFAULT_SETTINGS: Settings = {
   cloudflaredPath: '',
   skillsDir: '',
   channelMode: 'cloudflare',
+  aiDefaultRoute: 'auto',
   semanticMode: 'explicit',
   gitUsrBinPath: '',
   namedTunnelName: 'blackhole',
   tunnelProbeProxy: '',
+  channelProxyUrl: '',
   webAgents: [...DEFAULT_WEB_AGENTS],
   customWebAgents: [],
   remoteAccess: true,
   openaiTunnelClientPath: '',
   openaiTunnelId: '',
   courierSites: [],
-  lanAccess: false,
-  lanPort: DEFAULT_LAN_PORT,
-  lanUrl: '',
+  directAccessEnabled: false,
+  directPort: DEFAULT_DIRECT_PORT,
+  directAccessUrl: '',
 };
 
 const MAX_TEXT = 1000;
@@ -218,9 +224,9 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
     return { value: out };
   }
   if (key === 'remoteAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'remoteAccess must be true or false' };
-  if (key === 'lanAccess') return typeof raw === 'boolean' ? { value: raw } : { error: 'lanAccess must be true or false' };
-  if (key === 'lanPort') {
-    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1024 && raw <= 65535 ? { value: raw } : { error: 'lanPort must be an integer between 1024 and 65535' };
+  if (key === 'directAccessEnabled') return typeof raw === 'boolean' ? { value: raw } : { error: 'directAccessEnabled must be true or false' };
+  if (key === 'directPort') {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1024 && raw <= 65535 ? { value: raw } : { error: 'directPort must be an integer between 1024 and 65535' };
   }
   const t = text(key, raw);
   if ('error' in t) return t;
@@ -235,11 +241,10 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
       if (u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'publicBaseUrl must be a bare origin such as https://example.com' };
       return { value: v.replace(/\/+$/, '') };
     }
-    case 'lanUrl': {
-      // 与 publicBaseUrl 同规则：只接受 http(s)://主机[:端口]，不带路径和凭据。
+    case 'directAccessUrl': {
       if (!v) return { value: '' };
       const u = httpUrl(v);
-      if (!u || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'lanUrl must be a bare origin such as https://mcp.example.com or http://nas.lan:7307' };
+      if (!u || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'directAccessUrl must be a bare http(s) origin such as http://203.0.113.10:7307 or https://blackhole.example.com' };
       return { value: u.origin };
     }
     case 'tunnelProbeProxy': {
@@ -248,10 +253,18 @@ export function normalizeSetting(key: SettingKey, raw: unknown): { value: unknow
       if (!u || !u.port || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'tunnelProbeProxy must look like http://127.0.0.1:7890' };
       return { value: v.replace(/\/+$/, '') };
     }
+    case 'channelProxyUrl': {
+      if (!v) return { value: '' };
+      const u = httpUrl(v);
+      if (!u || !u.port || u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '') return { error: 'channelProxyUrl must be an http(s) proxy origin such as http://127.0.0.1:7890; credentials are not accepted' };
+      return { value: u.origin };
+    }
     case 'namedTunnelName':
       return !v || /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v) ? { value: v || 'blackhole' } : { error: 'namedTunnelName may only use letters, digits, dot, dash and underscore (max 64)' };
     case 'channelMode':
       return v === 'cloudflare' || v === 'openai' || v === 'custom' ? { value: v } : { error: 'channelMode must be cloudflare, openai or custom' };
+    case 'aiDefaultRoute':
+      return v === 'auto' || v === 'direct' || v === 'cloudflare' || v === 'custom' || v === 'openai' ? { value: v } : { error: 'aiDefaultRoute must be auto, direct, cloudflare, custom or openai' };
     case 'openaiTunnelId':
       // An identifier from Platform tunnel settings; a URL here is always a mistake (plan R6).
       return !v || /^tunnel_[0-9a-f]{32}$/.test(v) ? { value: v } : { error: 'openaiTunnelId must be the Tunnel ID from Platform tunnel settings (tunnel_ + 32 lowercase hex), not a URL' };
@@ -337,7 +350,7 @@ export function unseededKeys(record: SettingsRecord): SettingKey[] {
 }
 
 /** Owned by the daemon from the start: never handed over by the extension. */
-export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'lanAccess', 'lanPort', 'lanUrl'];
+export const DAEMON_ONLY_KEYS: readonly SettingKey[] = ['remoteAccess', 'courierSites', 'directAccessEnabled', 'directPort', 'directAccessUrl', 'channelProxyUrl', 'aiDefaultRoute'];
 
 /**
  * Startup overlay: seeded daemon-owned settings win over the launcher's

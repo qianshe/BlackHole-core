@@ -1,3 +1,4 @@
+import type { ModelAttribution } from '../../../contracts/src/courier-model';
 /**
  * 会话 feed 的 React 接入（session-feed 计划 §7.6）：按 `范围|会话|条数|once` 登记，同一个会话的多个组件
  * （时间线、输入框……）共用一条长轮询；最后一个组件卸载后才停。
@@ -17,10 +18,12 @@ export interface FeedTarget {
   site: string;
   label: string;
   busy: boolean | null;
+  turnState?: 'running' | 'done' | 'stopped' | null;
   ready: boolean | null;
   open: boolean;
   draft: boolean | null;
   model?: string | null;
+  modelAttribution?: ModelAttribution | null;
   /** 开着的 Arena 评价卡标题，没有则为 null。 */
   card?: string | null;
 }

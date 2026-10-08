@@ -1,3 +1,6 @@
+import { settingsHost } from './settings/host';
+import type { ConnectionRoutesView, DirectAccessView, PhoneEndpoint, SetupSummary } from '../../contracts/src/connections';
+export type { DirectAccessView } from '../../contracts/src/connections';
 export type SessionStatus = 'active' | 'paused' | 'revoked' | 'archived';
 export type CallStatus = 'started' | 'awaiting' | 'completed' | 'failed' | 'denied' | 'unknown';
 
@@ -31,6 +34,10 @@ export interface CallView {
   created_at: string | null;
   updated_at: string | null;
 }
+
+export interface TurnDiffLine { type: 'context' | 'add' | 'remove' | 'hunk'; oldLine?: number; newLine?: number; text: string }
+export interface TurnDiffFile { path: string; status: 'ready' | 'deleted' | 'unavailable'; added: number | null; removed: number | null; lines: TurnDiffLine[]; callIds: string[]; message?: string }
+export interface TurnDiffResponse { files: TurnDiffFile[]; pending: number; uncertain: number; incomplete: boolean; turnAt: number | null }
 
 export interface CallsPage {
   calls: CallView[];
@@ -83,10 +90,12 @@ export interface SettingsValues {
   cloudflaredPath: string;
   skillsDir: string;
   channelMode: 'cloudflare' | 'openai' | 'custom';
+  aiDefaultRoute?: 'auto' | 'direct' | 'cloudflare' | 'custom' | 'openai';
   semanticMode: 'off' | 'explicit' | 'auto';
   gitUsrBinPath: string;
   namedTunnelName: string;
   tunnelProbeProxy: string;
+  channelProxyUrl?: string;
   webAgents: string[];
   customWebAgents: { name: string; url: string }[];
   remoteAccess: boolean;
@@ -94,12 +103,12 @@ export interface SettingsValues {
   openaiTunnelId: string;
   /** Sites added in the Courier browser extension (检测此页面); deleting one here removes it in Courier. */
   courierSites: CourierSiteView[];
-  /** 局域网直连开关（默认关闭）。 */
-  lanAccess: boolean;
-  /** 局域网直连端口。 */
-  lanPort: number;
-  /** 可选的直连域名地址（如 https://mcp.example.com）；旧版守护进程没有这一项。 */
-  lanUrl?: string;
+  /** One switch for LAN, mesh and user-managed public direct access. */
+  directAccessEnabled: boolean;
+  /** Stable data-plane port; shared with user-managed reverse proxy ingress. */
+  directPort: number;
+  /** Optional advertised HTTP(S) origin, used in copied links and prompts. */
+  directAccessUrl: string;
 }
 
 /** 渠道总开关（daemon /channel）：开 = 启动上次使用的渠道，关 = 停止所有渠道。 */
@@ -113,16 +122,6 @@ export interface ChannelSwitchView {
   last: ChannelChoice | null;
   missing: 'cloudflared' | 'named_url' | 'openai_setup' | 'openai_unavailable' | null;
   reason: string | null;
-}
-
-/** 守护进程 health 里的局域网直连状态。 */
-export interface LanAccessView {
-  enabled: boolean;
-  port: number;
-  listening: boolean;
-  error: string | null;
-  addresses: string[];
-  mcp_path: string;
 }
 
 export interface CourierSiteView {
@@ -156,6 +155,7 @@ export interface CreatedSession {
   session: SessionView;
   session_id: string;
   mcp_url: string;
+  connection_routes?: Health['connection_routes'];
 }
 
 export class ApiError extends Error {
@@ -172,7 +172,9 @@ const BASE = '/web-api/v1';
 // Write token bound to the session cookie; kept in memory only.
 let csrf = '';
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const transport = settingsHost().request;
+  if (transport) return transport<T>(path, init);
   const write = init.method !== undefined && init.method !== 'GET';
   const res = await fetch(BASE + path, {
     ...init,
@@ -200,11 +202,14 @@ export const api = {
   /** Browser login with the machine's cloud account (no session needed). */
   login: () => request<{ attempt: string }>('/auth/login', json('POST', {})),
   loginPoll: (attempt: string) => request<{ state: 'running' | 'done' | 'failed'; error?: string }>('/auth/login/' + encodeURIComponent(attempt)),
+  setupSummary: () => request<SetupSummary>('/auth/setup'),
   logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
   sessions: (signal?: AbortSignal) => request<{ sessions: SessionView[]; version: string }>('/sessions', { signal }),
   /** page is 0-based (0 = newest); anchor > 0 freezes deep pages against new writes. */
   calls: (id: string, page: number, limit: number, signal?: AbortSignal, anchor = 0) =>
     request<CallsPage>(`/sessions/${encodeURIComponent(id)}/calls?page=${page}&limit=${limit}${anchor > 0 ? `&anchor=${anchor}` : ''}`, { signal }),
+  currentTurnDiff: (id: string, signal?: AbortSignal) =>
+    request<TurnDiffResponse>(`/sessions/${encodeURIComponent(id)}/current-turn-diff`, { signal }),
   todos: (id: string, signal?: AbortSignal) => request<TodoBoard>(`/sessions/${encodeURIComponent(id)}/todos`, { signal }),
   createSession: (input: NewSessionInput) => request<CreatedSession>('/sessions', json('POST', input)),
   dirs: (path: string, signal?: AbortSignal) => request<DirListing>(`/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { signal }),
@@ -227,7 +232,7 @@ export const api = {
   resolveConfirmation: (id: string, action: 'approve' | 'deny', scope?: ApprovalScope) =>
     request<{ id: string; status: string | null }>(`/confirmations/${encodeURIComponent(id)}/${action}`, json('POST', action === 'approve' ? { scope: scope ?? 'once' } : {})),
   /** Handoff snapshot (content + credential for the prompt); loopback console only. */
-  handoff: (id: string) => request<{ session: { id: string; session_id: string; status: string }; available: boolean; handoff: { id: string; content: string; created_at: number } | null; mcp_url: string; openai_tunnel?: { status: string } | null }>(`/panel/sessions/${encodeURIComponent(id)}/handoff`),
+  handoff: (id: string) => request<{ session: { id: string; session_id: string; status: string }; available: boolean; handoff: { id: string; content: string; created_at: number } | null; mcp_url: string; connection_routes?: Health['connection_routes']; openai_tunnel?: { status: string } | null }>(`/panel/sessions/${encodeURIComponent(id)}/handoff`),
   sessionCredential: (id: string) => request<{ session_id: string; name: string | null }>(`/panel/sessions/${encodeURIComponent(id)}`),
   renameSession: (id: string, name: string) => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/name`, json('PATCH', { name })),
   setSessionMode: (id: string, mode: PermissionMode) => request<unknown>(`/panel/sessions/${encodeURIComponent(id)}/mode`, json('PATCH', { permission_mode: mode })),
@@ -254,8 +259,12 @@ export interface ConfirmationView {
 export interface AccountView {
   state: 'logged_out' | 'saved' | 'verified' | 'unavailable';
   userId?: string;
+  /** Login credential expiry; not the subscription expiry. */
+  expiresAt?: number;
+  /** Server-check sample time in milliseconds. */
+  checkedAt?: number;
   remainingSeconds?: number;
-  account?: { name: string; email: string; status: string };
+  account?: { name: string; email: string; status: string; serviceExpiresAt?: number; serverNow?: number };
   storage: 'available' | 'unavailable';
   signIn: { state: 'idle' } | { state: 'running'; startedAt: number } | { state: 'done'; finishedAt: number } | { state: 'failed'; error: string; finishedAt: number };
 }
@@ -265,6 +274,7 @@ export interface Health {
   ok: boolean;
   version: string;
   daemon_id: string;
+  settings_revision?: number;
   tunnel: string;
   tunnel_mode: 'quick' | 'named' | null;
   tunnel_url: string | null;
@@ -275,8 +285,8 @@ export interface Health {
   openai_tunnel?: OpenAITunnelView | null;
   mcp_url: string;
   mcp_path: string;
-  /** 旧版守护进程没有这一项 */
-  lan_access?: LanAccessView | null;
+  connection_routes?: ConnectionRoutesView | null;
+  direct_access?: DirectAccessView | null;
   stats?: { total: number; diff_added: number; diff_removed: number } | null;
   activity_days?: { start: number; total: number; diff_added: number; diff_removed: number }[];
 }
@@ -302,6 +312,7 @@ export interface OpenAITunnelView {
   credential_configured: boolean | null;
   credential_revision: number;
   pending_restart: boolean;
+  proxy_pending_restart?: boolean;
   reason_code: string | null;
   reason: string | null;
   client_version: string | null;
@@ -327,7 +338,7 @@ export const panel = {
   channel: () => request<ChannelSwitchView>('/panel/channel'),
   /** 开/关渠道总开关；缺少前提时抛 ApiError(409, 缺少的那一项)。 */
   channelSwitch: (on: boolean) => request<{ ok: true; view: ChannelSwitchView }>('/panel/channel', json('POST', { on })),
-  rotateToken: () => request<{ mcp_url: string }>('/panel/token/rotate', json('POST', {})),
+  rotateToken: () => request<{ mcp_url: string; connection_routes?: Health['connection_routes'] }>('/panel/token/rotate', json('POST', {})),
   grants: () => request<GrantsInfo>('/panel/approvals'),
   grantsClear: () => request<{ removed: number }>('/panel/approvals/clear', json('POST', {})),
   grantRemove: (key: string) => request<{ removed: number }>(`/panel/approvals/${enc(key)}/remove`, json('POST', {})),
@@ -370,10 +381,11 @@ export const panel = {
 // ─── phone access (plan 6.13 R4) ─────────────────────────────────────────
 export interface RemoteDevice { id: string; name: string; created_at: string; last_seen_at: string }
 export interface RemotePairRequest { id: string; name: string; created_at: string; expires_at: string }
-export interface RemoteView { enabled: boolean; available: boolean; reason: string | null; origin: string | null; kind: 'quick' | 'fixed' | null; devices: RemoteDevice[]; requests?: RemotePairRequest[] }
+export interface RemoteView { enabled: boolean; available: boolean; reason: string | null; origin: string | null; kind: 'quick' | 'fixed' | null; endpoints?: PhoneEndpoint[]; devices: RemoteDevice[]; requests?: RemotePairRequest[] }
 export const remoteAdmin = {
   view: () => request<RemoteView>('/remote'),
-  pair: () => request<{ url: string; expires_at: string; kind: string }>('/remote/pair', json('POST', {})),
+  probe: (origin: string) => request<RemoteView>('/remote/probe', json('POST', { origin })),
+  pair: (origin?: string) => request<{ url: string; expires_at: string; kind: string }>('/remote/pair', json('POST', origin ? { origin } : {})),
   revoke: (id: string) => request<RemoteView>(`/remote/devices/${encodeURIComponent(id)}/revoke`, json('POST', {})),
   revokeAll: () => request<RemoteView>('/remote/revoke-all', json('POST', {})),
   decide: (id: string, allow: boolean) => request<RemoteView>(`/remote/requests/${encodeURIComponent(id)}`, json('POST', { allow })),

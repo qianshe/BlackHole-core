@@ -1,5 +1,7 @@
 import type { DaemonDeps } from '../deps.js';
 import { normalizeCourierSite, normalizeSetting, normalizeSettingsPatch, pendingRestartKeys, unseededKeys, MAX_COURIER_SITES, SETTING_KEYS, type Settings, type SettingsRecord } from './store.js';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { directAccessConfig } from '../direct-access/listener.js';
 
 /** Shared by /api/settings (extension) and /web-api/v1/settings (Local Web). */
 export function settingsView(deps: DaemonDeps, record: SettingsRecord = deps.settings!.get()) {
@@ -32,9 +34,11 @@ export function patchSettings(deps: DaemonDeps, body: unknown, source: string, r
   if (r.changed.length > 0) deps.events.append(null, 'settings_changed', { source, keys: r.changed, revision: r.record.revision });
   // Turning phone access off ends every pairing now, not on the next request.
   if (r.changed.includes('remoteAccess') && !r.record.values.remoteAccess) deps.revokeRemoteDevices?.();
-  // 局域网直连开关和端口即时生效，不用重启守护进程。
-  if (r.changed.includes('lanAccess') || r.changed.includes('lanPort')) void deps.lan?.apply(r.record.values.lanAccess, r.record.values.lanPort);
-  // Courier follows its site list: a site deleted in any UI is unregistered in the browser.
+  // Capture the saved values now; apply exposes an honest applying/listening/error
+  // state on health, while the PATCH response acknowledges persistence only.
+  if (r.changed.some((k) => ['directAccessEnabled', 'directPort', 'directAccessUrl', 'publicBaseUrl', 'channelMode', 'aiDefaultRoute'].includes(k))) {
+    void deps.directAccess?.apply(directAccessConfig(r.record.values));
+  }
   if (r.changed.includes('courierSites')) deps.courier?.pushSites();
   return { status: 200, body: settingsView(deps, r.record) };
 }
@@ -62,17 +66,25 @@ export function removeCourierSite(deps: DaemonDeps, id: unknown): { ok: true } |
   return r.status === 200 ? { ok: true } : { ok: false, message: String(r.body.message ?? r.body.error) };
 }
 
-/** Reachability check of a public base URL, same contract as the extension's settings panel. */
-export async function probePublicUrl(raw: unknown): Promise<{ ok: boolean; detail: string }> {
+/** Reachability check of a public base URL. A supplied application proxy applies to this request only. */
+export async function probePublicUrl(raw: unknown, proxyRaw?: unknown): Promise<{ ok: boolean; detail: string }> {
   const n = normalizeSetting('publicBaseUrl', raw);
   if ('error' in n || !n.value) return { ok: false, detail: '请输入完整公网地址，例如 https://example.com 或 http://203.0.113.10:8080' };
+  const p = normalizeSetting('channelProxyUrl', typeof proxyRaw === 'string' ? proxyRaw : '');
+  if ('error' in p) return { ok: false, detail: '渠道应用代理配置无效' };
+  const proxy = typeof p.value === 'string' ? p.value : '';
+  const dispatcher = proxy ? new ProxyAgent(proxy) : undefined;
   try {
-    const response = await fetch(`${n.value}/probe`, { signal: AbortSignal.timeout(8_000), redirect: 'error' });
+    const response = dispatcher
+      ? await undiciFetch(`${n.value}/probe`, { signal: AbortSignal.timeout(8_000), redirect: 'error', dispatcher })
+      : await fetch(`${n.value}/probe`, { signal: AbortSignal.timeout(8_000), redirect: 'error' });
     const body = (await response.json().catch(() => null)) as { ok?: unknown; service?: unknown } | null;
     const ok = response.ok && body?.ok === true && body.service === 'blackhole';
     return { ok, detail: ok ? '' : `探测响应无效（HTTP ${response.status}）` };
   } catch (e) {
     return { ok: false, detail: e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError') ? '探测超时' : '公网地址不可达' };
+  } finally {
+    try { await dispatcher?.close(); } catch { /* best effort */ }
   }
 }
 

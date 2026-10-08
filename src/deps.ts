@@ -19,6 +19,7 @@ import { deriveAccessToken } from './util/token.js';
 import type { SemanticProbe } from './semantic/index.js';
 import type { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import type { ProxyRuntime } from './proxy/tool.js';
+import { resolveConnectionRoutes } from './connection/resolve.js';
 
 export interface DaemonDeps {
   daemonId?: string;
@@ -26,8 +27,8 @@ export interface DaemonDeps {
   courier?: import('./courier/hub.js').CourierHub;
   /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
   feed?: import('./storage/feedLog.js').FeedLog;
-  /** 局域网直连监听器（设置 lanAccess 打开时才真正监听）。 */
-  lan?: import('./lan/listener.js').LanListener;
+  /** The one direct/custom-ingress data-plane listener; never exposes local control APIs. */
+  directAccess?: import('./direct-access/listener.js').DirectAccessListener;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
@@ -100,7 +101,8 @@ export interface DaemonDeps {
   /** Phone access controls for the VS Code panel (plan 6.13 R4); set by mountLocalWeb. */
   remote?: {
     view(): unknown;
-    pair(): { url: string; expires_at: string | null; kind: string } | null;
+    pair(origin?: string): { url: string; expires_at: string | null; kind: string } | null;
+    probe(origin: string): Promise<import('../packages/contracts/dist/connections.js').PhoneVerification | null>;
     revoke(id: string): boolean;
     /** 允许 / 拒绝 a phone that scanned the code; false when the request is gone */
     decide(id: string, allow: boolean): boolean;
@@ -148,17 +150,23 @@ export function publicBaseUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string 
 
 /**
  * Credential-free source URL for the optional Sandbox client recommendation.
- * Only an explicitly public HTTP route qualifies; connector-only/OpenAI and
- * loopback addresses must never leak into Sandbox guidance.
+ * It follows the same selected Sandbox route as copied prompts; direct LAN MCP
+ * and OpenAI Tunnel never leak into Sandbox guidance.
  */
-export function bhClientSourceUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string | null {
-  const raw = (deps.tunnel.status === 'online' && deps.tunnel.url) || deps.cfg.publicBaseUrl;
+export function bhClientSourceUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel' | 'settings' | 'directAccess' | 'openaiTunnel'>): string | null {
+  const route = resolveConnectionRoutes(deps, mcpPath());
+  if (route.sandbox_kind === 'cloudflare' && deps.tunnel.status !== 'online') return null;
+  const raw = route.sandbox_mcp_url;
   if (!raw) return null;
   try {
     const url = new URL(raw);
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     if (/^(localhost|0\.0\.0\.0|127\..*|\[?::1\]?)$/i.test(url.hostname)) return null;
-    url.pathname = url.pathname.replace(/\/+$/, '') + '/bh.py';
+    const suffix = mcpPath();
+    const basePath = url.pathname.endsWith(suffix)
+      ? url.pathname.slice(0, -suffix.length).replace(/\/+$/, '')
+      : url.pathname.replace(/\/+$/, '');
+    url.pathname = basePath + '/bh.py';
     url.search = '';
     url.hash = '';
     return url.href;

@@ -13,7 +13,7 @@ const plain = (v) => JSON.parse(JSON.stringify(v));
 
 const OFF = { on: false, state: 'off', running: [], next: 'quick', last: null, missing: 'cloudflared', reason: null };
 
-function setup({ channel = OFF, hooks = {} } = {}) {
+function setup({ channel = OFF, hooks = {}, settingsValues = {} } = {}) {
   const commandsRun = [], opened = [];
   const vscode = { commands: { executeCommand: async (...a) => { commandsRun.push(a); } }, env: { clipboard: { writeText: async () => {} }, openExternal: async (u) => { opened.push(String(u)); } }, Uri: { parse: (u) => u }, workspace: { workspaceFolders: [] }, window: { showErrorMessage() {}, showInformationMessage() {} } };
   const source = fs.readFileSync(new URL('../src/sidebar.ts', import.meta.url), 'utf8');
@@ -26,7 +26,7 @@ function setup({ channel = OFF, hooks = {} } = {}) {
     tunnel: 'off', tunnel_url: null, tunnel_mode: null, tunnel_reason: null, daemon_id: 'daemon-1', openai_tunnel_api_version: 1,
     openai_tunnel: { status: 'off', run_id: null, active_tunnel_id: null, credential_configured: false, credential_revision: 1, pending_restart: false, reason_code: null, reason: null, client_version: null, started_at: null, ready_at: null },
   };
-  let settings = { revision: 1, values: { channelMode: 'cloudflare', openaiTunnelId: '', openaiTunnelClientPath: '' } };
+  let settings = { revision: 1, values: { channelMode: 'cloudflare', openaiTunnelId: '', openaiTunnelClientPath: '', ...settingsValues } };
   const api = {
     changes: async () => ({ epoch: 1 }), listSessions: async () => ({ sessions: [] }), health: async () => health, confirmations: async () => ({ confirmations: [] }),
     settings: async () => settings,
@@ -63,7 +63,7 @@ function setup({ channel = OFF, hooks = {} } = {}) {
   const messages = [];
   const webview = { html: '', options: {}, postMessage: async (m) => { messages.push(plain(m)); return true; }, onDidReceiveMessage: () => ({ dispose() {} }) };
   const view = { webview, onDidDispose: () => ({ dispose() {} }) };
-  return { provider, api, calls, commandsRun, opened, messages, view, setChannel: (c) => { current = c; }, last: () => messages.filter((m) => m.type === 'update').at(-1) };
+  return { provider, api, calls, commandsRun, opened, messages, view, hasConnectionConfiguration: module.exports.hasConnectionConfiguration, setChannel: (c) => { current = c; }, last: () => messages.filter((m) => m.type === 'update').at(-1) };
 }
 async function mount(h) { h.provider.resolveWebviewView(h.view); await pause(); await h.provider.refresh(true); }
 
@@ -78,6 +78,27 @@ test('开关状态和登录状态推给页面；旧版 daemon 没有 /channel �
   await h.provider.refresh(true);
   assert.equal(h.last().channel, null);
   h.provider.dispose();
+});
+
+
+test('saved connection intent is independent from runtime online state', async () => {
+  const none = setup();
+  const configured = setup({ settingsValues: { cloudflaredPath: 'C:/tools/cloudflared.exe' } });
+  try {
+    assert.equal(none.hasConnectionConfiguration({ channelMode: 'cloudflare' }), false);
+    assert.equal(configured.hasConnectionConfiguration({ cloudflaredPath: 'C:/tools/cloudflared.exe' }), true);
+    assert.equal(configured.hasConnectionConfiguration({ publicBaseUrl: 'https://mcp.example.test' }), true);
+    assert.equal(configured.hasConnectionConfiguration({ directAccessEnabled: true }), true);
+    assert.equal(configured.hasConnectionConfiguration({ directAccessUrl: 'https://fixture.example' }), true);
+    assert.equal(configured.hasConnectionConfiguration({ openaiTunnelId: 'tunnel_' + 'a'.repeat(32) }), true);
+    await mount(configured);
+    configured.provider.updateAccount({ state: 'logged_out' });
+    await pause();
+    assert.equal(configured.last().setupConfigured, true, 'a stopped but configured channel suppresses first-install choices');
+  } finally {
+    none.provider.dispose();
+    configured.provider.dispose();
+  }
 });
 
 test('一键安装并启动：安装 → 重启 daemon → 启动临时渠道，按顺序推送进度，完成后收起卡片', async () => {
@@ -119,7 +140,7 @@ test('标题开关：打开走 /channel；缺 cloudflared 时重新展开引导�
   assert.match(h.last().channelNote, /一键安装并启动/);
   h.api.switchResult = { ok: false, error: 'openai_setup' };
   await h.provider.onMessage({ type: 'channelToggle', on: true });
-  assert.deepEqual(h.commandsRun.at(-1), ['blackhole.openSettings']);
+  assert.deepEqual(h.commandsRun.at(-1), ['blackhole.openSettings', 'connections']);
   assert.match(h.last().channelNote, /OpenAI/);
   await h.provider.onMessage({ type: 'signIn' });
   assert.deepEqual(h.commandsRun.at(-1), ['blackhole.accountSignIn']);
@@ -143,43 +164,39 @@ test('页面脚本：标题开关、登录卡片和引导卡片都在，脚本�
 });
 
 // Layout belongs to the real sidebar, including Handoff's four-column session grid.
-test('B welcome spans the session grid and offers progressive disclosure, not an outer card', async () => {
+test('login welcome spans the session grid and contains optional channel setup without a second welcome page', async () => {
   const h = setup();
   try {
     await mount(h);
     const html = h.view.webview.html;
     assert.match(html, /#list\[data-mode="sessions"\] > \.bh-onboard\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s);
-    assert.ok(html.includes('连接你的工作区'));
+    assert.ok(html.includes('登录 BlackHole'));
+    assert.ok(html.includes('配置直连'));
     assert.ok(html.includes('临时公网渠道'));
     assert.ok(html.includes('OpenAI Tunnel'));
-    assert.ok(html.includes('高级连接方式'));
-    assert.ok(html.includes('查看错误详情'));
-    assert.ok(html.includes('setupResume'));
+    assert.ok(html.includes('跳过渠道安装'));
+    assert.ok(html.includes('查看错误详情'), 'setup failures still expose diagnostics');
     assert.doesNotMatch(html, /function loginCard\(\)|function setupCard\(d\)/);
   } finally { h.provider.dispose(); }
 });
 
-test('B presentation distinguishes setup, pending, unverified, failure and actual readiness', async () => {
+test('welcome ownership depends on login, not sessions or channel runtime state', async () => {
   const h = setup();
   try {
     await mount(h);
     const html = h.view.webview.html;
     const source = html.slice(html.indexOf('function onboardingState(d)'), html.indexOf('function onboardProgress('));
-    const classify = vm.runInNewContext('(' + source + ')', { onboardEngaged: false });
+    const classify = vm.runInNewContext('(' + source + ')');
     const d = { daemon: 'running', account: 'verified', sessions: [], channel: OFF };
-    assert.equal(classify(d), 'choose', 'first connection asks which route to use instead of assuming quick tunnel');
-    assert.equal(classify({ ...d, account: 'logged_out' }), 'login');
-    assert.equal(classify({ ...d, daemon: 'starting', setup: { step: 'restart' } }), 'restart');
-    assert.equal(classify({ ...d, channel: { ...OFF, on: true, state: 'starting', missing: null } }), 'start');
-    assert.equal(classify({ ...d, channel: { ...OFF, on: true, state: 'warn', missing: null } }), 'unverified');
-    assert.equal(classify({ ...d, channel: { ...OFF, on: true, state: 'on', missing: null } }), 'ready');
-    assert.equal(classify({ ...d, account: 'saved', channel: { ...OFF, on: true, state: 'on' } }), null, 'cached credentials are not verified login');
-    assert.equal(classify({ ...d, setup: { step: 'failed', failedAt: 'install', error: 'network' } }), 'failed');
-    assert.equal(classify({ ...d, openaiOnboarding: { step: 'configure', runtimeReady: true } }), 'openai', 'OpenAI is its own first-class onboarding route');
-    assert.equal(classify({ ...d, setupDismissed: true }), 'dismissed');
-    assert.equal(classify({ ...d, setupDismissed: true, channel: { ...OFF, on: true, state: 'warn' } }), 'dismissed');
-    assert.equal(classify({ ...d, channel: null }), null, 'older daemons keep existing compatibility');
-    assert.equal(classify({ ...d, sessions: [{ draft: false }], channel: { ...OFF, on: true, state: 'on', last: 'quick', missing: null } }), null, 'existing sessions do not get a permanent welcome page');
+    assert.equal(classify(d), null, 'a verified account enters the workspace even with no channel');
+    const out = { ...d, account: 'logged_out' };
+    assert.equal(classify(out), 'login');
+    assert.equal(classify({ ...out, sessions: [{ draft: false }], channel: { ...OFF, on: true, state: 'on', last: 'quick', missing: null } }), 'login', 'sessions and a running channel do not bypass login');
+    assert.equal(classify({ ...out, setup: { step: 'restart' } }), 'restart', 'explicit setup may keep progress on the login page');
+    assert.equal(classify({ ...out, setup: { step: 'failed', failedAt: 'install', error: 'network' } }), 'failed');
+    assert.equal(classify({ ...out, openaiOnboarding: { step: 'configure', runtimeReady: true } }), 'openai');
+    assert.equal(classify({ ...out, setupDismissed: true }), 'login', 'skip changes the install section, not login ownership');
+    assert.equal(classify({ ...d, account: 'saved' }), null, 'saved credentials do not reopen first-run setup');
   } finally { h.provider.dispose(); }
 });
 

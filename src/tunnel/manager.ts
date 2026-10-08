@@ -172,8 +172,8 @@ export interface TunnelOptions {
   namedUrl?: string;
   /** cloudflared named tunnel name for the persistent channel. */
   tunnelName?: string;
-  /** Local HTTP proxy (http://host:port) for the public-URL probe (BLACKHOLE_TUNNEL_PROBE_PROXY). */
-  probeProxy?: string;
+  /** Per-request proxy for the public-URL probe; callback allows daemon-owned settings to update without restart. */
+  probeProxy?: string | (() => string | undefined);
   /** Test seam; production uses the real public-URL probe. */
   probe?: (base: string, proxy?: string) => Promise<ProbeFailure>;
   /** Test seam; production asks cloudflared's metrics server (`/ready`). */
@@ -346,7 +346,8 @@ export class TunnelManager {
             // declaring online (lesson from codex-with-chatgpt). An unverified
             // edge must NOT read 'online' — that's how a wrong ingress port
             // used to hide behind a green light.
-            const verified = await (this.opts.probe ?? probePublicUrl)(url, this.opts.probeProxy);
+            const proxy = typeof this.opts.probeProxy === 'function' ? this.opts.probeProxy() : this.opts.probeProxy;
+            const verified = await (this.opts.probe ?? probePublicUrl)(url, proxy);
             if (this._status === 'starting' && this.child === child) {
               clearTimeout(timer);
               if (verified.ok) {
@@ -422,7 +423,8 @@ export class TunnelManager {
     this.healthTimer = setInterval(() => {
       if (this.healthProbeInFlight || this.child !== child || !this._url || this.reconnecting || this.stopping) return;
       this.healthProbeInFlight = true;
-      void (this.opts.probe ?? probePublicUrl)(this._url, this.opts.probeProxy)
+      const proxy = typeof this.opts.probeProxy === 'function' ? this.opts.probeProxy() : this.opts.probeProxy;
+      void (this.opts.probe ?? probePublicUrl)(this._url, proxy)
         .then((result) => this.handleHealthResult(result, child))
         .catch((error) => this.handleHealthResult({ ok: false, kind: 'other', detail: error instanceof Error ? error.message : String(error) }, child))
         .finally(() => {

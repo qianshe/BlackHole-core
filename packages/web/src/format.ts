@@ -1,3 +1,4 @@
+import { SETTINGS_PAGES, settingsRouteFromLegacy, type SettingsPage } from '../../contracts/src/settings-navigation.ts';
 // Pure helpers (no DOM, no React) so they run under `node --test` directly.
 
 export interface SessionLike {
@@ -168,9 +169,10 @@ export interface ViewState {
   settings: string | null;
 }
 
-// Same order as the VS Code settings page (phone access lives in the channel card and 高级).
-export const SETTINGS_SECTIONS = ['overview', 'account', 'channel', 'mcp', 'proxies', 'common', 'grants', 'advanced'] as const;
-export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+// Shared settings pages: true subpages, not scroll anchors.
+export const SETTINGS_SECTIONS = SETTINGS_PAGES;
+export type SettingsSection = SettingsPage;
+export function normalizeSettingsSection(value: string | null | undefined): SettingsSection { return settingsRouteFromLegacy(value).page; }
 
 /** View state lives in the query string (the fragment is reserved for the one-time ticket). */
 export function readViewState(search: string): ViewState {
@@ -179,7 +181,7 @@ export function readViewState(search: string): ViewState {
   return {
     session: q.get('s') || null,
     view: q.get('v') === 'channels' ? 'channels' : 'session',
-    settings: set && (SETTINGS_SECTIONS as readonly string[]).includes(set) ? set : null,
+    settings: set ? normalizeSettingsSection(set) : null,
   };
 }
 

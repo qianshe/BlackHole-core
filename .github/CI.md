@@ -11,7 +11,9 @@ Open **Actions → the workflow → Run workflow**, select the intended ref and 
 
 ## Coverage and results
 
-Runtime checks cover Windows x64, Linux x64/ARM64 and macOS Intel/ARM64; skill, prompt, guide-workflow and cloudflared installer tests run inside each Runtime target, and the desktop bootstrap test on Linux x64. Real cloudflared downloads are checked locally with `BH_CLOUDFLARED_LIVE=1`. Windows ARM64 is not tested in CI. Exact commands, runner versions and prerequisites are defined in the workflow files.
+Runtime checks cover Windows x64, Linux x64/ARM64 and macOS Intel/ARM64; skill, prompt, guide-workflow, cloudflared installer and phone-entry probe regressions run inside each Runtime target. OpenAI runtime additionally runs on Windows ARM64, but complete Core execution is not verified there. Real cloudflared downloads are checked locally with `BH_CLOUDFLARED_LIVE=1`. Exact commands, runner versions and prerequisites are defined in the workflow files.
+
+The **Audited VSIX smoke** job builds a production-profile candidate on Windows x64 (public origin/key only), independently audits the archive, then launches the *packaged* daemon under isolated temporary user/data directories. It does not install, upload, sign or publish an extension. **Shared settings browser** runs both production Web and native settings renderers on Linux x64 with a pinned headless Chromium, synthetic services, and 1280/390/320px viewport assertions. Both jobs must succeed for `Core CI` to pass. For local browser testing, install the browser once with `pnpm exec playwright install chromium` and then run `pnpm test:settings:browser`.
 
 Only an explicit list of root and community documentation files can skip the Core native matrix. Runtime instructions under `src/` and `scripts/` still trigger checks. `Core CI` aggregates the required jobs; failures, cancellations and unexpected skips must not be treated as acceptance. Sandbox and file-link prerequisites remain mandatory.
 

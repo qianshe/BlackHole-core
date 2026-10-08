@@ -252,7 +252,7 @@ test('skill contracts run in every native Runtime CI target, with strict symlink
   const commands = job.steps.map(step => step.run).filter(Boolean);
   for (const command of ['pnpm test:pack', 'pnpm test:posix', 'pnpm test:handoff']) assert.ok(commands.includes(command), command);
   assert.ok(commands.some(command => command.includes('process.arch') && command.includes('process.platform')));
-  assert.deepEqual(ci.jobs['ci-result'].needs, ['changes', 'runtime']);
+  assert.deepEqual(ci.jobs['ci-result'].needs, ['changes', 'runtime', 'openai-runtime-native', 'vsix-artifact', 'settings-browser']);
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(pkg.scripts['test:skills'], /skill-safety\.test\.mjs/);
   for (const name of ['test:pack', 'test:posix']) {

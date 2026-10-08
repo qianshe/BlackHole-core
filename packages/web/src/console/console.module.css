@@ -1167,19 +1167,6 @@
   overflow: auto;
   min-width: 0;
 }
-.inspectorTitle {
-  margin: 0;
-  min-height: 44px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-  color: var(--text);
-}
 .group {
   padding: 14px;
   border-bottom: 1px solid var(--border);
@@ -1699,6 +1686,7 @@
 
 /* settings modal */
 .modal {
+  position: relative;
   width: min(1040px, calc(100vw - 48px));
   height: min(800px, calc(100vh - 48px));
   background: var(--raised);
@@ -1709,18 +1697,23 @@
   grid-template-columns: 210px minmax(0, 1fr);
   overflow: hidden;
 }
+.settingsModalCollapsed { grid-template-columns: 58px minmax(0, 1fr); }
+.settingsNavHead { min-height: 34px; display: flex; align-items: center; gap: 6px; }
+.settingsNavHead h2 { flex: 1; min-width: 0; margin: 0; color: var(--text-bright); font-size: 14px; }
+.settingsScrim { display: none; }
+.settingsPageTitleHidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.settingsNavToggle { width: 30px; height: 30px; min-width: 30px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); }
+.settingsPageMenu { width: 40px; height: 40px; display: inline-grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--text-3); }
+.settingsNavToggle:hover, .settingsPageMenu:hover { background: var(--surface-hover); color: var(--text-bright); }
 .settingsNav {
   border-right: 1px solid var(--border);
   padding: 14px 10px;
   overflow: auto;
   background: var(--sidebar);
 }
-.settingsNav h2 {
-  margin: 3px 9px 14px;
-  color: var(--text-bright);
-  font-size: 17px;
-}
 .settingsNav ul {
+  display: grid;
+  gap: 3px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1735,15 +1728,25 @@
   text-align: left;
   padding: 0 10px;
 }
+.settingsNavBtn { display: flex; align-items: center; gap: 9px; }
+.settingsNavIcon { width: 20px; flex: 0 0 20px; display: grid; place-items: center; }
+.settingsNavIcon svg { display: block; }
+.settingsNavLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.settingsNavCollapsed { padding-left: 8px; padding-right: 8px; }
+.settingsNavCollapsed .settingsNavHead h2 { display: none; }
+.settingsNavCollapsed .settingsNavToggle { margin: 0 auto; }
+.settingsNavCollapsed .settingsNavBtn { justify-content: center; padding-left: 0; padding-right: 0; }
+.settingsNavCollapsed .settingsNavLabel { display: none; }
 .settingsNavBtn:hover {
   background: var(--surface-hover);
 }
-.settingsNavBtn[aria-current='true'] {
+.settingsNavBtn[aria-current='page'] {
   background: var(--sel);
   color: var(--text-bright);
 }
 .settingsContent {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   position: relative;
   scroll-behavior: smooth;
@@ -1755,22 +1758,29 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 28px 12px;
+  min-height: 64px;
   background: var(--raised);
   border-bottom: 1px solid var(--border);
 }
 .settingsHead h2 {
+  min-width: 0;
   margin: 0;
   color: var(--text-bright);
-  font-size: 19px;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settingsBody {
-  padding: 0 0 40px;
+  min-width: 0;
+  padding: 0;
 }
 /* the VS Code panel copy lives inside the dialog: drop its own page title and width cap */
 .settingsBody :global(.bhp) {
   max-width: none;
-  padding: 8px 28px 0;
+  padding: 0 28px;
   background: transparent;
 }
 .settingsBody :global(.bhp > h1) {
@@ -1790,6 +1800,7 @@
   display: grid;
   place-items: center;
 }
+.settingsHead .close { flex: 0 0 32px; width: 32px; height: 32px; }
 .close:hover {
   background: var(--surface-hover);
   color: var(--text-bright);
@@ -1918,30 +1929,59 @@
   .callBody {
     padding-left: 16px;
   }
+  .overlay[aria-label='设置'] { padding: 0; }
+  .overlay[aria-label='设置'] .modal {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
   .modal {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
-  /* narrow screens: the section list becomes a horizontal strip instead of disappearing */
+  /* Narrow settings use a left drawer below the single menu control, not a tab strip. */
   .settingsNav {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    padding: 6px 8px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    position: absolute;
+    inset: 56px auto 0 0;
+    z-index: 5;
+    width: min(270px, calc(100% - 40px));
+    box-sizing: border-box;
+    padding: 8px;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    overflow: auto;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform .16s ease, visibility .16s step-end;
+    box-shadow: none;
   }
-  .settingsNav h2 {
-    display: none;
+  .settingsNavOpen {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform .16s ease;
+    box-shadow: var(--shadow-pop);
   }
-  .settingsNav ul {
-    display: flex;
-    gap: 4px;
+  .settingsNavHead,
+  .settingsNav h2 { display: none; }
+  .settingsNav ul { display: grid; gap: 4px; }
+  .settingsNavBtn { width: 100%; min-height: 44px; white-space: normal; }
+  .settingsScrim:not([hidden]) {
+    display: block;
+    position: absolute;
+    inset: 56px 0 0;
+    z-index: 4;
+    border: 0;
+    padding: 0;
+    background: rgb(0 0 0 / 45%);
   }
-  .settingsNavBtn {
-    width: auto;
-    min-height: 32px;
-    white-space: nowrap;
-  }
+  .settingsHead { min-height: 56px; }
+  .settingsPageMenu { width: 40px; height: 40px; }
+  .settingsBody :global(.bhp) { padding: 0 12px; }
   .channelRow {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -2074,3 +2114,58 @@
 
 /* The feed keeps its own scroll position after older entries load (see feed/scrollAnchor.ts); the browser's scroll anchoring would stack on top of it. */
 .feed { overflow-anchor: none; }
+
+/* Session inspector tabs and the current-turn review. */
+.inspectorTabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.inspectorTab {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inspectorTab:hover { background: var(--surface-hover); color: var(--text-2); }
+.inspectorTab[aria-selected='true'] { border-bottom-color: var(--accent); color: var(--text-bright); }
+.inspectorTab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.inspectorPanel { min-width: 0; }
+.turnChanges { min-width: 0; padding-bottom: 10px; }
+.turnEmpty { padding: 18px 14px; color: var(--text-3); font-size: 12px; line-height: 1.5; text-align: center; }
+.turnNotice { margin: 10px 12px 0; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); color: var(--warn); font-size: 11px; line-height: 1.45; }
+.turnStats { display: flex; align-items: center; gap: 8px; padding: 12px 14px 9px; color: var(--text-2); font-size: 11px; }
+.turnStats b { font-family: var(--mono); font-weight: 600; }
+.turnSpacer { flex: 1; }
+.turnUnavailable { color: var(--text-3); font-size: 10px; }
+.turnFileHeading { padding: 8px 14px 6px; color: var(--text-3); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.turnFiles { min-width: 0; border-top: 1px solid var(--border); }
+.turnFile { display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-2); text-align: left; cursor: pointer; }
+.turnFile:hover { background: var(--surface-hover); }
+.turnFileSelected { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); color: var(--text-bright); }
+.turnFile:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.turnFilePath { flex: 1; min-width: 0; overflow: hidden; color: inherit; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.turnFileDelta { display: flex; flex: 0 0 auto; gap: 5px; font: 10px var(--mono); }
+.turnFileUnavailable { color: var(--text-3); font: 11px var(--mono); }
+.turnDiff { min-width: 0; margin: 0 10px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.turnDiffTitle { overflow-wrap: anywhere; padding: 8px 9px; border-bottom: 1px solid var(--border); color: var(--text-2); font: 10px/1.4 var(--mono); }
+.turnDiffCode { max-height: min(52vh, 520px); overflow: auto; color: var(--text-2); font: 10px/1.55 var(--mono); }
+.turnDiffHunk { padding: 5px 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--accent); white-space: pre; }
+.turnDiffLine { display: grid; width: max-content; min-width: 100%; grid-template-columns: 34px 34px 14px minmax(max-content, 1fr); padding: 0 8px; white-space: pre; }
+.turnDiffAdded { background: color-mix(in srgb, var(--ok) 9%, transparent); }
+.turnDiffRemoved { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.turnDiffNo { padding-right: 6px; color: var(--text-3); text-align: right; user-select: none; }
+.turnDiffSign { color: var(--text-3); text-align: center; user-select: none; }
+.turnDiffText { white-space: pre; }
+.turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 10px; text-align: right; }

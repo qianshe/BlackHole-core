@@ -149,7 +149,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         const code = (e as { code?: string }).code ?? '';
         toast(CHANNEL_SWITCH_HINT[code] ?? failText(e), code in CHANNEL_SWITCH_HINT ? 'warn' : 'bad');
         // 缺前提：直接带用户去设置的「公网渠道」补上。
-        if (code === 'cloudflared' || code === 'named_url' || code === 'openai_setup') openSettings('channel');
+        if (code === 'cloudflared' || code === 'named_url' || code === 'openai_setup') openSettings('connections');
       },
     ).finally(() => {
       setChannelBusy(false);
@@ -160,15 +160,42 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const remote = usePoll(() => remoteAdmin.view(), 'remote', POLL_MS * 5, view.view === 'channels');
   // An open console keeps channels alive like a VS Code window (hidden tabs too).
   useEffect(() => startPresence(), []);
-  const [account, setAccount] = useState<AccountView | null>(null);
-  const loadAccount = useCallback(() => void api.account().then(setAccount, () => undefined), []);
   useEffect(() => {
-    loadAccount();
-    const t = setInterval(loadAccount, 60_000);
-    window.addEventListener('focus', loadAccount);
+    let pending: string | null = null;
+    try {
+      pending = sessionStorage.getItem('blackhole.pendingSetup.v1');
+      if (pending) sessionStorage.removeItem('blackhole.pendingSetup.v1');
+    } catch { /* optional browser storage */ }
+    if (pending === 'cloudflare') {
+      void panel.cloudflaredStart().then(
+        () => toast('Cloudflare 安装任务已开始；安装完成后由你决定是否启动渠道。'),
+        (e: unknown) => toast('Cloudflare 安装未开始：' + failText(e), 'bad'),
+      );
+    } else if (pending === 'openai') {
+      void panel.openaiInstallStart().then(
+        () => toast('OpenAI tunnel-client 安装任务已开始；安装完成后继续配置 Tunnel ID。'),
+        (e: unknown) => toast('OpenAI runtime 安装未开始：' + failText(e), 'bad'),
+      );
+    }
+  }, [toast]);
+  const [account, setAccount] = useState<AccountView | null>(null);
+  const loadAccount = useCallback(async (): Promise<AccountView | null> => {
+    try {
+      const next = await api.account();
+      setAccount(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    void loadAccount();
+    const t = setInterval(() => { if (!document.hidden) void loadAccount(); }, 60_000);
+    const onFocus = () => { void loadAccount(); };
+    window.addEventListener('focus', onFocus);
     return () => {
       clearInterval(t);
-      window.removeEventListener('focus', loadAccount);
+      window.removeEventListener('focus', onFocus);
     };
   }, [loadAccount]);
 
@@ -226,7 +253,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const openSettings = (section: string = 'overview'): void => setView({ settings: section });
+  const openSettings = (section: SettingsSection = 'home'): void => setView({ settings: section });
   const select = (id: string): void => {
     setView({ session: id, view: 'session' });
     if (narrow()) setCollapsed(true);
@@ -253,7 +280,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
 
 
   const onAccount = (k: 'buy' | 'orders' | 'settings' | 'signout'): void => {
-    if (k !== 'signout') return openSettings(k === 'settings' ? 'overview' : 'account');
+    if (k !== 'signout') return openSettings(k === 'settings' ? 'home' : 'account');
     setConfirmSpec({
       title: '退出登录',
       body: '退出后，这台电脑上的网页和已配对的手机都需要重新登录，AI 暂时无法调用工具。',
@@ -329,7 +356,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
             </button>
           </div>
         )}
-        <SubscriptionBanner onRenew={() => openSettings('account')} />
+        <SubscriptionBanner account={account} onRenew={() => openSettings('account')} />
         <div className={c.mainBody}>
           {view.view === 'channels' ? (
             <ChannelsPane
@@ -355,7 +382,6 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
               onApprovalsChanged={refreshAll}
               onChanged={refreshAll}
               connectorName={settings.data?.values.connectorName ?? 'BlackHole'}
-              mcpUrl={health.data?.mcp_url ?? null}
             />
           ) : sessions.data ? (
             <NewChatPane
@@ -364,8 +390,6 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
               projects={projectList}
               sessions={list}
               actions={actions}
-              connectorName={settings.data?.values.connectorName ?? 'BlackHole'}
-              mcpUrl={health.data?.mcp_url ?? null}
               onOpen={(id) => {
                 opening.current = id;
                 refreshAll();
@@ -441,12 +465,16 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
       {view.settings && (
         <SettingsModal
           section={view.settings}
+          account={account}
+          onAccountChange={setAccount}
+          refreshAccount={loadAccount}
+          onSignOut={() => onAccount('signout')}
           onSection={(s: SettingsSection) => setView({ settings: s })}
           onClose={() => {
             setView({ settings: null });
             health.refresh();
             settings.refresh();
-            loadAccount();
+            void loadAccount();
           }}
         />
       )}

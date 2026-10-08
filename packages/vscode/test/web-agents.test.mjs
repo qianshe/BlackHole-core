@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url), ts = require('typescript');
+const catalogueModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../../contracts/src/web-agent-presets.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { module: catalogueModule, exports: catalogueModule.exports });
 
 // Native UI contracts only; this does NOT simulate or certify window dragging.
 function loadWebAgents({ enabled, custom = [], select = items => items[0], input } = {}) {
@@ -24,7 +26,7 @@ function loadWebAgents({ enabled, custom = [], select = items => items[0], input
   const source = fs.readFileSync(new URL('../src/webAgents.ts', import.meta.url), 'utf8');
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const module = { exports: {} };
-  vm.runInNewContext(js, { module, exports: module.exports, URL, require: name => name === 'vscode' ? vscode : require(name) });
+  vm.runInNewContext(js, { module, exports: module.exports, URL, require: name => name === 'vscode' ? vscode : name === '../../contracts/src/web-agent-presets' ? catalogueModule.exports : require(name) });
   return { ...module.exports, opened, picks, inputs, updates };
 }
 const manual = items => items.at(-1);

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { commands, ConfigurationTarget, ViewColumn, Uri, env, window, workspace, type Disposable, type WebviewPanel } from 'vscode';
+import { commands, ConfigurationTarget, ViewColumn, Uri, env, window, workspace, type Disposable, type Memento, type WebviewPanel } from 'vscode';
 import type { AuthView } from './cloudAuthClient';
 import type { ApprovalGrantsInfo, ControlApi, ProxiesInfo, ProxiesRevalidateReport, ProxyToolsResult } from './controlApi';
 import type { DaemonManager } from './daemonManager';
@@ -9,8 +9,7 @@ import type { Poller } from './poller';
 import { addCustomAgent, AGENTS, customAgents, removeCustomAgent } from './webAgents';
 import { decideSyncAction, EMPTY_ANCHORS, mergeAnchors, readAnchors, type SyncAnchors } from './proxySync';
 import { PRODUCTION_CLOUD_ORIGIN, resolveCloudEndpoint } from './cloudEnvironment';
-import { initializeCloudflared } from './cloudflaredInstall';
-import { initializeOpenAITunnelClient } from './openaiTunnelInstall';
+
 import qrcode from 'qrcode-generator';
 import type { RemoteView } from './controlApi';
 import type { SettingsSync } from './settingsSync';
@@ -60,7 +59,7 @@ interface Field {
 
 const ALL_FIELDS: Field[] = [
   { key: 'cloudflaredPath', label: 'cloudflared 路径', desc: '公网渠道需要 cloudflared。安装后填写可执行文件的完整路径。', type: 'string' },
-  { key: 'publicBaseUrl', label: '公网地址', desc: '填写 HTTPS Base URL；BlackHole 会自动生成 MCP 链接。', type: 'string' },
+  { key: 'publicBaseUrl', label: '公网地址', desc: '填写 HTTP(S) Base URL；BlackHole 会自动生成 MCP 链接。HTTP 为明文传输。', type: 'string' },
   { key: 'openaiTunnelClientPath', label: 'tunnel-client 路径', desc: 'OpenAI 官方 tunnel-client（纯 runtime 版）可执行文件的完整路径。启动 OpenAI 渠道只使用这里保存的路径；留空时「一键安装」会依次查找 PATH 与一键安装目录，验证后自动保存，无需重启 daemon。', type: 'string' },
   { key: 'openaiTunnelId', label: 'Tunnel ID', desc: '在 OpenAI Platform 的隧道设置中复制的 Tunnel ID（不是 URL，也不是密钥）。', type: 'string' },
   { key: 'tunnelProbeProxy', label: '公网连通性检测代理（排障用）', desc: '通常留空。仅当提示“公网地址已在线，但本机无法完成检测”，并且电脑正在使用 Clash、mihomo 等本机代理时，填写该代理的本机 HTTP 地址（例如 http://127.0.0.1:7897）。这里只影响公网地址检测，不会修改其他网络连接；修改后需重启本地服务。', type: 'string', advanced: true },
@@ -123,8 +122,58 @@ const OPENAI_ERRORS: Record<string, string> = {
 type ChannelMode = 'cloudflare' | 'openai' | 'custom';
 const normalizeChannelMode = (v: unknown): ChannelMode => (v === 'custom' || v === 'openai' ? v : 'cloudflare');
 
+import { SETTINGS_PAGES, SETTINGS_LABELS, renderSettingsIcon, renderSettingsNavItems, type SettingsPage } from '../../contracts/src/settings-navigation';
+import { copyCurrentConnection } from './sessionActions';
+const LEGACY_SETTINGS_PAGE: Readonly<Record<string, SettingsPage>> = {
+  overview: 'home', channel: 'connections', mcp: 'connections', common: 'agents',
+  proxies: 'agents', grants: 'security', account: 'account', advanced: 'advanced',
+};
+function settingsPageOf(value: unknown, fallback: SettingsPage = 'home'): SettingsPage {
+  const raw = typeof value === 'string'
+    ? value
+    : value && typeof value === 'object' && 'page' in value ? (value as { page?: unknown }).page : undefined;
+  if (typeof raw !== 'string') return fallback;
+  if ((SETTINGS_PAGES as readonly string[]).includes(raw)) return raw as SettingsPage;
+  return LEGACY_SETTINGS_PAGE[raw] ?? fallback;
+}
+function accountSummaryForPanel(view: AuthView): {
+  authState: AuthView['state']; displayName: string; email: string | null; accountStatus: string | null;
+  remainingSeconds: number | null; serviceExpiresAt: number | null; checkedAt: number | null; canSignOut: boolean;
+} {
+  const userId = view.state !== 'logged_out' ? view.userId?.trim() || '' : '';
+  const a = userId ? view.account : undefined;
+  const name = a?.name?.trim() || '';
+  const email = a?.email?.trim() || null;
+  const remaining = userId && typeof view.remainingSeconds === 'number' && Number.isFinite(view.remainingSeconds)
+    ? Math.max(0, Math.floor(view.remainingSeconds)) : null;
+  return {
+    authState: view.state,
+    displayName: name || email || (userId ? (userId.length > 14 ? userId.slice(0, 8) + '…' + userId.slice(-4) : userId) : view.state === 'logged_out' ? '未登录' : '账号状态待确认'),
+    email,
+    accountStatus: a?.status ?? null,
+    remainingSeconds: remaining,
+    serviceExpiresAt: typeof a?.serviceExpiresAt === 'number' && Number.isFinite(a.serviceExpiresAt) ? Math.max(0, Math.floor(a.serviceExpiresAt)) : null,
+    checkedAt: userId && typeof view.checkedAt === 'number' && Number.isFinite(view.checkedAt) ? view.checkedAt : null,
+    canSignOut: !!userId,
+  };
+}
+function formatRemainingForPanel(seconds: number | null): string {
+  if (seconds === null) return '时长待确认';
+  if (seconds <= 0) return '订阅已到期';
+  if (seconds < 60) return '剩余不足 1 分钟';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `剩余 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  if (hours < 24) return `剩余 ${hours} 小时${remMin ? ` ${remMin} 分钟` : ''}`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return `剩余 ${days} 天${remHours ? ` ${remHours} 小时` : ''}`;
+}
+
 type PanelMessage =
   | { type: 'ready' }
+  | { type: 'settingsUi'; page?: string; collapsed?: boolean }
   | { type: 'cloudAccount'; action: 'signIn' | 'redeem' | 'signOut' | 'refresh' | 'buyCard' | 'orders' | 'refund'; sku?: 'pro_day'|'pro_week'|'pro_month' }
   | { type: 'copyUserId'; userId: string }
   | { type: 'save'; values: Record<string, string>; webAgents?: string[] }
@@ -138,13 +187,15 @@ type PanelMessage =
   | { type: 'customProbe'; url: string }
   | { type: 'rotateToken' }
   | { type: 'grantRemove'; scope: 'always' | 'session'; key: string; sessionId?: string }
-  | { type: 'remote'; action: 'pair' | 'revoke'; id?: string; name?: string }
+  | { type: 'remote'; action: 'pair' | 'revoke' | 'probe'; id?: string; name?: string; origin?: string; requestId?: number }
   | { type: 'grantsClear' }
   | { type: 'courierSiteRemove'; id: string }
-  | { type: 'lanToggle'; on: boolean }
-  | { type: 'lanPort'; port: number }
-  | { type: 'lanUrl'; url: string }
-  | { type: 'lanCopy'; url: string }
+  | { type: 'directAccessToggle'; on: boolean; url?: string }
+  | { type: 'directPort'; port: number }
+  | { type: 'directAccessUrl'; url: string }
+  | { type: 'channelProxyUrl'; url: string }
+  | { type: 'aiDefaultRoute'; route: 'auto' | 'direct' | 'cloudflare' | 'custom' | 'openai' }
+  | { type: 'copyConnection' }
   | { type: 'copyUrl'; url: string }
   | { type: 'copyConnectorDesc' }
   | { type: 'copyTunnelId' }
@@ -164,13 +215,14 @@ type PanelMessage =
 export class ConfigPanel {
   private static panel: ConfigPanel | undefined;
 
-  static open(api: ControlApi, daemon: DaemonManager, poller: Poller, settingsSync?: SettingsSync): void {
+  static open(api: ControlApi, daemon: DaemonManager, poller: Poller, settingsSync?: SettingsSync, uiState?: Memento, route?: unknown): void {
+    const page = route === undefined ? null : settingsPageOf(route);
     if (ConfigPanel.panel) {
       ConfigPanel.panel.reveal();
-      void ConfigPanel.panel.refresh().catch(error => console.error('BlackHole: settings refresh failed', error));
+      if (page) void ConfigPanel.panel.navigate(page);
       return;
     }
-    ConfigPanel.panel = new ConfigPanel(api, daemon, poller, settingsSync);
+    ConfigPanel.panel = new ConfigPanel(api, daemon, poller, settingsSync, uiState, page);
   }
 
   private webview: WebviewPanel;
@@ -209,6 +261,8 @@ export class ConfigPanel {
     poller: Poller,
     /** Knows which side changed a setting; absent in older wiring (then VS Code values win, as before). */
     private readonly settingsSync?: SettingsSync,
+    private readonly uiState?: Memento,
+    private requestedPage: SettingsPage | null = null,
   ) {
     this.webview = window.createWebviewPanel('blackholeSettings', 'BlackHole 设置', ViewColumn.One, {
       enableScripts: true,
@@ -271,6 +325,12 @@ export class ConfigPanel {
 
   private async dispatch(m: PanelMessage): Promise<void> {
     if (this.disposed) return;
+    if (m.type === 'settingsUi') {
+      const page = settingsPageOf(m.page, this.uiState?.get<SettingsPage>('blackhole.settingsLastPage.v1', 'home') ?? 'home');
+      if (typeof m.page === 'string') await this.uiState?.update('blackhole.settingsLastPage.v1', page);
+      if (typeof m.collapsed === 'boolean') await this.uiState?.update('blackhole.settingsNavCollapsed.v1', m.collapsed);
+      return;
+    }
     if(m.type==='cloudAccount'){
       const actions={signIn:'blackhole.accountSignIn',redeem:'blackhole.accountRedeemCard',signOut:'blackhole.accountSignOut',refresh:'blackhole.accountRefresh',buyCard:'blackhole.accountBuyCard',orders:'blackhole.accountOrders',refund:'blackhole.accountRefund'};
       if(Object.hasOwn(actions,m.action))await commands.executeCommand(actions[m.action],...(m.action==='buyCard'?[m.sku,true]:[]));await this.accountStatus();return;
@@ -284,6 +344,10 @@ export class ConfigPanel {
       if (this.webviewReady) return;
       this.webviewReady = true;
       await this.refresh();
+      const page = this.requestedPage ?? this.uiState?.get<SettingsPage>('blackhole.settingsLastPage.v1', 'home') ?? 'home';
+      const collapsed = this.uiState?.get<boolean>('blackhole.settingsNavCollapsed.v1', false) ?? false;
+      if (this.requestedPage) await this.uiState?.update('blackhole.settingsLastPage.v1', page);
+      await this.post({ type: 'settingsUiRestore', page, collapsed });
     }
     else if (m.type === 'save') await this.save(m.values, m.webAgents);
     else if (m.type === 'autosave') await this.autosave(m.values, m.webAgents);
@@ -303,10 +367,12 @@ export class ConfigPanel {
     else if (m.type === 'remote') await this.remoteAction(m);
     else if (m.type === 'grantsClear') await this.grantsClear();
     else if (m.type === 'courierSiteRemove' && typeof m.id === 'string') await this.courierSiteRemove(m.id);
-    else if (m.type === 'lanToggle' && typeof m.on === 'boolean') await this.lanToggle(m.on);
-    else if (m.type === 'lanPort' && Number.isInteger(m.port)) await this.lanSave({ lanPort: m.port });
-    else if (m.type === 'lanUrl' && typeof m.url === 'string') await this.lanSave({ lanUrl: m.url.trim() });
-    else if (m.type === 'lanCopy' && typeof m.url === 'string') { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：直连 MCP 链接已复制。'); }
+    else if (m.type === 'directAccessToggle' && typeof m.on === 'boolean') await this.directToggle(m.on, m.url);
+    else if (m.type === 'directPort' && Number.isInteger(m.port)) await this.saveDaemonSettings({ directPort: m.port });
+    else if (m.type === 'directAccessUrl' && typeof m.url === 'string') await this.saveDaemonSettings({ directAccessUrl: m.url.trim() });
+    else if (m.type === 'channelProxyUrl' && typeof m.url === 'string') await this.saveDaemonSettings({ channelProxyUrl: m.url.trim() });
+    else if (m.type === 'aiDefaultRoute') await this.saveDaemonSettings({ aiDefaultRoute: m.route });
+    else if (m.type === 'copyConnection') await copyCurrentConnection(this.api);
     else if (m.type === 'copyUrl' && m.url) { await env.clipboard.writeText(m.url); void window.showInformationMessage('BlackHole：MCP 链接已复制。'); }
     else if (m.type === 'copyConnectorDesc') await this.copyConnectorDesc();
     else if (m.type === 'copyTunnelId') await this.copyTunnelId();
@@ -328,10 +394,18 @@ export class ConfigPanel {
     this.webview.reveal(ViewColumn.One);
   }
 
+  private async navigate(page: SettingsPage): Promise<void> {
+    this.requestedPage = page;
+    await this.uiState?.update('blackhole.settingsLastPage.v1', page);
+    if (this.webviewReady) await this.post({ type: 'settingsNavigate', page });
+  }
+
   /** Full reload: form values + overview (open, after save, after custom-agent edits). */
   private async accountStatus():Promise<void> {
     const view=await commands.executeCommand<AuthView>('blackhole.accountSnapshot');
-    await this.post({type:'cloudAccount',view:view??{state:'unavailable'}});
+    const safe=view??{state:'unavailable' as const};
+    const summary=accountSummaryForPanel(safe);
+    await this.post({type:'cloudAccount',view:safe,summary:{...summary,remainingLabel:formatRemainingForPanel(summary.remainingSeconds)}});
   }
 
   private async refresh(): Promise<void> {
@@ -359,7 +433,7 @@ export class ConfigPanel {
     await this.pushProxies();
     await this.pushGrants();
     await this.pushCourierSites();
-    await this.pushLan();
+    await this.pushDirect();
     await this.pushRemote();
   }
 
@@ -374,7 +448,7 @@ export class ConfigPanel {
     const overview = await this.overview();
     if (this.disposed) return;
     await this.post({ type: 'status', overview });
-    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); void this.pushLan(); }
+    if (++this.remoteTick % 3 === 0) { void this.pushRemote(); void this.pushCourierSites(); void this.pushDirect(); }
     if (!this.semanticSynced && overview.daemon === 'running' && overview.version) void this.postSemantic();
     const next = readAnchors(overview);
     const action = decideSyncAction(this.anchors, next);
@@ -423,9 +497,10 @@ export class ConfigPanel {
       tunnel_reason: health.tunnel_reason,
       public_base_url: health.public_base_url,
       mcp_url: health.mcp_url,
+      connection_routes: health.connection_routes ?? null,
       mcp_path: health.mcp_path ?? null,
       openai_tunnel: health.openai_tunnel ?? null,
-      openai_tunnel_id: this.savedTunnelId(),
+      openai_tunnel_id: health.connection_routes ? health.connection_routes.saved_tunnel_id ?? null : this.savedTunnelId(),
       stats: health.stats ?? null,
       activity_days: health.activity_days ?? [],
       channel,
@@ -514,7 +589,7 @@ export class ConfigPanel {
   private async askPair(r: { id: string; name: string }): Promise<void> {
     this.remoteAsked.add(r.id);
     const pick = await window.showWarningMessage(`BlackHole：手机「${r.name}」请求访问。不是你本人扫的码，请点「拒绝」。`, '允许', '拒绝');
-    if (pick !== '允许' && pick !== '拒绝') return; // dismissed: the request expires by itself
+    if (this.disposed || (pick !== '允许' && pick !== '拒绝')) return; // dismissed: the request expires by itself
     try {
       await this.api.remoteDecide(r.id, pick === '允许');
     } catch {
@@ -523,27 +598,34 @@ export class ConfigPanel {
     if (!this.disposed) await this.pushRemote();
   }
 
-  private async remoteAction(m: { action: 'pair' | 'revoke'; id?: string; name?: string }): Promise<void> {
+  private remotePairBusy = false;
+  private async remoteAction(m: { action: 'pair' | 'revoke' | 'probe'; id?: string; name?: string; origin?: string; requestId?: number }): Promise<void> {
+    if (this.disposed) return;
+    if (m.action === 'pair' && this.remotePairBusy) { await this.post({ type: 'remotePairDone', requestId: m.requestId }); return; }
+    if (m.action === 'pair') this.remotePairBusy = true;
     try {
-      if (m.action === 'pair') {
-        const r = await this.api.remotePair();
-        const qr = qrcode(0, 'M');
-        qr.addData(r.url);
-        qr.make();
-        const n = qr.getModuleCount();
-        let path = '';
+      if (m.action === 'probe') {
+        if (!m.origin) throw new Error('请选择仍在配置中的手机入口');
+        await this.api.remoteProbe(m.origin);
+      } else if (m.action === 'pair') {
+        const r = await this.api.remotePair(m.origin);
+        if (this.disposed) return;
+        const qr = qrcode(0, 'M'); qr.addData(r.url); qr.make();
+        const n = qr.getModuleCount(); let path = '';
         for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (qr.isDark(y, x)) path += `M${x} ${y}h1v1h-1z`;
-        await this.post({ type: 'remoteQr', url: r.url, expiresAt: r.expires_at, kind: r.kind, n, path });
+        await this.post({ type: 'remoteQr', requestId: m.requestId, url: r.url, expiresAt: r.expires_at, kind: r.kind, n, path });
       } else if (m.action === 'revoke' && m.id) {
         const pick = await window.showWarningMessage(`撤销「${m.name ?? '该设备'}」的访问？`, { modal: true }, '撤销');
-        if (pick !== '撤销') return;
-        await this.api.remoteRevoke(m.id);
+        if (pick !== '撤销' || this.disposed) return;
+        await this.api.remoteRevoke(m.id); this.remoteIds?.delete(m.id);
       }
     } catch (e) {
-      void window.showErrorMessage(`BlackHole：手机访问 — ${e instanceof Error ? e.message : String(e)}`);
+      if (!this.disposed) void window.showErrorMessage(`BlackHole：手机访问 — ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (m.action === 'pair') { this.remotePairBusy = false; await this.post({ type: 'remotePairDone', requestId: m.requestId }); }
+      if (m.action === 'probe') await this.post({ type: 'remoteProbeDone', origin: m.origin });
     }
-    if (m.action !== 'pair' && m.id) this.remoteIds?.delete(m.id);
-    await this.pushRemote();
+    if (!this.disposed) await this.pushRemote();
   }
 
   /** Sites added in the Courier browser extension (daemon setting courierSites): list only, deleted here. */
@@ -585,43 +667,96 @@ export class ConfigPanel {
     }
   }
 
-  /** 局域网直连：设置值加上守护进程的监听状态，推给页面。 */
-  private async pushLan(): Promise<void> {
+  private directVersion = 0;
+  private directBusy = false;
+  private directSaveChain: Promise<void> = Promise.resolve();
+
+  /** Canonical settings plus current listener state; late reads never replace an acknowledged edit. */
+  private async pushDirect(): Promise<void> {
+    const version = ++this.directVersion;
     try {
       const [s, h] = await Promise.all([this.api.settings(), this.api.health()]);
-      await this.post({ type: 'lan', on: s.values.lanAccess === true, port: typeof s.values.lanPort === 'number' ? s.values.lanPort : 7307,
-        url: typeof s.values.lanUrl === 'string' ? s.values.lanUrl : '', lan: h.lan_access ?? null });
+      if (this.disposed || version !== this.directVersion) return;
+      await this.post({ type: 'directAccess', revision: s.revision,
+        on: s.values.directAccessEnabled === true,
+        port: typeof s.values.directPort === 'number' ? s.values.directPort : 7307,
+        url: typeof s.values.directAccessUrl === 'string' ? s.values.directAccessUrl : '',
+        proxyUrl: typeof s.values.channelProxyUrl === 'string' ? s.values.channelProxyUrl : '',
+        aiDefaultRoute: typeof s.values.aiDefaultRoute === 'string' ? s.values.aiDefaultRoute : 'auto',
+        listener: h.direct_access ?? null });
     } catch {
-      /* 守护进程没运行或版本较旧：保留上一次的显示 */
+      if (!this.disposed && version === this.directVersion) await this.post({ type: 'directUnavailable' });
     }
   }
 
-  /** 开启前说清楚风险，由用户决定。 */
-  private async lanToggle(on: boolean): Promise<void> {
-    if (on) {
-      const pick = await window.showWarningMessage('BlackHole：开启局域网直连？同一网络里能访问这台电脑的设备，都能连到直连端口上的 MCP（仍需要 MCP 链接里的令牌和会话 ID）。数据是明文 HTTP，建议只在可信内网或 Tailscale / WireGuard 等组网中使用。', { modal: true }, '开启');
-      if (pick !== '开启' || this.disposed) return;
-    }
-    await this.lanSave({ lanAccess: on });
-  }
-
-  /** 条件写入（带 revision）；别处刚改过设置时重试一次。守护进程异步开关端口，稍后再刷新一次状态。 */
-  private async lanSave(values: Record<string, unknown>): Promise<void> {
+  /** One confirmed switch; empty advertised URL is valid and disabling preserves it. */
+  private async directToggle(on: boolean, formUrl?: string): Promise<void> {
+    if (this.directBusy || this.disposed) return;
+    this.directBusy = true;
+    await this.post({ type: 'directBusy', busy: true });
     try {
-      for (let attempt = 0; ; attempt++) {
-        const s = await this.api.settings();
-        try {
-          await this.api.patchSettings(values, s.revision);
-          break;
-        } catch (e) {
-          if (attempt > 0) throw e;
+      await this.directSaveChain;
+      const before = await this.api.settings();
+      let confirmed = before;
+      let url = typeof formUrl === 'string' ? formUrl.trim() : String(before.values.directAccessUrl ?? '');
+      if (on && url) {
+        let parsed: URL;
+        try { parsed = new URL(url); } catch { throw new Error('请填写 HTTP(S) 地址，或留空使用本机地址。'); }
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('请填写不带路径、凭据或查询参数的 HTTP(S) 地址。');
+        url = parsed.origin;
+      }
+      if (on) {
+        const pick = await window.showWarningMessage('BlackHole：开启直连？可到达本机直连端口的设备将能使用 MCP、引导页、手机与面板。HTTP 不加密；HTTPS 需自行配置 TLS 入口。MCP 和设备仍需认证，手机扫码后仍须在电脑上允许；本地管理接口不会开放。', { modal: true }, '开启');
+        if (pick !== '开启' || this.disposed) return;
+        const fresh = await this.api.settings();
+        if (fresh.values.directAccessEnabled !== before.values.directAccessEnabled || fresh.values.directAccessUrl !== before.values.directAccessUrl || fresh.values.directPort !== before.values.directPort) {
+          throw new Error('直连设置已在别处修改，本次未覆盖。请核对最新值后重试。');
+        }
+        confirmed = fresh;
+      }
+      if (this.disposed) return;
+      await this.saveDaemonSettings(on ? { directAccessEnabled: true, directAccessUrl: url } : { directAccessEnabled: false }, confirmed);
+    } catch (e) {
+      if (!this.disposed) void window.showWarningMessage(`BlackHole: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.directBusy = false;
+      if (!this.disposed) { await this.post({ type: 'directBusy', busy: false }); await this.pushDirect(); }
+    }
+  }
+
+  /** Serialize conditional patches and do not overwrite the same field changed elsewhere. */
+  private saveDaemonSettings(values: Record<string, unknown>, expected?: Awaited<ReturnType<ControlApi['settings']>>): Promise<void> {
+    const task = async (): Promise<void> => {
+      if (this.disposed) return;
+      const keys = Object.keys(values);
+      this.directVersion++;
+      await this.post({ type: 'directSaveState', keys, state: 'saving' });
+      try {
+        let base = expected ?? await this.api.settings();
+        for (let attempt = 0; ; attempt++) {
+          if (this.disposed) return;
+          try { await this.api.patchSettings(values, base.revision); break; }
+          catch (error) {
+            if (expected || attempt > 0) throw error;
+            const fresh = await this.api.settings();
+            if (fresh.revision === base.revision || keys.some((key) => JSON.stringify(fresh.values[key]) !== JSON.stringify(base.values[key]))) throw error;
+            base = fresh;
+          }
+        }
+        if (this.disposed) return;
+        await this.post({ type: 'directSaveState', keys, state: 'saved', values });
+        await Promise.all([this.pushDirect(), this.pushRemote(), this.status()]);
+      } catch (e) {
+        if (!this.disposed) {
+          const message = `保存失败：${e instanceof Error ? e.message : String(e)}`;
+          await this.post({ type: 'directSaveState', keys, state: 'error', message });
+          void window.showErrorMessage(`BlackHole: ${message}`);
         }
       }
-      await this.pushLan();
-      setTimeout(() => { if (!this.disposed) void this.pushLan(); }, 600);
-    } catch (e) {
-      void window.showErrorMessage(`BlackHole: 保存局域网直连设置失败 — ${e instanceof Error ? e.message : String(e)}`);
-    }
+    };
+    const result = this.directSaveChain.then(task, task);
+    this.directSaveChain = result;
+    return result;
   }
 
   private async pushGrants(): Promise<void> {
@@ -642,9 +777,14 @@ export class ConfigPanel {
     );
     if (confirm !== '重置') return;
     try {
-      const { mcp_url } = await this.api.rotateMcpToken();
-      await env.clipboard.writeText(mcp_url);
-      void window.showInformationMessage('BlackHole：MCP 链接已重置，新链接已复制；请更新已配置的连接器。');
+      const result = await this.api.rotateMcpToken();
+      const next = result.connection_routes?.preferred_mcp_url ?? (!result.connection_routes ? result.mcp_url : null);
+      if (next) {
+        await env.clipboard.writeText(next);
+        void window.showInformationMessage('BlackHole：MCP 链接已重置，当前选中入口的新链接已复制；请更新已配置的客户端。');
+      } else {
+        void window.showInformationMessage('BlackHole：MCP 链接已重置。当前入口需要选择或没有 URL，请在“连接与渠道”确认后再复制。');
+      }
     } catch (e) {
       void window.showErrorMessage(`BlackHole: 刷新 token 失败 — ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -671,13 +811,15 @@ export class ConfigPanel {
   }
 
   private async copyTunnelId(): Promise<void> {
-    const id = this.savedTunnelId();
+    const health = await this.api.health(4000).catch(() => null);
+    if (!health) { void window.showWarningMessage('BlackHole: 无法确认 daemon 当前保存的 Tunnel ID；未复制。'); return; }
+    const id = health.connection_routes ? health.connection_routes.saved_tunnel_id ?? null : this.savedTunnelId();
     if (!id) {
       void window.showWarningMessage('BlackHole: 尚未保存 Tunnel ID，请先在 OpenAI 页签填写并保存。');
       return;
     }
     await env.clipboard.writeText(id);
-    void window.showInformationMessage('BlackHole：Tunnel ID 已复制。在 ChatGPT 开发者模式应用中把 Connection 设为「Tunnel」后选中或粘贴它。');
+    void window.showInformationMessage('BlackHole：daemon 保存的 Tunnel ID 已复制；渠道停止时也可配置连接器。');
   }
 
   /** Only the fixed OpenAI onboarding pages; the webview cannot open arbitrary URLs. */
@@ -692,10 +834,10 @@ export class ConfigPanel {
     const initial = workspace.getConfiguration('blackhole');
     const initialPath = initial.get<string>('cloudflaredPath') ?? '';
     const initialMode = initial.get<string>('channelMode') ?? 'cloudflare';
-    let result: Awaited<ReturnType<typeof initializeCloudflared>> | undefined;
+    let result: { path: string; installed: boolean } | undefined;
     let saved = false;
     try {
-      result = await initializeCloudflared(currentPath);
+      result = await this.api.installRuntime('cloudflared', currentPath);
       if (this.disposed) return;
       if (initialMode === 'custom') {
         await this.post({ type: 'cloudflaredInstallResult', previousPath: currentPath, ...result, note: '当前使用自定义渠道，仅回填路径，不保存或重启 daemon。' });
@@ -748,7 +890,7 @@ export class ConfigPanel {
     this.openaiInstallBusy = true;
     const initialPath = workspace.getConfiguration('blackhole').get<string>('openaiTunnelClientPath') ?? '';
     try {
-      const result = await initializeOpenAITunnelClient(currentPath.trim());
+      const result = await this.api.installRuntime('openai', currentPath.trim());
       if (this.disposed) return;
       const current = workspace.getConfiguration('blackhole');
       // Another window may have changed the setting meanwhile: never overwrite it.
@@ -896,9 +1038,12 @@ export class ConfigPanel {
     const c = workspace.getConfiguration('blackhole');
     const saved: string[] = [];
     let needsRestart = false;
-    const channelMode = normalizeChannelMode(values.channelMode);
-    if (channelMode === 'custom' && !/^https:\/\/[^\s/]+/i.test((values.publicBaseUrl ?? '').trim())) {
-      void window.showErrorMessage('BlackHole: 自定义公网地址需要填写可访问的 HTTPS Base URL。');
+    // A subpage submits a patch, not a snapshot of every hidden form.
+    const has = (key: string) => Object.prototype.hasOwnProperty.call(values, key);
+    const channelMode = normalizeChannelMode(has('channelMode') ? values.channelMode : c.get<string>('channelMode'));
+    const publicBaseUrl = (has('publicBaseUrl') ? values.publicBaseUrl : c.get<string>('publicBaseUrl')) ?? '';
+    if ((has('channelMode') || has('publicBaseUrl')) && channelMode === 'custom' && !/^https?:\/\/[^\s/]+/i.test(publicBaseUrl.trim())) {
+      void window.showErrorMessage('BlackHole: 自定义公网地址需要填写可访问的 HTTP(S) Base URL。');
       return;
     }
     const tunnelId = (values.openaiTunnelId ?? '').trim();
@@ -912,6 +1057,7 @@ export class ConfigPanel {
       return;
     }
     for (const f of FIELDS) {
+      if (!has(f.key)) continue;
       const raw = values[f.key] ?? '';
       const current = c.get(f.key);
       const next = f.type === 'number' ? (raw === '' ? undefined : Number(raw)) : raw;
@@ -949,6 +1095,8 @@ export class ConfigPanel {
     if (webAgents) saved.push('Web Agent 显示');
     const detail = saved.length ? '（' + Array.from(new Set(saved)).join('、') + '）' : '';
     void window.showInformationMessage('BlackHole：设置已保存' + detail + (needsRestart ? '；相关改动需重启 daemon 生效。' : '。'));
+    const { semKey: _secret, ...acknowledged } = values;
+    await this.post({ type: 'manualSaved', values: acknowledged, keySaved: saved.includes('Devin Key') });
     await this.refresh();
   }
 
@@ -984,7 +1132,8 @@ export class ConfigPanel {
       saved.push('webAgents');
     }
     if (this.disposed) return;
-    await this.post({ type: 'autosaved', ok: !error, keys: saved, message: error ?? (saved.length ? '已自动保存' : '') });
+    const acknowledged = error ? {} : Object.fromEntries(Object.keys(values).filter(k => AUTO_SAVE_KEYS.has(k)).map(k => [k, c.get(k)]));
+    await this.post({ type: 'autosaved', ok: !error, keys: saved, values: acknowledged, message: error ?? (saved.length ? '已自动保存' : '') });
   }
 
   /**
@@ -1218,22 +1367,24 @@ export class ConfigPanel {
         : `<input id="${f.key}" type="${f.type === 'number' ? 'number' : 'text'}" spellcheck="false">`;
       // 需重启的字段标出来：它们不自动保存，要点「保存」。
       const tag = RESTART_KEYS.has(f.key) ? '<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span>' : '';
-      return `<div class="f"><label>${f.label}${tag}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
+      return `<div class="f"><label for="${f.key}">${f.label}${tag}</label>${control}<div class="d">${f.desc}</div>${f.key === 'skillsDir' ? '<div class="hint" id="skillsHint"></div>' : ''}</div>`;
     };
     // Devin Key 输入框与「daemon 端口」同行（fgrid 空槽位）；状态行、清除按钮、
     // 凭据来源 chips 全部收在输入框正下方，是唯一的 key 手动入口
     const keyCell =
-      '<div class="f"><label>Devin Key<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span></label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
+      '<div class="f"><label for="semKey">Devin Key<span class="rs" title="改完点「保存」，daemon 重启后生效">需重启</span></label><input id="semKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">'
       + '<div class="chrow"><span class="chst dim" id="semst">…</span><span class="sp"></span><button id="semClear" class="secondary" style="display:none">清除已存</button></div>'
       + '<div class="semrow"><span class="lbl">凭据来源</span><div class="agrid" id="semMode"></div></div></div>';
     const cloudflaredField = fieldHtml(FIELDS.find((f) => f.key === 'cloudflaredPath')!);
     const publicUrlField = fieldHtml(FIELDS.find((f) => f.key === 'publicBaseUrl')!);
-    const customPublicUrlField = '<div class="f"><label for="customPublicBaseUrl">公网地址</label><div class="channel-probe-line"><input id="customPublicBaseUrl" type="text" spellcheck="false" placeholder="https://blackhole.example.com"><button id="customProbe" class="secondary" type="button">检测</button></div><div class="d">填写当前公网地址并检测；支持 HTTP/HTTPS、域名或 IP，以及自定义端口。</div></div>';
+    const customPublicUrlField = '<div class="f"><label for="customPublicBaseUrl">公网地址</label><div class="channel-probe-line"><input id="customPublicBaseUrl" type="text" spellcheck="false" placeholder="https://blackhole.example.com"><button id="customProbe" class="secondary" type="button">检测</button></div><div class="d">支持 HTTP/HTTPS 公网地址。HTTP 为明文传输；HTTPS 由你的 TLS 入口终止。支持域名、IP 与自定义端口。</div></div>';
     const openaiPathField = fieldHtml(FIELDS.find((f) => f.key === 'openaiTunnelClientPath')!);
     const openaiIdField = fieldHtml(FIELDS.find((f) => f.key === 'openaiTunnelId')!);
     const CHANNEL_KEYS = new Set(['cloudflaredPath', 'publicBaseUrl', 'openaiTunnelClientPath', 'openaiTunnelId']);
-    const common = FIELDS.filter((f) => !f.advanced && !CHANNEL_KEYS.has(f.key)).map(fieldHtml).join('') + keyCell;
-    const advanced = FIELDS.filter((f) => f.advanced).map(fieldHtml).join('');
+    const connectorField = fieldHtml(FIELDS.find((f) => f.key === 'connectorName')!);
+    const network = fieldHtml(FIELDS.find((f) => f.key === 'tunnelProbeProxy')!);
+    const common = FIELDS.filter((f) => !f.advanced && !CHANNEL_KEYS.has(f.key) && f.key !== 'connectorName').map(fieldHtml).join('') + keyCell;
+    const advanced = FIELDS.filter((f) => f.advanced && f.key !== 'tunnelProbeProxy').map(fieldHtml).join('');
     const build = resolveCloudEndpoint();
     const buildNotice = build.environment === 'test'
       ? '<p class="build-notice">测试构建 · ' + (build.origin === PRODUCTION_CLOUD_ORIGIN
@@ -1243,6 +1394,7 @@ export class ConfigPanel {
 <html lang="zh-cn">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); font-size: 13px; max-width: 760px; margin: 0 auto; padding: 24px 20px 60px; }
@@ -1259,6 +1411,11 @@ export class ConfigPanel {
   .ck-v .d.ok { background: var(--vscode-charts-green); }
   .ck-v .d.warn { background: var(--vscode-charts-yellow); }
   .ck-v .d.bad { background: var(--vscode-charts-red); }
+  .home-account-row { gap:7px; }
+  .home-account-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-signout { width:28px; min-width:28px; height:28px; min-height:28px; flex:0 0 28px; margin-left:auto; padding:0; display:grid; place-items:center; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--vscode-descriptionForeground); }
+  .home-signout:hover:not(:disabled) { border-color:var(--vscode-widget-border); background:var(--vscode-list-hoverBackground); color:var(--vscode-foreground); }
+  .home-signout svg { display:block; width:15px; height:15px; }
   /* 渠道总开关：与侧边栏标题里的开关同一套样式与状态。开关自身就是状态指示，显示时隐藏状态点。 */
   .chsw { position: relative; width: 26px; height: 14px; flex-shrink: 0; padding: 0; min-width: 0; border-radius: 999px; cursor: pointer; border: 1px solid var(--vscode-checkbox-border, var(--vscode-panel-border)); background: color-mix(in srgb, var(--vscode-descriptionForeground) 22%, transparent); transition: background .15s, border-color .15s; }
   .chsw::after { content: ''; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; border-radius: 50%; background: var(--vscode-foreground); opacity: .8; transition: transform .15s; }
@@ -1275,6 +1432,12 @@ export class ConfigPanel {
   @media (prefers-reduced-motion: reduce) { .chsw, .chsw::after { transition: none; } .chsw[data-state="starting"]::after { animation: none; } }
   .ck-v code { font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .sec { font-weight: 600; font-size: 11.5px; color: var(--vscode-descriptionForeground); margin: 20px 0 8px; }
+  .scan-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .scan-icon { display:grid; place-items:center; width:38px; height:38px; flex:0 0 38px; border:1px solid color-mix(in srgb,var(--vscode-charts-blue) 32%,transparent); border-radius:10px; background:color-mix(in srgb,var(--vscode-charts-blue) 12%,transparent); color:var(--vscode-charts-blue); }
+  .scan-icon svg { display:block; width:20px; height:20px; }
+  .scan-copy { min-width:0; }
+  .scan-copy strong { display:block; color:var(--vscode-foreground); font-size:12.5px; }
+  .scan-copy .hint { margin-top:3px; }
   .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 12px 14px; }
   .card button { font-size: 12px; padding: 4px 13px; }
   .chrow { display: flex; align-items: center; gap: 8px; }
@@ -1476,37 +1639,136 @@ export class ConfigPanel {
   .buy-dialog-actions button { min-width:92px; min-height:36px; }
   @media(max-width:580px) { .account-grid { grid-template-columns:1fr; gap:16px; } .account-card { padding:18px; } .buy-modal{padding:12px}.buy-dialog-actions{flex-direction:column-reverse}.buy-dialog-actions button{width:100%} }
   .build-notice { padding: 8px 10px; border: 1px solid var(--vscode-editorWarning-foreground); border-radius: 5px; color: var(--vscode-editorWarning-foreground); font-size: 12px; }
+  .settings-nav { position:fixed; z-index:20; left:0; top:0; bottom:0; width:190px; box-sizing:border-box; padding:14px 10px; background:var(--vscode-sideBar-background); border-right:1px solid var(--vscode-panel-border); overflow:auto; }
+  .settings-nav-head { display:flex; align-items:center; gap:8px; min-height:36px; margin-bottom:8px; }
+  .settings-nav-title { font-weight:650; font-size:14px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .settings-nav-toggle { width:30px; min-width:30px; height:30px; padding:0; display:grid; place-items:center; background:transparent; border:1px solid transparent; color:var(--vscode-descriptionForeground); }
+  .settings-nav-toggle:hover { border-color:var(--vscode-panel-border); color:var(--vscode-foreground); }
+  .settings-nav-toggle svg { display:block; width:16px; height:16px; }
+  .settings-nav-list { display:grid; gap:3px; list-style:none; margin:0; padding:0; }
+  .settings-nav-list > li { min-width:0; }
+  .settings-nav-btn { display:flex; align-items:center; gap:9px; width:100%; min-height:34px; padding:0 9px; border:0; border-radius:6px; background:transparent; color:var(--vscode-descriptionForeground); text-align:left; }
+  .settings-nav-btn:hover { background:var(--vscode-list-hoverBackground); color:var(--vscode-foreground); }
+  .settings-nav-btn[aria-current="page"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
+  .settings-nav-icon { width:20px; flex:0 0 20px; display:grid; place-items:center; }
+  .settings-nav-icon svg { display:block; width:17px; height:17px; }
+  body { max-width:1040px; box-sizing:border-box; padding-left:220px; transition:padding-left .15s; }
+  body.settings-nav-collapsed { padding-left:86px; }
+  body.settings-nav-collapsed .settings-nav { width:58px; padding-left:8px; padding-right:8px; }
+  body.settings-nav-collapsed .settings-nav-title, body.settings-nav-collapsed .settings-nav-label { display:none; }
+  body.settings-nav-collapsed .settings-nav-btn { justify-content:center; padding-left:0; padding-right:0; }
+  body.settings-nav-collapsed .settings-nav-toggle { margin:0 auto; }
+  [data-page][hidden] { display:none !important; }
+  .settings-mobile-menu, .settings-nav-scrim { display:none; }
+  @media(max-width:720px) {
+    body, body.settings-nav-collapsed { max-width:760px; padding:58px 14px 50px; }
+    body.settings-nav-mobile-open { overflow:hidden; }
+    .settings-nav, body.settings-nav-collapsed .settings-nav { right:auto; left:0; top:0; bottom:0; width:min(270px,calc(100vw - 48px)); height:auto; padding:56px 10px 14px; border-right:1px solid var(--vscode-panel-border); border-bottom:0; overflow-x:hidden; overflow-y:auto; transform:translateX(-100%); visibility:hidden; transition:transform .16s ease,visibility .16s step-end; z-index:50; box-shadow:0 10px 28px rgba(0,0,0,.28); }
+    body.settings-nav-mobile-open .settings-nav { transform:translateX(0); visibility:visible; transition:transform .16s ease; }
+    .settings-nav-head { display:none; }
+    .settings-nav-list { display:grid; gap:4px; }
+    .settings-nav-btn { width:100%; min-height:44px; white-space:normal; justify-content:flex-start; padding:0 10px; }
+    body.settings-nav-collapsed .settings-nav-list { display:grid; }
+    body.settings-nav-collapsed .settings-nav-btn { justify-content:flex-start; padding-left:10px; padding-right:10px; }
+    body.settings-nav-collapsed .settings-nav-label { display:inline; }
+    .settings-nav-scrim { position:fixed; inset:0; z-index:45; display:none; border:0; padding:0; background:rgba(0,0,0,.35); }
+    body.settings-nav-mobile-open .settings-nav-scrim { display:block; }
+    .settings-mobile-menu { display:grid; place-items:center; position:fixed; top:7px; left:8px; z-index:52; width:44px; height:44px; padding:0; border:1px solid var(--vscode-panel-border); border-radius:6px; background:var(--vscode-sideBar-background); color:var(--vscode-foreground); }
+    .settings-mobile-menu:hover { background:var(--vscode-list-hoverBackground); }
+    .settings-mobile-menu svg { display:block; width:18px; height:18px; }
+    .settings-mobile-menu .mobile-menu-close { display:none; }
+    .settings-mobile-menu[aria-expanded="true"] .mobile-menu-bars { display:none; }
+    .settings-mobile-menu[aria-expanded="true"] .mobile-menu-close { display:block; }
+    body > .settings-page-title { position:static; width:auto; height:auto; margin:0 0 18px; overflow:visible; white-space:normal; line-height:1.4; }
+  }
+  /* Disclose configuration, keep immediate-action pages free of form controls. */
+  .actions[hidden], .settings-save-hint[hidden] { display:none !important; }
+  .actions { align-items:center; flex-wrap:wrap; padding:14px 0 6px; border-top:1px solid var(--vscode-panel-border); }
+  #saveNote { flex:1 1 220px; color:var(--vscode-descriptionForeground); font-size:12px; line-height:1.6; }
+  .service-actions { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .service-actions > div { flex:1 1 220px; }
+  .connection-disclosure { margin:16px 0; border:1px solid var(--vscode-panel-border); border-radius:8px; overflow:clip; }
+  .connection-disclosure > summary { padding:16px; cursor:pointer; font-weight:600; line-height:1.5; }
+  .connection-disclosure > summary small { display:block; margin:4px 0 0 16px; color:var(--vscode-descriptionForeground); font-size:12px; font-weight:400; }
+  .connection-disclosure > summary:hover { background:var(--vscode-list-hoverBackground); }
+  .connection-disclosure[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
+  .connection-disclosure > .card { border:0; border-radius:0; margin:0; box-shadow:none; }
+  .connection-disclosure > .sec { margin:18px 16px 8px; }
+  .connection-disclosure .fgrid { grid-template-columns:minmax(0,1fr); }
+  .fgrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .f, .fgrid > *, .mcpurl > span { min-width:0; overflow-wrap:anywhere; }
+  .f input, .f select { max-width:100%; box-sizing:border-box; }
+  .chrow, .channel-mode, .mcpurl, .mcp-actions, .btnrow, .semrow { flex-wrap:wrap; }
+  button:focus-visible, summary:focus-visible, select:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:2px; }
+  @media(max-width:720px) {
+    .fgrid { grid-template-columns:minmax(0,1fr); }
+    .mcpurl { align-items:flex-start; gap:12px; }
+    .mcp-actions { width:100%; gap:8px; }
+    .mcp-actions button { flex:1 1 140px; min-height:38px; }
+    .connection-disclosure > summary { padding:14px 12px; }
+  }
+  .row-setting { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
+  .row-setting > div { min-width:0; }
+  .direct-switch { flex:0 0 40px; position:relative; width:40px; min-width:40px; height:24px; padding:0; border:1px solid var(--vscode-panel-border); border-radius:999px; background:var(--vscode-input-background); }
+  .direct-switch::after { content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:var(--vscode-foreground); }
+  .direct-switch[aria-checked='true'] { background:var(--vscode-button-background); }
+  .direct-switch[aria-checked='true']::after { transform:translateX(16px); background:var(--vscode-button-foreground); }
+  .direct-fields, .connector-field { margin-top:16px; }
+  .connector-field { max-width:720px; }
+  .direct-advanced > .f { padding:14px 16px; max-width:520px; }
+  .address-preview { margin:12px 0; padding:10px 12px; background:var(--vscode-editor-background); border:1px solid var(--vscode-panel-border); border-radius:6px; overflow-wrap:anywhere; font-size:12px; line-height:1.65; }
+  .f input, .f select { min-width:0; min-height:36px; border-radius:6px; }
+  .f input:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:1px; }
+  #rmEndpoint { flex:1 1 220px; min-width:0; min-height:36px; }
+  #rmDevices li > div { min-width:0; overflow-wrap:anywhere; }
+  .pair-modal { padding:0; border:0; background:transparent; color:var(--vscode-foreground); width:min(470px,calc(100vw - 24px)); max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); }
+  .pair-modal:not([open]) { display:none; }
+  .pair-modal::backdrop { background:rgba(0,0,0,.48); }
+  .pair-modal .buy-dialog { width:100%; max-width:none; box-sizing:border-box; }
+  .pair-modal .buy-dialog-note { overflow-wrap:anywhere; }
+  .field-label { display:block; margin-bottom:4px; font-size:12px; font-weight:600; }
+  .settings-mobile-menu { border-radius:10px; }
+  @media(prefers-reduced-motion:reduce) { body, .settings-nav { transition:none; } }
 </style>
 </head>
 <body>
-  <h1>BlackHole 设置<span class="ver" id="ver"></span></h1>
+  <nav class="settings-nav" id="settingsNav" aria-label="设置分区">
+    <div class="settings-nav-head"><span class="settings-nav-title">设置</span><button type="button" class="settings-nav-toggle" id="settingsNavToggle" aria-label="收起设置菜单" title="收起设置菜单" aria-controls="settingsNav" aria-expanded="true">${renderSettingsIcon('sidebar', 16)}</button></div>
+    <ul class="settings-nav-list">${renderSettingsNavItems({ page: 'home', buttonClassName: 'settings-nav-btn', iconClassName: 'settings-nav-icon', labelClassName: 'settings-nav-label' })}</ul>
+  </nav>
+  <button type="button" class="settings-nav-scrim" id="settingsNavScrim" aria-label="关闭设置菜单" tabindex="-1"></button>
+  <button type="button" class="settings-mobile-menu" id="settingsMobileMenu" aria-controls="settingsNav" aria-expanded="false" aria-label="打开设置菜单" title="打开设置菜单">${renderSettingsIcon('menu', 18, 'mobile-menu-bars')}${renderSettingsIcon('close', 18, 'mobile-menu-close')}</button>
+  <h1 class="settings-page-title"><span id="settingsPageTitle">首页</span><span class="ver" id="ver"></span></h1>
+  <p id="autoNote" class="hint settings-save-hint" role="status" aria-live="polite" hidden></p>
   ${buildNotice}
-  <div class="cockpit">
-    <div class="cell"><div class="ck-k">Daemon</div><div class="ck-v"><span class="d" id="ckDd"></span><span id="ckDv">—</span></div></div>
-  <div class="buy-modal" id="cloudBuyModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cloudBuyTitle">
-    <div class="buy-dialog">
-      <div class="buy-dialog-head"><div class="buy-dialog-eyebrow">BLACKHOLE · 单次订阅购买</div><div class="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
-      <div class="buy-dialog-body"><div class="buy-summary"><span class="k">订阅方案</span><span class="v" id="cloudBuyPlanText">—</span><span class="k">购买账号</span><span class="v" id="cloudBuyUserText">—</span><span class="k">到账方式</span><span class="v">支付确认后自动叠加</span></div><div class="buy-dialog-note">下一步将在系统浏览器打开 BlackHole 支付确认页，再进入支付宝收银台。每次购买均为单次付款，不会自动续费；无需领取卡密或联系管理员开通。</div></div>
-      <div class="buy-dialog-actions"><button id="cloudBuyCancel" class="secondary">取消</button><button id="cloudBuyConfirm">前往付款</button></div>
-    </div>
-  </div>
-    <div class="cell"><div class="ck-k">渠道</div><div class="ck-v"><button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false" aria-label="公网渠道开关" hidden></button><span class="d" id="ckCd"></span><span id="ckCv">—</span></div><div class="ck-msg" id="ckSwMsg" role="status" hidden></div></div>
+  <div class="cockpit" data-page="home">
+    <div class="cell"><div class="ck-k">账号</div><div class="ck-v home-account-row"><span class="d" id="homeAcctDot"></span><span id="homeAcctName" class="home-account-name">读取中…</span><button id="homeAcctSignOut" class="home-signout" type="button" aria-label="退出登录" title="退出登录" style="display:none">${renderSettingsIcon('logout', 15)}</button></div><div class="ck-msg" id="homeAcctSub">时长待确认</div></div>
+    <div class="cell"><div class="ck-k">连接</div><div class="ck-v"><button class="chsw" id="ckSw" type="button" role="switch" aria-checked="false" aria-label="公网渠道开关" hidden></button><span class="d" id="ckCd"></span><span id="ckCv">—</span></div><div class="ck-msg" id="ckSwMsg" role="status" hidden></div></div>
+    <div class="build-notice" id="daemonWarn" style="display:none;grid-column:1/-1" role="status"></div>
     <div class="cell wide" id="activity"><div class="activity-head"><div class="ck-k">活动</div><div class="activity-today" id="activityToday">等待本地服务</div></div><div class="activity-track"><div class="activity-grid" id="activityGrid" role="group" aria-label="最近 7 天活动"></div></div></div>
   </div>
   <div id="activityTooltip" class="activity-tooltip" role="tooltip" hidden></div>
-  <div class="sec">账号与订阅</div>
-  <section class="card account-card" aria-label="账号与订阅">
+  <div class="sec" data-page="home">手机扫码接入<small>扫码后仍需在这台电脑上允许。</small></div>
+  <div class="card" data-page="home">
+    <div class="scan-head"><div class="scan-icon">${renderSettingsIcon('phone-scan', 20, undefined, 1.7)}</div><div class="scan-copy"><strong>用手机扫码配对</strong><div class="hint">在 BlackHole 手机端扫码配对。</div></div></div>
+    <div class="chrow"><select id="rmEndpoint" aria-label="手机扫码入口" style="display:none;max-width:100%"></select><span class="sp"></span><button id="rmProbe" class="secondary" disabled>检测所选入口</button><button id="rmPair" class="secondary" aria-haspopup="dialog" disabled>生成配对码</button></div>
+    <div class="hint" id="rmHint" style="margin:6px 0 10px" role="status"></div>
+  </div>
+  <div class="sec" data-page="account">账号与订阅</div>
+  <section class="card account-card" aria-label="账号与订阅" data-page="account">
     <div class="account-head"><div><div class="account-eyebrow">BLACKHOLE ACCOUNT</div><div class="account-identity" id="cloudIdentity">读取账号状态…</div></div></div>
     <div class="account-grid"><div><span class="account-label">服务权益</span><div id="cloudSubscription">订阅状态尚未获取</div></div><div><label class="account-label" for="cloudPlan">订阅方案</label><div class="plan-line"><select id="cloudPlan" disabled><option value="pro_day">1 天 · ¥1.00</option><option value="pro_week">7 天 · ¥5.00</option><option value="pro_month">30 天 · ¥15.00</option></select><button id="cloudBuyCard" class="secondary" disabled>购买所选方案</button></div></div></div>
     <div class="btnrow"><button id="cloudCopyUserId" class="secondary" style="display:none">复制用户 ID</button><button id="cloudSignIn">登录</button><button id="cloudRefresh" class="secondary" disabled>刷新订阅</button><button id="cloudOrders" class="secondary" disabled>购买记录</button><button id="cloudRefund" class="secondary" disabled>申请退款</button><button id="cloudRedeem" class="secondary" disabled>兑换订阅卡</button><button id="cloudSignOut" class="secondary" style="display:none">退出登录</button></div>
     <div class="account-note">服务权益以最近一次服务端校验结果为准。</div>
   </section>
-  <div class="sec">公网渠道</div>
-  <div class="card">
+  <div class="sec" id="currentConnectionSec" data-page="connections">当前连接</div>
+  <div class="card" data-page="connections" role="status"><strong id="connectionPrimary">读取连接状态…</strong><div class="hint" id="connectionPrimaryHint">以本地服务返回的状态为准。</div></div>
+  <div class="sec" id="channelSec" data-page="connections"><span id="channelSecTitle">公网渠道</span><small id="channelSecHint">配置渠道；打开本页不会启动任何渠道。</small></div>
+  <div class="card" data-page="connections">
     <div class="channel-mode"><span class="lbl">渠道方式</span><button type="button" class="agchip" data-channel-mode="cloudflare">Cloudflare</button><button type="button" class="agchip" data-channel-mode="openai">OpenAI</button><button type="button" class="agchip" data-channel-mode="custom">自定义</button></div>
     <div id="channelCloudflare"><div class="fgrid channel-config">${cloudflaredField}${publicUrlField}</div><button id="cfInstall" class="secondary" type="button">一键初始化安装</button><div id="cfInstallMessage" class="hint" role="status" aria-live="polite">准备并验证 cloudflared；验证后可选择保存并重启 daemon，不会自动启动渠道。</div><div class="channel-required">cloudflared 由 BlackHole 启停；固定公网地址仅用于持久渠道。修改后需重启 daemon。</div></div>
-    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label>Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存在本机"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在本机，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">准备：在 <a href="#" id="oaLinkPlatform" data-link="platform">OpenAI Platform 隧道设置</a> 创建 Tunnel 并复制 Tunnel ID；Runtime API Key 需 Tunnels Read/Use 权限（创建/编辑 Tunnel 另需 Manage），Tunnel 还需关联要使用的 ChatGPT workspace。这些权限本地无法验证，诊断只能提示检查。</div><div class="channel-required">接入 ChatGPT：启动本渠道后，在 <a href="#" id="oaLinkChatgpt" data-link="chatgpt">chatgpt.com/plugins</a> 点 + 新建开发者模式应用（需先在 设置 → 安全 开启开发者模式），Connection 选「Tunnel」并选中该 Tunnel ID；应用名建议与「连接器名称」一致，复制的连接器提示词才能 @ 到它。</div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址，所以只支持连接器提示词，不支持沙箱直连；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
-    <div id="channelCustom" style="display:none"><div class="fgrid channel-config">${customPublicUrlField}</div><div class="channel-custom-note">将公网 HTTPS 流量转发到 <code id="customLocalTarget">http://127.0.0.1:7306</code>；隧道与反向代理由你自行维护。</div></div>
+    <div id="channelOpenai" style="display:none"><div class="fgrid channel-config">${openaiPathField}${openaiIdField}</div><button id="oaInstall" class="secondary" type="button">一键安装</button><div id="oaInstallMessage" class="hint" role="status" aria-live="polite">下载并校验 OpenAI 官方 tunnel-client runtime（纯 runtime 版，不含 cloudflared）；验证通过后自动保存路径，不会启动渠道。</div><div class="fgrid channel-config"><div class="f"><label for="oaKey">Runtime API Key</label><input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="保存后只存在本机"><div class="chrow"><span class="chst dim" id="oaKeyState">…</span><span class="sp"></span><button id="oaKeySave" class="secondary" type="button">保存密钥</button><button id="oaKeyClear" class="secondary" type="button" style="display:none">清除密钥</button></div><div class="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在本机，不写入设置文件，也不会回显。</div></div></div><div class="chrow"><button id="oaStart" type="button">启动 OpenAI 渠道</button><button id="oaStop" class="secondary" type="button" style="display:none">停止 OpenAI 渠道</button><button id="oaDiag" class="secondary" type="button">诊断</button></div><div id="oaResult" class="hint" role="status" aria-live="polite" style="display:none"></div><div class="channel-required">准备：在 <a href="#" id="oaLinkPlatform" data-link="platform">OpenAI Platform 隧道设置</a> 创建 Tunnel 并复制 Tunnel ID；Runtime API Key 需 Tunnels Read/Use 权限（创建/编辑 Tunnel 另需 Manage），Tunnel 还需关联要使用的 ChatGPT workspace。这些权限本地无法验证，诊断只能提示检查。</div><div class="channel-required">接入 ChatGPT：启动本渠道后，在 <a href="#" id="oaLinkChatgpt" data-link="chatgpt">chatgpt.com/plugins</a> 点 + 新建开发者模式应用（需先在 设置 → 安全 开启开发者模式），Connection 选「Tunnel」并选中该 Tunnel ID；应用名建议与「连接器名称」一致，复制的连接器提示词才能 @ 到它。</div><div class="channel-required">OpenAI Secure MCP Tunnel 只建立出站连接，不提供公网地址，所以只支持连接器提示词，不支持沙箱直连；与 Cloudflare 渠道互不影响，切换页签不会停止任何渠道。</div></div>
+    <div id="channelCustom" style="display:none"><div class="fgrid channel-config">${customPublicUrlField}</div><div class="channel-custom-note">反向代理目标：<code id="customLocalTarget">http://127.0.0.1:7307</code>，保留原始 Host。与直连共用一个数据端口；不要代理主 daemon 管理端口。</div></div>
     <div class="chrow channel-actions">
       <span class="chst dim" id="cnst" style="display:none"></span>
       <span class="sp"></span>
@@ -1514,12 +1776,11 @@ export class ConfigPanel {
       <button id="cnNamed" class="secondary">启动持久</button>
       <button id="cnStop" class="secondary" style="display:none">停止</button>
       <button id="cnCopy" style="display:none">复制链接</button>
-      <button id="rmPair" class="secondary" disabled>手机扫码</button>
     </div>
     <div class="hint bad" id="cnerr" style="display:none"></div>
-    <div class="hint" id="rmHint" style="margin:6px 0 0"></div>
+    <div class="channel-install"><div class="f"><label for="channelProxyUrl">渠道应用代理（可选）</label><input id="channelProxyUrl" type="text" spellcheck="false" placeholder="http://127.0.0.1:7890"><div class="hint" id="channelProxyHint">用于支持的渠道请求、检测和下载；不是系统代理，不保证 Cloudflare 数据流经过它。</div><div class="hint warn" id="channelProxyPending" role="status" style="display:none">代理已保存；当前 OpenAI 进程仍使用旧配置，停止并重新启动 OpenAI 渠道后生效。</div></div></div>
   </div>
-  <div class="buy-modal" id="rmModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="rmTitle">
+  <dialog class="pair-modal" id="rmModal" aria-labelledby="rmTitle">
     <div class="buy-dialog">
       <div class="buy-dialog-head"><div class="buy-dialog-eyebrow">BLACKHOLE · 手机访问</div><div class="buy-dialog-title" id="rmTitle">用手机扫码</div></div>
       <div class="buy-dialog-body" style="text-align:center">
@@ -1527,15 +1788,23 @@ export class ConfigPanel {
         <div class="buy-dialog-note" id="rmLeft"></div>
         <div class="buy-dialog-note" id="rmNote">二维码仅可使用一次。</div>
       </div>
-      <div class="buy-dialog-actions"><button class="secondary" id="rmClose">关闭</button><button id="rmAgain">重新生成</button></div>
+      <div class="buy-dialog-actions"><button class="secondary" id="rmClose" type="button" autofocus>关闭</button><button id="rmAgain" type="button">重新生成</button></div>
     </div>
+  </dialog>
+  <div class="sec" id="aiRouteSec" data-page="connections">默认连接<small>通常保持“自动”即可。</small></div>
+  <div class="card" id="aiRouteCard" data-page="connections"><div class="f">
+    <label for="aiDefaultRoute">默认连接方式</label><select id="aiDefaultRoute" disabled>
+      <option value="auto">自动</option><option value="direct">固定使用直连</option><option value="cloudflare">固定使用 Cloudflare</option><option value="custom">固定使用自定义公网入口</option><option value="openai">固定使用 OpenAI Tunnel</option>
+    </select><div class="hint" id="aiRouteHint">自动：直连开启时使用直连，否则使用上方选择的公网渠道。固定选择不会被抢占；不可用时提示，不自动换线。</div>
+  </div></div>
+  <div class="sec" id="mcpSec" data-page="connections">连接器</div>
+  <div class="card" data-page="connections">
+    <div class="mcpurl"><span id="mcpurl">连接信息待确认</span><div class="mcp-actions"><button id="mcpCopy" disabled>复制 MCP 链接</button><button id="mcpDesc" class="secondary">复制连接器描述</button></div></div>
+    <div class="connector-field">${connectorField}</div>
+    <div class="channel-install chrow"><span class="hint">重置会使旧 MCP 链接失效。</span><span class="sp"></span><button id="mcpRotate" class="secondary">重置 MCP 链接</button></div>
   </div>
-  <div class="sec" id="mcpSec">MCP 连接</div>
-  <div class="card">
-    <div class="mcpurl"><span id="mcpurl">MCP 链接尚未就绪</span><div class="mcp-actions"><button id="mcpCopy">复制 MCP 链接</button><button id="mcpDesc" class="secondary">复制连接器描述</button><button id="mcpRotate" class="secondary">重置 MCP 链接</button></div></div>
-  </div>
-  <div class="sec">MCP Proxies</div>
-  <div class="card">
+  <div class="sec" data-page="agents">MCP Proxies</div>
+  <div class="card" data-page="agents">
     <div id="pxBody"><div class="hint" style="margin:0">读取中…</div></div>
     <div class="btnrow" style="margin-top:10px">
       <button id="pxAdd" class="secondary" disabled>添加 MCP</button>
@@ -1547,63 +1816,133 @@ export class ConfigPanel {
     <div class="pxkv" id="pxMsg"></div>
     <div id="pxReport"></div>
   </div>
-  <div class="pxmodal" id="pxModal" style="display:none">
+  <div class="pxmodal" id="pxModal" style="display:none" data-page="agents">
     <div class="pxmbox">
       <div class="pxmhd"><span class="pxmt" id="pxModalTitle"></span><span class="sp"></span><button class="pxe" data-modal-close="1">关闭</button></div>
       <div class="pxkv" id="pxModalStatus" role="status" aria-live="polite"></div>
       <div class="pxmbody" id="pxModalBody"></div>
     </div>
   </div>
-  <div class="sec">常用</div>
-  <div class="card">
+  <div class="sec" data-page="agents">常用</div>
+  <div class="card" data-page="agents">
     <div class="fgrid">${common}</div>
   </div>
-  <div class="sec">Web Agent 显示</div>
-  <div class="card">
+  <div class="sec" data-page="agents">Web Agent 显示</div>
+  <div class="card" data-page="agents">
     <div class="hint" style="margin:0 0 10px">选择要显示的预置站点；自定义站点始终显示。</div>
     <div id="wagrid" class="agrid"></div>
     <div class="subsec">自定义站点（手动添加）</div>
     <div id="walist"></div>
     <div class="waadd">
-      <input id="waName" class="nm" placeholder="名称，如 Kimi" spellcheck="false">
-      <input id="waUrl" placeholder="网址，如 kimi.com" spellcheck="false">
+      <input id="waName" aria-label="站点名称" class="nm" placeholder="名称，如 Kimi" spellcheck="false">
+      <input id="waUrl" aria-label="站点网址" placeholder="网址，如 kimi.com" spellcheck="false">
       <button id="waAdd" class="secondary">添加</button>
     </div>
   </div>
-  <div class="sec">Courier 网页站点</div>
-  <div class="card">
+  <div class="sec" data-page="agents">Courier 网页站点</div>
+  <div class="card" data-page="agents">
     <div class="hint" style="margin:0 0 10px">在浏览器 Courier 里用「检测此页面」接入的网页 AI，新会话可以选它们。删除后 Courier 会解除它的绑定、停止接管该网站并收回访问权限。</div>
     <div id="cslist" style="display:grid;gap:8px"></div>
   </div>
-  <div class="sec">局域网直连</div>
-  <div class="card">
-    <div class="hint" style="margin:0 0 10px">监听 0.0.0.0，只开放 MCP；明文 HTTP，仅在可信内网使用。</div>
-    <div class="chrow"><span class="chst dim" id="lanst">…</span><span class="sp"></span><button id="lanToggle">开启直连</button></div>
-    <div class="f" style="margin-top:10px"><label for="lanPort">直连端口</label><input id="lanPort" type="number" min="1024" max="65535" spellcheck="false"><div class="hint">1024–65535，不能与主端口相同；修改后立即生效。</div></div>
-    <div class="f" style="margin-top:10px"><label for="lanUrl">直连域名（可选）</label><input id="lanUrl" type="text" spellcheck="false" placeholder="https://mcp.example.com 或 http://nas.lan:7307"><div class="hint" id="lanUrlHint">域名映射到这台电脑时填写，下面会列出域名链接。</div></div>
-    <div id="lanurls" style="display:grid;gap:8px;margin-top:10px"></div>
+  <div class="sec" data-page="network">直连</div>
+  <div class="card network-entry" data-page="network">
+    <div class="row-setting"><div><strong>开启直连</strong><div class="hint">局域网、组网和自己配置的公网映射，共用这一个开关。</div></div><button id="directAccessToggle" type="button" role="switch" class="direct-switch" aria-label="开启直连" aria-checked="false" disabled></button></div>
+    <div class="chst" id="directState" role="status">读取直连状态…</div>
+    <div class="f direct-fields"><label for="directAccessUrl">对外访问地址（可选）</label><input id="directAccessUrl" type="text" spellcheck="false" placeholder="https://bh.example.com 或 http://你的公网IP:7307" disabled><div class="hint" id="directUrlHint">复制给 Agent 的 HTTP(S) 地址；留空使用自动发现的本机地址。保存地址不会开启直连。</div></div>
+    <div class="address-preview" id="directResolved">多个本机地址在复制时选择；不修改监听范围。</div>
+    <details class="connection-disclosure direct-advanced"><summary>高级<small>监听端口，通常不需要修改。</small></summary><div class="f"><label for="directPort">监听端口</label><input id="directPort" inputmode="numeric" type="text" value="7307" spellcheck="false" disabled><div class="hint" id="directPortHint">直连与反向代理共用此端口；外部映射端口可以不同。修改会短暂中断已有连接。</div></div></details>
+    <div class="hint" id="directSaveNote" role="status"></div>
+    <div class="hint">DNS、端口映射和 TLS 由你配置。仅开放连接所需的数据接口，不开放本地管理 API。</div>
   </div>
-  <div class="sec">授权管理</div>
-  <div class="card">
+  <div class="sec" data-page="network">检测与诊断</div>
+  <div class="card" data-page="network"><div class="fgrid">${network}</div></div>
+  <div class="sec" data-page="security">已配对设备<small>撤销后该设备需要重新扫码。</small></div>
+  <div class="card" data-page="security"><ul id="rmDevices" style="list-style:none;margin:0;padding:0"></ul></div>
+  <div class="sec" data-page="security">授权管理</div>
+  <div class="card" data-page="security">
     <div class="hint" style="margin:0 0 10px">全局授权会保留；会话授权仅当前 daemon 生命周期有效。删除后相关操作会重新询问。</div>
     <div id="aglist" style="display:grid;gap:8px"></div>
     <div class="btnrow" style="margin-top:10px">
       <button id="agClear" class="secondary">清除全部全局授权</button>
     </div>
   </div>
-  <details><summary>高级</summary><div class="card" style="margin-top:8px"><div class="fgrid">${advanced}</div>
-    <div class="subsec">已配对的手机</div>
-    <ul id="rmDevices" style="list-style:none;margin:0;padding:0"></ul>
-  </div></details>
-  <div class="actions">
-    <button id="save" title="保存标有「需重启」的设置；其余设置修改后已自动保存">保存</button>
-    <button id="restart" class="secondary">重启 daemon</button>
-    <span id="autoNote" class="hint" role="status" aria-live="polite">其余设置修改后自动保存；标有「需重启」的改完点保存。</span>
+  <section data-page="advanced"><div class="sec">运行参数</div><div class="card"><div class="fgrid">${advanced}</div></div>
+    <div class="sec">本地服务</div><div class="card service-actions"><div><b>重启 daemon</b><div class="hint">服务异常或设置提示需重启时使用；重启会中断正在进行的连接。</div></div><button id="restart" class="secondary">重启 daemon</button></div>
+  </section>
+  <div class="actions" id="settingsActions" hidden>
+    <span id="saveNote" role="status" aria-live="polite"></span>
+    <button id="save" title="只保存当前页面的手动设置">保存本页</button>
+  </div>
+  <div class="buy-modal" id="cloudBuyModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="cloudBuyTitle">
+    <div class="buy-dialog">
+      <div class="buy-dialog-head"><div class="buy-dialog-eyebrow">BLACKHOLE · 单次订阅购买</div><div class="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
+      <div class="buy-dialog-body"><div class="buy-summary"><span class="k">订阅方案</span><span class="v" id="cloudBuyPlanText">—</span><span class="k">购买账号</span><span class="v" id="cloudBuyUserText">—</span><span class="k">到账方式</span><span class="v">支付确认后自动叠加</span></div><div class="buy-dialog-note">下一步将在系统浏览器打开 BlackHole 支付确认页，再进入支付宝收银台。每次购买均为单次付款，不会自动续费；无需领取卡密或联系管理员开通。</div></div>
+      <div class="buy-dialog-actions"><button id="cloudBuyCancel" class="secondary">取消</button><button id="cloudBuyConfirm">前往付款</button></div>
+    </div>
   </div>
   <script nonce="${nonce}">
     const vs = acquireVsCodeApi();
+
     const $ = (id) => document.getElementById(id);
-    for(const [id,action] of [['cloudSignIn','signIn'],['cloudRedeem','redeem'],['cloudSignOut','signOut'],['cloudRefresh','refresh'],['cloudOrders','orders'],['cloudRefund','refund']]){
+    const SETTINGS_PAGES=${JSON.stringify(SETTINGS_PAGES)};
+    const SETTINGS_LABELS=${JSON.stringify(SETTINGS_LABELS)};
+    const settingsState=vs.getState()||{};
+    let settingsPage=SETTINGS_PAGES.includes(settingsState.settingsPage)?settingsState.settingsPage:'home';
+    let settingsNavCollapsed=settingsState.settingsNavCollapsed===true;
+    let settingsNavMobileOpen=false;
+    let rmTimer = null, rmDevices = [], rmView = null, rmSelectedOrigin = '', rmPairBusy = false, rmRequest = 0, rmPreviousFocus = null;
+    const isNarrowSettingsNav=()=>typeof window.matchMedia==='function'&&window.matchMedia('(max-width:720px)').matches;
+    const MANUAL_FORM_PAGES = ['connections', 'network', 'agents', 'advanced'];
+    function renderSettingsActions() {
+      $('settingsActions').hidden = !MANUAL_FORM_PAGES.includes(settingsPage);
+      $('saveNote').textContent = '仅保存本页标有「需重启」的设置；其他页面的输入不会提交。';
+    }
+    function resetSaveHint() {
+      const note = $('autoNote');
+      note.hidden = !MANUAL_FORM_PAGES.includes(settingsPage);
+      note.className = 'hint settings-save-hint';
+      note.textContent = '普通设置修改后自动保存；标有「需重启」的字段改完后点保存。';
+    }
+    function saveSettingsUi(){vs.setState(Object.assign({},vs.getState()||{},{settingsPage,settingsNavCollapsed}));}
+    function persistSettingsUi(){saveSettingsUi();vs.postMessage({type:'settingsUi',page:settingsPage,collapsed:settingsNavCollapsed});}
+    function applySettingsNav(){
+      document.body?.classList?.toggle('settings-nav-collapsed',settingsNavCollapsed);
+      document.body?.classList?.toggle('settings-nav-mobile-open',settingsNavMobileOpen);
+      const toggle=$('settingsNavToggle');
+      if(toggle){const label=settingsNavCollapsed?'展开设置菜单':'收起设置菜单';toggle.setAttribute('aria-label',label);toggle.title=label;toggle.setAttribute('aria-expanded',String(!settingsNavCollapsed));}
+      document.querySelectorAll('[data-settings-target]').forEach((item)=>{const label=SETTINGS_LABELS[item.dataset.settingsTarget]||'';item.title=settingsNavCollapsed&&!isNarrowSettingsNav()?label:'';});
+      const mobile=$('settingsMobileMenu'), nav=$('settingsNav'), scrim=$('settingsNavScrim');
+      if(mobile){mobile.setAttribute('aria-expanded',String(settingsNavMobileOpen));mobile.setAttribute('aria-label',settingsNavMobileOpen?'关闭设置菜单':'打开设置菜单');mobile.title=settingsNavMobileOpen?'关闭设置菜单':'打开设置菜单';}
+      if(nav)nav.setAttribute('aria-hidden',isNarrowSettingsNav()&&!settingsNavMobileOpen?'true':'false');
+      if(scrim)scrim.hidden=!(isNarrowSettingsNav()&&settingsNavMobileOpen);
+    }
+    function closeSettingsMobileNav(){
+      if(!settingsNavMobileOpen)return;
+      settingsNavMobileOpen=false;applySettingsNav();
+      const target=isNarrowSettingsNav()?$('settingsMobileMenu'):$('settingsNavToggle');
+      if(target&&!target.disabled)target.focus();
+    }
+    function applySettingsPage(page){
+      if (page !== settingsPage && (rmPairBusy || $('rmModal').open)) closeRemoteQr();
+      settingsPage=SETTINGS_PAGES.includes(page)?page:'home';
+      if(settingsNavMobileOpen)closeSettingsMobileNav();
+      document.querySelectorAll('[data-page]').forEach(el=>{el.hidden=el.dataset.page!==settingsPage;});
+      document.querySelectorAll('[data-settings-target]').forEach(el=>el.setAttribute('aria-current',el.dataset.settingsTarget===settingsPage?'page':'false'));
+      const title=$('settingsPageTitle');if(title)title.textContent=SETTINGS_LABELS[settingsPage]||'设置';
+      resetSaveHint();
+      renderSettingsActions();
+      saveSettingsUi();
+      if(typeof window.scrollTo==='function')window.scrollTo({top:0,behavior:'auto'});
+    }
+    document.querySelectorAll('[data-settings-target]').forEach(btn=>btn.addEventListener('click',()=>{applySettingsPage(btn.dataset.settingsTarget);persistSettingsUi();}));
+    $('settingsNavToggle').onclick=()=>{settingsNavCollapsed=!settingsNavCollapsed;applySettingsNav();persistSettingsUi();};
+    $('settingsMobileMenu').addEventListener('click',()=>{settingsNavMobileOpen=!settingsNavMobileOpen;applySettingsNav();if(settingsNavMobileOpen)document.querySelector('[data-settings-target][aria-current="page"]')?.focus();});
+    $('settingsNavScrim').addEventListener('click',closeSettingsMobileNav);
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&settingsNavMobileOpen){event.preventDefault();event.stopPropagation();closeSettingsMobileNav();}});
+    window.addEventListener('resize',()=>{if(!isNarrowSettingsNav()&&settingsNavMobileOpen)closeSettingsMobileNav();});
+    applySettingsNav();
+    applySettingsPage(settingsPage);
+    for(const [id,action] of [['cloudSignIn','signIn'],['cloudRedeem','redeem'],['cloudSignOut','signOut'],['homeAcctSignOut','signOut'],['cloudRefresh','refresh'],['cloudOrders','orders'],['cloudRefund','refund']]){
       $(id).onclick=()=>vs.postMessage({type:'cloudAccount',action});
     }
     const closeBuyModal=()=>{$('cloudBuyModal').style.display='none';};
@@ -1615,18 +1954,36 @@ export class ConfigPanel {
     $('cloudCopyUserId').onclick=()=>{const userId=$('cloudCopyUserId').dataset.userId;if(userId)vs.postMessage({type:'copyUserId',userId});};
     window.addEventListener('message',event=>{
       if(event.data?.type!=='cloudAccount')return;
-      const v=event.data.view||{},a=v.account;
-      $('cloudIdentity').textContent=a?((a.name||'BlackHole 用户')+' · '+a.email):v.userId?'BlackHole 用户':'尚未登录';
+      const v=event.data.view||{},a=v.account,s=event.data.summary||{};
+      const loggedIn=s.canSignOut===true;
+      const name=s.displayName||(a?.name||a?.email)||(loggedIn?'BlackHole 用户':'尚未登录');
+      const email=s.email||a?.email||'';
+      const remaining=s.accountStatus==='suspended'?'账号已停用':s.accountStatus==='pending'?'订阅准备中':(s.remainingLabel||'时长待确认');
+      $('homeAcctName').textContent=name;$('homeAcctName').title=email||name;
+      $('homeAcctSub').textContent=remaining;
+      $('homeAcctDot').className='d '+(s.remainingSeconds===0?'bad':typeof s.remainingSeconds==='number'&&s.remainingSeconds<259200?'warn':'');
+      $('homeAcctSignOut').style.display=loggedIn?'':'none';$('homeAcctSignOut').disabled=!loggedIn;
+      $('cloudIdentity').textContent=loggedIn?(email&&name!==email?name+' · '+email:name):'尚未登录';
       $('cloudCopyUserId').style.display=v.userId?'':'none';$('cloudCopyUserId').dataset.userId=v.userId||'';
-      const n=Math.max(0,Math.floor(v.remainingSeconds||0));
-      $('cloudSubscription').textContent=!a?'订阅状态未验证，请登录或手动刷新':a.status==='suspended'?'账号已停用':a.status==='pending'?'订阅准备中':
-        n>0?('剩余订阅：'+Math.floor(n/86400)+'天 '+Math.floor(n%86400/3600)+'小时 '+Math.floor(n%3600/60)+'分钟'):'订阅已到期';
-      const loggedIn=!!v.userId&&v.state!=='logged_out';
+      $('cloudSubscription').textContent=remaining;
       $('cloudSignIn').style.display=loggedIn?'none':'';
       $('cloudSignOut').style.display=loggedIn?'':'none';$('cloudSignOut').disabled=!loggedIn;
       $('cloudRefresh').disabled=!loggedIn;$('cloudRedeem').disabled=!loggedIn;$('cloudPlan').disabled=!loggedIn;$('cloudBuyCard').disabled=!loggedIn;$('cloudOrders').disabled=!loggedIn;$('cloudRefund').disabled=!loggedIn;
     });
     const KEYS = ${JSON.stringify(KEYS)};
+    let semanticDirty = false, channelDraftPending = false, pendingManualKey = '';
+    for (const id of KEYS.concat(['customPublicBaseUrl', 'semKey'])) {
+      const el = $(id); if (!el) continue;
+      el.addEventListener('input', () => { el.dataset.dirty = 'true'; });
+    }
+    function acknowledgeForm(values) {
+      for (const [key,value] of Object.entries(values || {})) {
+        const ids = key === 'publicBaseUrl' ? ['publicBaseUrl','customPublicBaseUrl'] : [key];
+        for (const id of ids) if ($(id) && $(id).value.trim() === String(value).trim()) $(id).dataset.dirty = 'false';
+        if (key === 'semanticMode' && semMode === value) semanticDirty = false;
+        if (key === 'channelMode' && channelMode === value) channelDraftPending = false;
+      }
+    }
     // 不触发 daemon 重启的设置：选中 / 离开输入框即自动保存（其余走「保存」按钮）。
     const AUTO_KEYS = ${JSON.stringify([...AUTO_SAVE_KEYS])};
     let autoNoteTimer;
@@ -1634,6 +1991,7 @@ export class ConfigPanel {
       vs.postMessage(Object.assign({ type: 'autosave', values: values || {} }, webAgents ? { webAgents } : {}));
     }
     function onAutosaved(m) {
+      if (m.ok) acknowledgeForm(m.values);
       const n = $('autoNote');
       clearTimeout(autoNoteTimer);
       if (!m.ok) { n.textContent = m.message; n.className = 'hint bad'; return; }
@@ -1748,11 +2106,13 @@ export class ConfigPanel {
     function renderStatus(m) {
       lastStatus = m;
       const o = m.overview || {};
-      // 驾驶舱：daemon
-      const dmap = { running: ['ok', '运行中' + (o.version ? ' · v' + o.version : '')], starting: ['warn', '启动中…'], error: ['bad', '异常'], stopped: ['', '未运行'] };
-      const dm = dmap[o.daemon] || ['', o.daemon || '—'];
-      $('ckDd').className = 'd ' + dm[0];
-      $('ckDv').textContent = dm[1];
+      // 首页正常态优先展示账号；daemon 只在异常时占用醒目位置。
+      const daemonWarn = $('daemonWarn');
+      const daemonText = o.daemon === 'starting' ? '本地服务正在启动…'
+        : o.daemon === 'error' ? '本地服务异常，请到“高级”查看并处理。'
+          : o.daemon === 'stopped' ? '本地服务未运行，请到“高级”启动。' : '';
+      daemonWarn.style.display = daemonText ? '' : 'none';
+      daemonWarn.textContent = daemonText;
       $('ver').textContent = o.version ? 'v' + o.version : '';
       // 驾驶舱：渠道（overview 扁平字段：tunnel / tunnel_mode / tunnel_reason）
       const t = o.tunnel;
@@ -1766,7 +2126,12 @@ export class ConfigPanel {
       if (channelMode === 'custom' && customProbe.state === 'online') parts.push(['ok', '自定义']);
       if (cfSum[t]) parts.push(cfSum[t]);
       if (o.openai_tunnel && gpSum[o.openai_tunnel.status]) parts.push(gpSum[o.openai_tunnel.status]);
-      const cm = t === 'unreachable' ? cmap.unreachable : !parts.length ? ['', '未启动'] : [parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn', parts.map((p) => p[1]).join(' · ')];
+      const routeView = o.connection_routes || null;
+      const routeNames = { direct:'直连', cloudflare:'Cloudflare', custom:'自定义公网入口', openai:'OpenAI Tunnel' };
+      $('connectionPrimary').textContent = routeView ? '当前默认：' + (routeNames[routeView.selected_route] || '待确认') : '连接状态待确认';
+      $('connectionPrimaryHint').textContent = o.daemon !== 'running' ? '本地服务未连接' : !routeView ? '等待本地服务返回连接状态。' : routeView.needs_choice ? '多个直连地址，复制时选择目标 Agent 能访问的地址。' : routeView.connector_ready ? '默认连接已配置；网络可达性以目标客户端实际连接为准。' : '当前默认入口尚未就绪，不会自动改用其他渠道。';
+      const cm = t === 'unreachable' ? cmap.unreachable : !parts.length ? ['', '未启动']
+        : [parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn', parts.map((p) => p[1]).join(' · ')];
       void customMap;
       $('ckCd').className = 'd ' + cm[0];
       $('ckCv').textContent = cm[1];
@@ -1827,31 +2192,34 @@ export class ConfigPanel {
         st.textContent = '未启动'; st.style.display = ''; st.className = 'chst dim';
       }
       }
-      if (channelMode === 'openai') {
-        // OpenAI 没有 URL：卡片显示并复制已保存的 Tunnel ID（离线也可），不提供重置 MCP 链接；连接器描述照常可复制给 ChatGPT 应用。
+      const proxyPending = $('channelProxyPending');
+      if (proxyPending) proxyPending.style.display = o.openai_tunnel?.proxy_pending_restart ? '' : 'none';
+      const routes = o.connection_routes || null;
+      const selectedOpenAI = routes ? routes.selected_route === 'openai' || routes.reason === 'openai_selected' : channelMode === 'openai';
+      if (selectedOpenAI) {
         const tid = o.openai_tunnel_id || '';
-        $('mcpSec').textContent = 'OpenAI 连接';
+        $('mcpSec').textContent = '连接器';
         $('mcpurl').dataset.url = '';
         $('mcpurl').textContent = tid ? 'Tunnel ID：' + tid : '尚未保存 Tunnel ID';
         $('mcpCopy').textContent = '复制 Tunnel ID';
+        $('mcpCopy').dataset.kind = 'openai';
         $('mcpCopy').disabled = !tid;
         $('mcpRotate').style.display = 'none';
         $('mcpDesc').disabled = false;
       } else {
-      // 自定义渠道只有通过真实公网探测后才发布完整 MCP 链接。
-      const customReady = channelMode === 'custom' && customProbe.state === 'online' && customProbe.url;
-      const mcpValue = channelMode === 'custom' ? (customReady && o.mcp_path ? customProbe.url + o.mcp_path : '') : (o.mcp_url || '');
-      // 回环链接只有本机可用：照常允许复制，但不标成“已就绪”。
-      const mcpLocal = mcpValue.indexOf('://127.') > 0 || mcpValue.indexOf('://localhost') > 0 || mcpValue.indexOf('://[::1]') > 0;
-      $('mcpSec').textContent = 'MCP 连接';
-      $('mcpurl').dataset.url = mcpValue;
-      $('mcpurl').textContent = mcpValue ? (mcpLocal ? 'MCP 链接仅本机可用（公网渠道未启动）' : 'MCP 链接已就绪') : (channelMode === 'custom' ? '检测公网地址后生成 MCP 链接' : 'MCP 链接尚未就绪');
-      $('mcpCopy').textContent = '复制 MCP 链接';
-      $('mcpCopy').disabled = !mcpValue;
-      // Reset stays clickable even while daemon state is stale/unreachable so the host can explain the failure instead of silently swallowing the click.
-      $('mcpRotate').style.display = '';
-      $('mcpRotate').disabled = false;
-      $('mcpDesc').disabled = !mcpValue;
+        const mcpValue = routes ? (routes.preferred_mcp_url || '') : (o.mcp_url || '');
+        const mcpLocal = mcpValue.indexOf('://127.') > 0 || mcpValue.indexOf('://localhost') > 0 || mcpValue.indexOf('://[::1]') > 0;
+        $('mcpSec').textContent = '连接器';
+        $('mcpurl').dataset.url = mcpValue;
+        if (routes && routes.needs_choice) $('mcpurl').textContent = '检测到多个直连地址，请先明确目标网络';
+        else if (mcpValue) $('mcpurl').textContent = mcpLocal ? 'MCP 链接仅本机可用' : (routes && routes.preferred_mcp_kind === 'direct' ? '直连 MCP 链接已就绪' : 'MCP 链接已就绪');
+        else $('mcpurl').textContent = routes?.reason === 'direct_unavailable' ? '已选择直连，但监听当前不可用' : routes?.reason === 'custom_unavailable' ? '自定义地址尚未配置' : 'MCP 链接尚未就绪';
+        $('mcpCopy').textContent = '复制 MCP 链接';
+        $('mcpCopy').dataset.kind = 'url';
+        $('mcpCopy').disabled = o.daemon !== 'running' || (!mcpValue && !routes?.needs_choice);
+        $('mcpRotate').style.display = '';
+        $('mcpRotate').disabled = o.daemon !== 'running';
+        $('mcpDesc').disabled = false;
       }
       // semantic 字段只在整页刷新时携带（status 轮询不带，见 overview 注释）
       if (o.semantic !== undefined) renderSemantic(o.semantic ?? null);
@@ -1889,7 +2257,7 @@ export class ConfigPanel {
         '<button class="agchip' + (m.v === semMode ? ' on' : '') + '" data-v="' + m.v + '" title="' + m.title + '"><span class="d"></span>' + m.t + '</button>'
       ).join('');
       for (const el of g.querySelectorAll('.agchip')) {
-        el.addEventListener('click', () => { semMode = el.getAttribute('data-v'); renderSemMode(semMode); });
+        el.addEventListener('click', () => { semanticDirty = true; semMode = el.getAttribute('data-v'); renderSemMode(semMode); });
       }
     }
     let channelMode = 'cloudflare';
@@ -2003,37 +2371,52 @@ export class ConfigPanel {
         $('cnQuick').style.display = 'none'; $('cnNamed').style.display = 'none'; $('cnStop').style.display = 'none'; $('cnCopy').style.display = 'none';
       }
       const custom = $('customPublicBaseUrl'), fixed = $('publicBaseUrl');
-      if (channelMode === 'custom' && custom && fixed) custom.value = fixed.value;
-      if (channelMode !== 'custom' && custom && fixed) fixed.value = custom.value;
+      if (custom && fixed) {
+        const from = channelMode === 'custom' ? fixed : custom, to = channelMode === 'custom' ? custom : fixed;
+        if (to.dataset.dirty !== 'true' && document.activeElement !== to) { to.value = from.value; to.dataset.dirty = from.dataset.dirty || 'false'; }
+      }
     }
     for (const el of document.querySelectorAll('[data-channel-mode]')) el.addEventListener('click', () => {
       if (cloudflaredInstalling) return;
       const before = channelMode;
       resetCustomProbe(); renderChannelMode(el.getAttribute('data-channel-mode')); renderStatus(lastStatus || { overview: {} });
       // 标签只是默认显示偏好，不开关通道：选中即保存。
-      if (channelMode !== before) autosave({ channelMode });
+      if (channelMode !== before) { channelDraftPending = true; autosave({ channelMode }); }
     });
     $('customPublicBaseUrl').addEventListener('input', () => { resetCustomProbe(); renderStatus(lastStatus || { overview: {} }); });
+    // Default-route changes share the canonical conditional-save path below.
     window.addEventListener('message', (e) => {
       const m = e.data;
-      if (m.type === 'init') {
-        for (const k of KEYS) if ($(k)) $(k).value = m.values[k] ?? '';
-        $('customPublicBaseUrl').value = m.values.publicBaseUrl ?? '';
-        $('customLocalTarget').textContent = 'http://127.0.0.1:' + (m.values.port || '7306');
-        renderChannelMode(m.values.channelMode);
+      if (m.type === 'settingsNavigate') applySettingsPage(m.page);
+      else if (m.type === 'settingsUiRestore') { settingsNavCollapsed=m.collapsed===true; applySettingsNav(); applySettingsPage(m.page); }
+      else if (m.type === 'init') {
+        for (const k of KEYS) { const el = $(k); if (el && el.dataset.dirty !== 'true' && document.activeElement !== el) el.value = m.values[k] ?? ''; }
+        if ($('customPublicBaseUrl').dataset.dirty !== 'true' && document.activeElement !== $('customPublicBaseUrl')) $('customPublicBaseUrl').value = m.values.publicBaseUrl ?? '';
+        // Canonical direct settings arrive with their daemon revision in directAccess.
+        renderChannelMode(channelDraftPending ? channelMode : m.values.channelMode);
         syncCloudflaredInstallVisibility();
         syncOpenaiInstallVisibility();
-        $('semKey').value = '';
+        if ($('semKey').dataset.dirty !== 'true') $('semKey').value = '';
         if (m.skillsHint !== undefined && $('skillsHint')) { $('skillsHint').textContent = m.skillsHint; $('skillsHint').className = 'hint ' + (m.skillsCls || ''); }
-        renderSemMode(m.semanticMode);
+        renderSemMode(semanticDirty ? semMode : m.semanticMode);
         renderWebAgents(m.agents ?? [], m.webAgents ?? []); renderCustom(m.custom ?? []); renderStatus(m);
+        renderSettingsActions();
       }
       else if (m.type === 'custom') renderCustom(m.custom ?? []);
+      else if (m.type === 'manualSaved') {
+        acknowledgeForm(m.values);
+        if (m.keySaved && $('semKey').value.trim() === pendingManualKey) { $('semKey').value = ''; $('semKey').dataset.dirty = 'false'; }
+        pendingManualKey = '';
+      }
       else if (m.type === 'autosaved') onAutosaved(m);
       else if (m.type === 'channelToggleResult') onChannelToggleResult(m);
       else if (m.type === 'status') renderStatus(m);
       else if (m.type === 'remote') renderRemote(m.view, m.paired);
-      else if (m.type === 'remoteQr') showRemoteQr(m);
+      else if (m.type === 'remoteQr') {
+        if (m.requestId === rmRequest && settingsPage === 'home' && new URL(m.url).origin === rmSelectedOrigin) { rmPairBusy = false; showRemoteQr(m); }
+      }
+      else if (m.type === 'remotePairDone') { if (m.requestId === rmRequest) { rmPairBusy = false; renderRemote(rmView); } }
+      else if (m.type === 'remoteProbeDone') { rmProbing.delete(m.origin); renderRemote(rmView); }
       else if (m.type === 'cloudflaredInstallResult') onCloudflaredInstallResult(m);
       else if (m.type === 'openaiInstallResult') onOpenaiInstallResult(m);
       else if (m.type === 'openaiTunnelResult') onOpenaiTunnelResult(m);
@@ -2047,7 +2430,10 @@ export class ConfigPanel {
       else if (m.type === 'semantic') renderSemantic(m.info ?? null);
       else if (m.type === 'grants') renderGrants(m.grants ?? { always: [], sessions: [] });
       else if (m.type === 'courierSites') renderCourierSites(Array.isArray(m.sites) ? m.sites : []);
-      else if (m.type === 'lan') renderLan(m);
+      else if (m.type === 'directAccess') renderDirect(m);
+      else if (m.type === 'directBusy') { directUiBusy = m.busy === true; directControls(); }
+      else if (m.type === 'directSaveState') directSaveState(m);
+      else if (m.type === 'directUnavailable') { directFrame = null; $('directState').textContent = '无法读取当前直连状态'; $('directState').className = 'chst warn'; directControls(); }
       else if (m.type === 'proxies') { renderProxies(m.info); if (pxModalFor && pxData[pxModalFor]) renderPxTools(pxData[pxModalFor]); }
       else if (m.type === 'proxiesReport') renderProxiesReport(m.report);
       else if (m.type === 'proxiesEditResult') renderProxiesEditResult(m);
@@ -2062,43 +2448,88 @@ export class ConfigPanel {
     });
     // 授权按实际生效 scope 展示：全局（持久）+ 会话（进程内）。
     // pattern/path 键保持可读化；单条删除后对应操作恢复询问。
-    // 局域网直连：状态、开关、端口和可复制的直连 MCP 链接。
-    let lanOn = false;
-    function renderLan(m) {
-      lanOn = !!m.on;
-      const lan = m.lan || null;
-      const st = !lanOn ? ['dim', '未开启'] : lan && lan.error ? ['bad', lan.error] : lan && lan.listening ? ['ok', '正在监听 0.0.0.0:' + lan.port] : lan ? ['warn', '正在启动…'] : ['warn', '守护进程没有返回直连状态（可能需要更新）'];
-      $('lanst').className = 'chst ' + st[0];
-      $('lanst').textContent = st[1];
-      $('lanToggle').textContent = lanOn ? '关闭直连' : '开启直连';
-      $('lanToggle').className = lanOn ? 'secondary' : '';
-      if (document.activeElement !== $('lanPort')) $('lanPort').value = String(m.port);
-      if (document.activeElement !== $('lanUrl')) $('lanUrl').value = m.url || '';
-      // 填了直连域名时，域名链接排在最前面。
-      const urls = lanOn && lan && lan.listening
-        ? (m.url ? [m.url + lan.mcp_path] : []).concat((lan.addresses || []).map((a) => 'http://' + a + ':' + lan.port + lan.mcp_path))
-        : [];
-      const list = $('lanurls');
-      list.innerHTML = urls.map((u) => '<div class="ag-row"><span class="nm" style="flex:1" title="' + esc(u) + '">' + esc(u.replace(lan.mcp_path, '/mcp/…')) + '</span>'
-        + '<button class="secondary" data-url="' + esc(u) + '">复制 MCP 链接</button></div>').join('');
-      for (const el of list.querySelectorAll('button')) el.addEventListener('click', () => vs.postMessage({ type: 'lanCopy', url: el.dataset.url }));
+    // One canonical direct switch. Drafts are never replaced by periodic status frames.
+    let directOn = false, directFrame = null, directUiBusy = false, directRevision = -1;
+    const directPending = new Set();
+    const directSaved = {};
+    function directOrigin(raw) {
+      const v = String(raw || '').trim(); if (!v) return '';
+      try { const u = new URL(v); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash ? u.origin : null; } catch { return null; }
     }
-    $('lanToggle').addEventListener('click', () => vs.postMessage({ type: 'lanToggle', on: !lanOn }));
-    $('lanPort').addEventListener('change', () => {
-      const n = Number($('lanPort').value);
-      if (Number.isInteger(n) && n >= 1024 && n <= 65535) vs.postMessage({ type: 'lanPort', port: n });
-    });
-    $('lanUrl').addEventListener('change', () => {
-      let v = $('lanUrl').value.trim();
-      while (v.endsWith('/')) v = v.slice(0, -1);
-      const hint = $('lanUrlHint');
-      // 只接受 http(s)://主机[:端口]；不合法时就地提示，不提交。
-      // 这段脚本在 TS 模板字符串里，用 URL 解析而不用正则，避免反斜杠被吃掉。
-      let valid = !v;
-      if (v) { try { const u = new URL(v); valid = (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; } catch { valid = false; } }
-      if (!valid) { hint.textContent = '请填写 http(s)://域名[:端口]，不要带路径。'; hint.className = 'hint bad'; return; }
-      hint.textContent = '域名映射到这台电脑时填写，下面会列出域名链接。'; hint.className = 'hint';
-      vs.postMessage({ type: 'lanUrl', url: v });
+    function renderDirectPreview() {
+      const origin = directOrigin($('directAccessUrl').value);
+      $('directResolved').textContent = origin === null ? '地址格式无效，未用于生成连接。' : origin
+        ? '地址预览：' + origin + '/bh.md · ' + origin + '/mcp/…' + (directOn ? '' : '（直连未开启）')
+        : '留空使用自动发现的本机地址；多个地址在复制时选择。通用云沙箱需要它能访问的对外地址。';
+    }
+    function directControls() {
+      $('directAccessToggle').disabled = !directFrame || directUiBusy || directPending.has('directAccessEnabled');
+      for (const id of ['directPort','directAccessUrl','channelProxyUrl','aiDefaultRoute']) $(id).disabled = !directFrame || (directUiBusy && id !== 'channelProxyUrl') || directPending.has(id);
+    }
+    function renderDirect(m) {
+      if (typeof m.revision === 'number' && m.revision < directRevision) return;
+      if (typeof m.revision === 'number') directRevision = m.revision;
+      directFrame = m; directOn = m.on === true;
+      const v = m.listener;
+      const ready = directOn && v?.listening && v.state === 'listening' && v.mode === 'direct' && v.port === m.port;
+      const st = v?.state === 'applying' ? ['warn','正在应用…'] : !directOn ? ['dim', v?.mode === 'proxy' && v.listening ? '直连未开启；反向代理目标可用' : '未开启'] : v?.error ? ['bad',v.error] : ready ? ['ok','监听中 · 0.0.0.0:' + m.port] : ['warn','直连尚未就绪'];
+      $('directState').className = 'chst ' + st[0]; $('directState').textContent = st[1];
+      $('directAccessToggle').setAttribute('aria-checked', String(directOn));
+      const incoming = { directPort: String(m.port || 7307), directAccessUrl: m.url || '', channelProxyUrl: m.proxyUrl || '', aiDefaultRoute: m.aiDefaultRoute || 'auto' };
+      for (const id of Object.keys(incoming)) {
+        directSaved[id] = incoming[id];
+        const el = $(id);
+        if (document.activeElement !== el && el.dataset.dirty !== 'true' && !directPending.has(id)) el.value = incoming[id];
+      }
+      $('customLocalTarget').textContent = v?.target || 'http://127.0.0.1:' + (m.port || 7307);
+      directControls(); renderDirectPreview();
+    }
+    function directSaveState(m) {
+      for (const key of m.keys || []) {
+        if (m.state === 'saving') directPending.add(key); else directPending.delete(key);
+        if (m.state === 'saved' && m.values && $(key)) {
+          const el = $(key), saved = String(m.values[key]);
+          directSaved[key] = saved;
+          const entered = key === 'directAccessUrl' || key === 'channelProxyUrl' ? directOrigin(el.value) : el.value.trim();
+          if (entered === saved) { el.dataset.dirty = 'false'; el.value = saved; el.setAttribute('aria-invalid','false'); }
+        }
+      }
+      const note = $('directSaveNote'); note.textContent = m.state === 'saving' ? '正在保存…' : m.state === 'saved' ? '已保存' : m.message || '保存失败，请重试。'; note.className = 'hint ' + (m.state === 'error' ? 'bad' : '');
+      if ((m.keys || []).includes('channelProxyUrl') || (m.keys || []).includes('aiDefaultRoute')) {
+        $('autoNote').hidden = false; $('autoNote').textContent = note.textContent; $('autoNote').className = note.className;
+      }
+      directControls();
+    }
+    function saveDirectField(id) {
+      if (directPending.has(id) || !directFrame) return;
+      const el = $(id); let value = el.value.trim(); let message = '';
+      if (id === 'directPort') {
+        const n = Number(value); if (!value || !Number.isInteger(n) || n < 1024 || n > 65535) message = '端口必须是 1024–65535 之间的整数。'; else value = n;
+      } else if (id !== 'aiDefaultRoute') {
+        const origin = directOrigin(value);
+        if (origin === null || (id === 'channelProxyUrl' && origin && !new URL(origin).port)) message = id === 'channelProxyUrl' ? '请填写带端口且不含凭据的 HTTP(S) 代理地址。' : '请填写不带路径、凭据或查询参数的 HTTP(S) 地址，或留空。';
+        else value = origin;
+      }
+      el.setAttribute('aria-invalid', String(!!message));
+      const hint = $(id === 'directPort' ? 'directPortHint' : id === 'directAccessUrl' ? 'directUrlHint' : id === 'channelProxyUrl' ? 'channelProxyHint' : 'aiRouteHint');
+      if (message) { hint.textContent = message; hint.className = 'hint bad'; return; }
+      if (String(value) === String(directSaved[id])) { el.dataset.dirty = 'false'; return; }
+      hint.className = 'hint'; directPending.add(id); directControls();
+      vs.postMessage(id === 'directPort' ? {type:id,port:value} : id === 'aiDefaultRoute' ? {type:id,route:value} : {type:id,url:value});
+    }
+    for (const id of ['directPort','directAccessUrl','channelProxyUrl','aiDefaultRoute']) {
+      $(id).addEventListener('input', () => { $(id).dataset.dirty = 'true'; if (id === 'directAccessUrl') renderDirectPreview(); });
+      $(id).addEventListener('change', () => saveDirectField(id));
+      $(id).addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); $(id).blur(); }
+        else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); $(id).value = directSaved[id] || ''; $(id).dataset.dirty = 'false'; $(id).setAttribute('aria-invalid','false'); renderDirectPreview(); }
+      });
+    }
+    $('directAccessToggle').addEventListener('click', () => {
+      if (!directFrame || directUiBusy) return;
+      if (!directOn && directOrigin($('directAccessUrl').value) === null) { $('directUrlHint').textContent = '请修正地址或留空后再开启直连。'; $('directAccessUrl').focus(); return; }
+      directUiBusy = true; directControls();
+      vs.postMessage({type:'directAccessToggle',on:!directOn,url:$('directAccessUrl').value.trim()});
     });
 
     // Courier 网页站点：浏览器 Courier「检测此页面」接入的网站；删除后 Courier 解除绑定并收回权限。
@@ -2615,9 +3046,9 @@ export class ConfigPanel {
       vs.postMessage({ type: 'customProbe', url });
     });
     $('mcpCopy').addEventListener('click', () => {
-      if (channelMode === 'openai') { vs.postMessage({ type: 'copyTunnelId' }); return; }
-      const url = $('mcpurl').dataset.url || '';
-      if (url) vs.postMessage({ type: 'copyUrl', url });
+      if ($('mcpCopy').disabled) return;
+      if ($('mcpCopy').dataset.kind === 'openai') { vs.postMessage({ type: 'copyTunnelId' }); return; }
+      vs.postMessage({ type: 'copyConnection' });
     });
     $('mcpDesc').addEventListener('click', () => vs.postMessage({ type: 'copyConnectorDesc' }));
     for (const id of ['oaLinkPlatform', 'oaLinkChatgpt']) $(id).addEventListener('click', (e) => { e.preventDefault(); vs.postMessage({ type: 'openLink', target: $(id).dataset.link }); });
@@ -2625,17 +3056,39 @@ export class ConfigPanel {
     // host dialogs are reliable in VS Code webviews and keep one confirmation source of truth.
     $('mcpRotate').addEventListener('click', () => vs.postMessage({ type: 'rotateToken' }));
     $('agClear').addEventListener('click', () => vs.postMessage({ type: 'grantsClear' }));
-    let rmTimer = null, rmDevices = [];
-    const rmReason = { off: '手机访问暂不可用。', channel_offline: '手机扫码需要先启动公网渠道。', not_https: '手机扫码需要 https 公网地址。', custom_not_https: '手机扫码需要自定义地址使用 https。' };
+    const rmProbing = new Set();
+    const rmReason = { off: '手机访问暂不可用。', channel_offline: '先开启直连或启动可用的公网渠道。', not_https: '渠道没有可用的手机入口。', direct_applying: '正在应用直连设置。', direct_unavailable: '直连未就绪，请检查端口和本地服务。', direct_no_address: '未发现可访问地址，可在“直连”中填写对外地址。', custom_unavailable: '自定义公网入口未就绪，请检查地址和反向代理目标。' };
     function fmtTime(s) { const d = new Date(s); return isNaN(d.getTime()) ? '—' : d.toLocaleString(); }
     function renderRemote(v, paired) {
       const hint = $('rmHint'), list = $('rmDevices');
       const empty = () => { const li = document.createElement('li'); li.className = 'hint'; li.style.margin = '0'; li.textContent = '还没有配对的手机。'; return li; };
-      if (!v) { $('rmPair').disabled = true; hint.textContent = ''; hint.style.display = 'none'; list.replaceChildren(empty()); return; }
-      $('rmPair').disabled = !v.available;
-      // Phone access is always on: say something only when scanning is blocked or needs a re-scan later.
-      const note = v.available ? (v.kind === 'quick' ? '临时渠道重启后，手机需要重新扫码。' : '') : (rmReason[v.reason] || rmReason.off);
-      hint.textContent = note; hint.className = v.available ? 'hint' : 'hint warn'; hint.style.display = note ? '' : 'none';
+      rmView = v;
+      if (!v) { closeRemoteQr(); $('rmPair').disabled = true; $('rmAgain').disabled = true; $('rmProbe').disabled = true; $('rmEndpoint').style.display = 'none'; hint.textContent = '无法读取当前手机访问状态，请检查本地服务。'; hint.style.display = ''; const unknown = empty(); unknown.textContent = '设备状态待确认'; list.replaceChildren(unknown); return; }
+      const endpoints = v.endpoints || (v.origin ? [{ origin: v.origin, kind: v.kind || 'fixed' }] : []);
+      const select = $('rmEndpoint');
+      if (!rmSelectedOrigin) rmSelectedOrigin = endpoints[0]?.origin || '';
+      const selected = endpoints.find((x) => x.origin === rmSelectedOrigin);
+      const options = endpoints.map((x) => {
+        const option = document.createElement('option');
+        option.value = x.origin;
+        option.textContent = (x.kind === 'quick' ? '临时渠道' : '固定入口') + ' · ' + x.origin;
+        return option;
+      });
+      if (!selected) { const missing = document.createElement('option'); missing.value = rmSelectedOrigin; missing.textContent = '所选入口不可用，请重新选择'; missing.disabled = true; options.unshift(missing); }
+      select.replaceChildren(...options); select.value = rmSelectedOrigin;
+      select.style.display = endpoints.length > 1 || !selected ? '' : 'none';
+      $('rmPair').disabled = !v.available || !selected || rmPairBusy;
+      $('rmAgain').disabled = $('rmPair').disabled;
+      $('rmPair').textContent = rmPairBusy ? '生成中…' : '生成配对码';
+      select.disabled = rmPairBusy;
+      const verification = selected?.verification || { state: 'unverified', checked_at: null, reason: null };
+      const checking = rmProbing.has(rmSelectedOrigin) || verification.state === 'checking';
+      $('rmProbe').disabled = !selected || checking;
+      $('rmProbe').textContent = checking ? '检测中…' : '检测所选入口';
+      const label = verification.state === 'passed' ? '本机检测通过；手机仍需能访问此网络' : verification.state === 'failed' ? '本机检测失败，不代表所有设备不可达' : checking ? '本机检测中…' : '已配置 · 未验证';
+      const note = selected ? selected.origin + ' · ' + label + (selected.kind === 'quick' ? ' · 临时渠道停止或换址后需要重新扫码' : ' · 固定入口') + (verification.checked_at === null ? '' : ' · ' + fmtTime(verification.checked_at))
+        : '所选手机入口不可用；不会自动切到其他渠道。' + (rmReason[v.reason] || '');
+      hint.textContent = note; hint.className = selected && verification.state === 'passed' ? 'hint' : 'hint warn'; hint.style.display = '';
       rmDevices = v.devices || [];
       if (!rmDevices.length) list.replaceChildren(empty());
       else list.replaceChildren(...rmDevices.map(d => {
@@ -2650,9 +3103,15 @@ export class ConfigPanel {
         li.append(t, b); return li;
       }));
       // scanned (the 允许 / 拒绝 notification takes over) or paired: the QR code is used up
-      if ((paired || (v.requests && v.requests.length)) && $('rmModal').style.display !== 'none') closeRemoteQr();
+      if ((!selected || paired || (v.requests && v.requests.length)) && ($('rmModal').open || rmPairBusy)) closeRemoteQr();
     }
-    function closeRemoteQr() { $('rmModal').style.display = 'none'; if (rmTimer) clearInterval(rmTimer); rmTimer = null; }
+    function closeRemoteQr() {
+      rmRequest++; rmPairBusy = false;
+      if ($('rmModal').open) $('rmModal').close();
+      if (rmTimer) clearInterval(rmTimer); rmTimer = null;
+      if (rmView) { $('rmPair').disabled = !rmView.available || !(rmView.endpoints || []).some(x => x.origin === rmSelectedOrigin); $('rmAgain').disabled = $('rmPair').disabled; }
+      if (rmPreviousFocus?.isConnected) rmPreviousFocus.focus(); rmPreviousFocus = null;
+    }
     function showRemoteQr(m) {
       const NS = 'http://www.w3.org/2000/svg', q = 4;
       const svg = document.createElementNS(NS, 'svg');
@@ -2661,8 +3120,9 @@ export class ConfigPanel {
       svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '配对二维码');
       const p = document.createElementNS(NS, 'path'); p.setAttribute('d', m.path); p.setAttribute('fill', '#000');
       svg.append(p); $('rmQr').replaceChildren(svg);
-      $('rmNote').textContent = '扫码后在 VS Code 右下角点「允许」。二维码仅可使用一次' + (m.kind === 'quick' ? '，临时通道重启后需要重新扫码。' : '。');
-      $('rmModal').style.display = 'flex';
+      $('rmNote').textContent = new URL(m.url).origin + ' · 配对码不是连通性证明。扫码后在电脑上点「允许」。' + (m.kind === 'quick' ? '临时渠道停止或换址后需重新扫码。' : '固定入口。');
+      if (!$('rmModal').open) { if (!rmPreviousFocus?.isConnected) rmPreviousFocus = $('rmPair'); $('rmModal').showModal(); }
+      $('rmClose').focus();
       const end = new Date(m.expiresAt).getTime();
       const tick = () => {
         const left = Math.max(0, Math.round((end - Date.now()) / 1000));
@@ -2673,11 +3133,23 @@ export class ConfigPanel {
       if (rmTimer) clearInterval(rmTimer);
       tick(); rmTimer = setInterval(tick, 1000);
     }
-    $('rmPair').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
-    $('rmAgain').addEventListener('click', () => vs.postMessage({ type: 'remote', action: 'pair' }));
+    $('rmEndpoint').addEventListener('change', () => { rmSelectedOrigin = $('rmEndpoint').value; closeRemoteQr(); renderRemote(rmView); });
+    $('rmProbe').addEventListener('click', () => {
+      if ($('rmProbe').disabled || !rmSelectedOrigin) return;
+      rmProbing.add(rmSelectedOrigin); renderRemote(rmView);
+      vs.postMessage({ type: 'remote', action: 'probe', origin: rmSelectedOrigin });
+    });
+    const requestRemotePair = () => {
+      if ($('rmPair').disabled || !rmSelectedOrigin || rmPairBusy) return;
+      if (!$('rmModal').open) rmPreviousFocus = $('rmPair');
+      rmPairBusy = true; const requestId = ++rmRequest; renderRemote(rmView);
+      vs.postMessage({ type: 'remote', action: 'pair', origin: rmSelectedOrigin, requestId });
+    };
+    $('rmPair').addEventListener('click', requestRemotePair);
+    $('rmAgain').addEventListener('click', requestRemotePair);
     $('rmClose').addEventListener('click', closeRemoteQr);
     $('rmModal').addEventListener('click', e => { if (e.target === $('rmModal')) closeRemoteQr(); });
-    window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('rmModal').style.display !== 'none') closeRemoteQr(); });
+    $('rmModal').addEventListener('cancel', e => { e.preventDefault(); closeRemoteQr(); });
     $('pxReval').addEventListener('click', () => vs.postMessage({ type: 'proxiesRevalidate' }));
     $('pxAdd').addEventListener('click', () => vs.postMessage({ type: 'proxiesToggleForm', form: 'add' }));
     $('pxImport').addEventListener('click', () => vs.postMessage({ type: 'proxiesToggleForm', form: 'import' }));
@@ -2720,17 +3192,18 @@ export class ConfigPanel {
     });
     $('semClear').addEventListener('click', () => vs.postMessage({ type: 'semanticClear' }));
     $('save').addEventListener('click', () => {
-      if (cloudflaredInstalling || openaiInstalling) return;
+      if (cloudflaredInstalling || openaiInstalling || !MANUAL_FORM_PAGES.includes(settingsPage)) return;
       const values = {};
-      for (const k of KEYS) if ($(k)) values[k] = $(k).value.trim();
-      values.channelMode = channelMode;
-      values.publicBaseUrl = (channelMode === 'custom' ? $('customPublicBaseUrl') : $('publicBaseUrl')).value.trim();
-      if (channelMode === 'custom' && values.publicBaseUrl && !values.publicBaseUrl.toLowerCase().startsWith('http://') && !values.publicBaseUrl.toLowerCase().startsWith('https://')) { alert('自定义公网地址需要以 http:// 或 https:// 开头。'); $('customPublicBaseUrl').focus(); return; }
-      values.semanticMode = semMode;
-      values.semKey = $('semKey').value.trim();
-      // chips 未渲染（init 未到达）时不下发 webAgents：空列表会把预置站点全部藏掉
-      const webAgents = $('wagrid').children.length ? collectWebAgents() : undefined;
-      vs.postMessage({ type: 'save', values, webAgents });
+      for (const k of KEYS) {
+        const el = $(k);
+        if (el && !AUTO_KEYS.includes(k) && el.closest('[data-page]')?.dataset.page === settingsPage) values[k] = el.value.trim();
+      }
+      if (settingsPage === 'connections') {
+        values.publicBaseUrl = (channelMode === 'custom' ? $('customPublicBaseUrl') : $('publicBaseUrl')).value.trim();
+        if (values.publicBaseUrl && directOrigin(values.publicBaseUrl) === null) { $('autoNote').textContent = '请修正公网地址：只接受 HTTP(S) 地址，不带路径或凭据。'; $('autoNote').className = 'hint bad'; return; }
+      }
+      if (settingsPage === 'agents') { values.semanticMode = semMode; values.semKey = $('semKey').value.trim(); pendingManualKey = values.semKey; }
+      vs.postMessage({ type: 'save', values });
     });
     $('restart').addEventListener('click', () => vs.postMessage({ type: 'restart' }));
     // Host waits for this handshake before publishing the first init/proxy frames.

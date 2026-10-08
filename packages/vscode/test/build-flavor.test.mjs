@@ -186,3 +186,27 @@ test('archive audit checks the optional managed-process supervisor as a paired h
   }
 });
 
+
+test('archive audit requires the exact shared renderer JS and CSS referenced by a native build', async t => {
+  fs.mkdirSync(path.join(root, '.cache/tests'), { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, '.cache/tests/shared-settings-asset-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const change of ['good', 'missing-js', 'missing-css', 'stale-js', 'stale-css', 'unhashed']) {
+    const file = path.join(dir, change + '.vsix');
+    await archive(file, testBuild(), (files, manifest, info) => {
+      const bundle = files.get('extension/dist/extension.js') + '\n// data-settings-renderer=shared-react';
+      files.set('extension/dist/extension.js', bundle);
+      info.extensionSha256 = createHash('sha256').update(bundle).digest('hex');
+      for (const [ext, key, text] of [['js', 'settingsSha256', '// shared settings fixture'], ['css', 'settingsCssSha256', '.settings-shell{display:grid}']]) {
+        const asset = 'extension/dist/settings/settings.' + ext;
+        files.set(asset, text); info[key] = createHash('sha256').update(text).digest('hex');
+        if (change === 'missing-' + ext) files.delete(asset);
+        if (change === 'stale-' + ext) files.set(asset, 'stale asset');
+        if (change === 'unhashed') delete info[key];
+      }
+      files.set('extension/dist/cloud-build.json', JSON.stringify(info));
+    });
+    if (change === 'good') await auditUniversalVsix(file, testBuild());
+    else await assert.rejects(auditUniversalVsix(file, testBuild()), /settings|renderer/);
+  }
+});

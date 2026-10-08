@@ -1,3 +1,5 @@
+import { courierGenerating } from '../../../contracts/src/courier-state';
+import { courierModelLabel } from '../../../contracts/src/courier-model';
 // Chat for the selected session: the thread itself lives in the session timeline (SessionPane);
 // this is the composer that types into the paired web chat through the Courier browser extension. A new
 // session's first message opens a ChatGPT chat and carries the connector prompt; cut or prompt-direct
@@ -220,17 +222,15 @@ export function Bubble({ m, copy = false }: { m: Message; copy?: boolean }) {
 }
 
 /**
- * `models` maps a site (arena/chatgpt) to the model of its newest reply: the model
- * is composer metadata, so it is shown on the composer and never in the thread.
+ * Current model attribution comes from the bound target, never historical replies.
  */
-export function ChatDock({ session, connectorName, mcpUrl, models, question }: { session: SessionView; connectorName: string; mcpUrl: string | null; models: Record<string, string>; question: (Question & { id: string }) | null }) {
+export function ChatDock({ session, question }: { session: SessionView; question: (Question & { id: string }) | null }) {
   const ended = session.status === 'revoked' || session.status === 'archived';
   // 状态、绑定的网页聊天、回复是否在流式输出都来自会话 feed，和时间线（SessionPane）共用同一条长轮询。
   const { snap, kick } = useSessionFeed<{ id: string; created_at: unknown }, Message, FeedState>({ scope: 'web', sessionId: session.id, limit: WEB_FEED_LIMIT, once: ended });
   const st = snap.state;
   const connected: boolean | null = st ? st.connected : null;
   const target: Target | null = st?.target ?? null;
-  const streaming = snap.messages.some((m) => m.status === 'streaming');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ cls: string; text: string } | null>(null);
@@ -270,7 +270,7 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
   }, [text]);
 
   // The web AI is still answering: no new message until it is done.
-  const generating = streaming || !!target?.busy;
+  const generating = courierGenerating(target, snap.messages);
 
   /** Asks the bound chat to press its own stop control (the daemon relays it to Courier). */
   const stopGenerating = async (): Promise<void> => {
@@ -360,7 +360,7 @@ export function ChatDock({ session, connectorName, mcpUrl, models, question }: {
   const [cls, label] = target ? state(target) : ['muted', ''];
   // 发送中 is a send state, not a channel state: it outranks 可发送 while a send is in flight.
   const pill: [string, string] | null = busy ? ['warn', '发送中'] : flash ? [flash.cls, flash.text] : label ? [cls, label] : null;
-  const model = (target && models[target.site]) || null;
+  const model = courierModelLabel(target);
   const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
     : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'
     : connected === false ? '浏览器里的 Courier 未连接，打开浏览器后会自动连上'

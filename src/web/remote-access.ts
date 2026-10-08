@@ -1,11 +1,12 @@
 // Phone access over the public channel (plan 6.13 R1–R3).
 //
-// - Always on, but only for an https public
-//   address; a request must carry Host = that address.
+// - Always on for the currently enabled public HTTP(S) origin; a request must
+//   carry Host = that origin.
 // - A phone pairs once with a one-time code shown as a QR code on this computer
 //   (128-bit, 5 minutes). Scanning only files a request: someone on this
-//   computer must click 允许 within 2 minutes. The phone then holds a device credential (256-bit, HttpOnly,
-//   Secure, SameSite=Strict, Path=/remote-api) bound to that origin.
+//   computer must click 允许 within 2 minutes. The phone then holds a 256-bit,
+//   HttpOnly, SameSite=Strict device credential bound to that origin. HTTPS also
+//   sets Secure; explicit HTTP direct intentionally omits Secure.
 // - Devices end on revoke, when phone access is turned off, on account
 //   sign-out or switch, after 180 days unused, and when the public address
 //   changes. A temporary (quick) channel's devices end with that tunnel.
@@ -74,15 +75,21 @@ export interface DeviceView {
 const hashOf = (secret: string): string => createHash('sha256').update(secret).digest('hex');
 const iso = (t: number): string => new Date(t).toISOString();
 
-/** Origin of an https URL, or null. */
-export function httpsOrigin(raw: string | undefined | null): string | null {
+/** Origin of a public http(s) URL, or null. */
+export function publicOrigin(raw: string | undefined | null): string | null {
   if (!raw) return null;
   try {
     const u = new URL(raw);
-    return u.protocol === 'https:' && u.hostname ? u.origin : null;
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname ? u.origin : null;
   } catch {
     return null;
   }
+}
+
+/** Backward-compatible helper for managed channels that must remain HTTPS. */
+export function httpsOrigin(raw: string | undefined | null): string | null {
+  const origin = publicOrigin(raw);
+  return origin && new URL(origin).protocol === 'https:' ? origin : null;
 }
 
 /** A short, readable device name from the User-Agent ("iPhone Safari"). */
@@ -120,19 +127,23 @@ export class RemoteAccess {
   }
 
   /**
-   * Drop devices that can no longer be used: idle for 180 days, a quick
-   * channel that is gone or changed, a fixed address that changed. A fixed
-   * channel that is merely stopped keeps its devices.
+   * Drop devices that can no longer be used: idle for 180 days, or a quick
+   * channel whose ephemeral origin is no longer current. Fixed HTTPS origins
+   * are independent entry points: switching the preferred fixed origin must
+   * not revoke devices paired to another fixed origin. check() still binds a
+   * credential to its exact origin, so retaining the row does not broaden access.
    */
-  prune(channel: PublicChannel | null, now = Date.now()): void {
+  prune(channels?: PublicChannel | PublicChannel[] | null, now = Date.now()): void {
+    const active = channels === undefined ? undefined : Array.isArray(channels) ? channels : channels ? [channels] : [];
+    const activeOrigins = active === undefined ? undefined : new Set(active.map((c) => c.origin));
+    const activeQuick = active === undefined ? undefined : new Set(active.filter((c) => c.kind === 'quick').map((c) => c.origin));
     const keep = this.rows.filter((r) => {
       if (now - r.last_seen_at > DEVICE_IDLE_MS) return false;
-      if (r.kind === 'quick') return !!channel && channel.kind === 'quick' && channel.origin === r.origin;
-      if (channel && channel.kind === 'fixed' && channel.origin !== r.origin) return false;
+      if (r.kind === 'quick' && activeQuick !== undefined) return activeQuick.has(r.origin);
       return true;
     });
-    for (const [k, c] of this.codes) if (c.exp <= now || !channel || c.origin !== channel.origin) this.codes.delete(k);
-    for (const [k, r] of this.requests) if (r.exp <= now || !channel || r.origin !== channel.origin) this.requests.delete(k);
+    for (const [k, c] of this.codes) if (c.exp <= now || (activeOrigins !== undefined && !activeOrigins.has(c.origin))) this.codes.delete(k);
+    for (const [k, r] of this.requests) if (r.exp <= now || (activeOrigins !== undefined && !activeOrigins.has(r.origin))) this.requests.delete(k);
     if (keep.length !== this.rows.length) {
       this.rows = keep;
       this.save();
@@ -141,7 +152,7 @@ export class RemoteAccess {
 
   /** New one-time pairing code for the current channel. */
   issueCode(channel: PublicChannel, now = Date.now()): { code: string; expiresAt: number } {
-    this.prune(channel, now);
+    this.prune(undefined, now);
     while (this.codes.size >= MAX_CODES) {
       const oldest = this.codes.keys().next().value;
       if (oldest === undefined) break;
@@ -165,7 +176,7 @@ export class RemoteAccess {
     if (!c) return null;
     this.codes.delete(key);
     if (c.exp <= now || c.origin !== channel.origin) return null;
-    this.prune(channel, now);
+    this.prune(undefined, now);
     while (this.requests.size >= MAX_REQUESTS) {
       const oldest = this.requests.keys().next().value;
       if (oldest === undefined) break;
@@ -179,8 +190,8 @@ export class RemoteAccess {
   }
 
   /** Requests still waiting for an answer on this computer. */
-  pending(channel: PublicChannel | null, now = Date.now()): PairRequestView[] {
-    this.prune(channel, now);
+  pending(channels: PublicChannel | PublicChannel[] | null, now = Date.now()): PairRequestView[] {
+    this.prune(channels, now);
     return [...this.requests.values()].filter((r) => r.state === 'pending').map((r) => ({ id: r.id, name: r.name, created_at: iso(r.created), expires_at: iso(r.exp) }));
   }
 
@@ -214,7 +225,7 @@ export class RemoteAccess {
   }
 
   private addDevice(channel: PublicChannel, name: string, userId: string | null, now: number): { secret: string; device: DeviceRow } {
-    this.prune(channel, now);
+    this.prune(undefined, now);
     while (this.rows.length >= MAX_DEVICES) this.rows.sort((a, b) => a.last_seen_at - b.last_seen_at).shift();
     const secret = randomBytes(32).toString('base64url');
     const device: DeviceRow = { id: randomUUID(), hash: hashOf(secret), name: name.slice(0, 60), origin: channel.origin, kind: channel.kind, user_id: userId, created_at: now, last_seen_at: now };
@@ -226,7 +237,7 @@ export class RemoteAccess {
   /** The device holding this credential on this origin, or null. */
   check(secret: unknown, channel: PublicChannel, now = Date.now()): DeviceRow | null {
     if (typeof secret !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
-    this.prune(channel, now);
+    this.prune(undefined, now);
     const hash = hashOf(secret);
     const row = this.rows.find((r) => r.hash === hash);
     if (!row || row.origin !== channel.origin) return null;

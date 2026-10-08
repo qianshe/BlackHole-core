@@ -1,3 +1,5 @@
+import { courierGenerating } from '../../contracts/dist/courier-state.js';
+import { courierModelLabel } from '../../contracts/dist/courier-model.js';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { commands, env, Position, Range, Selection, TextEditorRevealType, Uri, window, workspace, WebviewView, type Disposable, type WebviewViewProvider } from 'vscode';
@@ -57,6 +59,32 @@ const validOpenaiApiKey = (value: string): boolean => {
   return true;
 };
 
+/** Saved connection intent, independent from whether the channel is currently online. */
+export function hasConnectionConfiguration(values: Record<string, unknown> | null | undefined): boolean {
+  if (!values) return false;
+  const text = (key: string): boolean => typeof values[key] === 'string' && String(values[key]).trim().length > 0;
+  return values.directAccessEnabled === true
+    || text('directAccessUrl')
+    || text('publicBaseUrl')
+    || text('cloudflaredPath')
+    || text('openaiTunnelId')
+    || text('openaiTunnelClientPath');
+}
+
+function accountViewKey(view: AuthView): string {
+  const account = view.account;
+  return JSON.stringify([
+    view.state,
+    view.userId ?? null,
+    view.checkedAt ?? null,
+    view.remainingSeconds ?? null,
+    account?.name ?? null,
+    account?.email ?? null,
+    account?.status ?? null,
+    account?.serviceExpiresAt ?? null,
+  ]);
+}
+
 export interface SidebarHooks {
   /** 首次引导的渠道卡片是否已被用户点过「稍后」（存在 globalState，跨窗口保留）。 */
   setupDismissed?(): boolean;
@@ -108,6 +136,7 @@ interface ViewMessage {
   site?: string;
   /** OpenAI onboarding: fixed link target, Tunnel ID draft and one-shot Runtime API Key draft. */
   target?: 'platform';
+  page?: 'home' | 'connections' | 'devices' | 'network' | 'agents' | 'security' | 'account' | 'advanced';
   tunnelId?: string;
   apiKey?: string;
 }
@@ -121,13 +150,13 @@ interface FeedState {
   status: string;
   link: SessionLink;
   connected: boolean;
-  target: { targetId: string; site: string; label: string; open: boolean; ready: boolean | null; busy: boolean | null; draft: boolean | null } | null;
+  target: { targetId: string; site: string; label: string; open: boolean; ready: boolean | null; busy: boolean | null; turnState?: 'running' | 'done' | 'stopped' | null; draft: boolean | null } | null;
 }
 type SidebarFeed = SessionFeed<CallRow, CourierMessageView, FeedState>;
 type SidebarFeedSnapshot = FeedSnapshot<CallRow, CourierMessageView, FeedState>;
 interface FeedSlot { id: string; feed: SidebarFeed; off: () => void; last: SidebarFeedSnapshot }
 type FeedEvent = Parameters<Parameters<FeedEnv['subscribe']>[0]>[0];
-type CourierPane = { connected: boolean; targets: Pick<CourierTargetView, 'targetId' | 'site' | 'label' | 'conversationKey' | 'open' | 'ready' | 'busy' | 'draft'>[]; messages: CourierMessageView[]; link: SessionLink; sites?: CourierSiteChoice[] };
+type CourierPane = { connected: boolean; targets: Pick<CourierTargetView, 'targetId' | 'site' | 'label' | 'conversationKey' | 'open' | 'ready' | 'busy' | 'turnState' | 'draft'>[]; messages: CourierMessageView[]; link: SessionLink; sites?: CourierSiteChoice[] };
 
 /** feed 的长轮询会挂起最多 wait 秒，请求超时按 (wait+10) 秒（默认 8 秒会把它掰断）。 */
 const feedTimeoutMs = (path: string): number => (Number(/[?&]wait=(\d+)/.exec(path)?.[1] ?? 0) + 10) * 1000;
@@ -184,7 +213,10 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   /** OpenAI tunnel status for the channel pill; runs in parallel with Cloudflare. */
   private openai: string | null = null;
   /** 云端账号状态：只用来决定是否显示登录卡片；null = 还没收到。 */
-  private account: AuthView['state'] | null = null;
+  private account: AuthView | null = null;
+  private accountKey = '';
+  /** null = 尚未确认；false = 全新/无保存连接意图；true = 已有任一保存连接配置。 */
+  private setupConfigured: boolean | null = null;
   /** 渠道总开关；旧版 daemon 没有这个接口时为 null（不显示开关和引导）。 */
   private channel: ChannelSwitchView | null = null;
   private channelBusy = false;
@@ -347,7 +379,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     const t = st?.target ?? null;
     return {
       connected: st?.connected ?? false,
-      targets: t ? [{ targetId: t.targetId, site: t.site, label: t.label, conversationKey: null, open: t.open, ready: t.ready, busy: t.busy, draft: t.draft }] : [],
+      targets: t ? [{ targetId: t.targetId, site: t.site, label: t.label, conversationKey: null, open: t.open, ready: t.ready, busy: t.busy, turnState: t.turnState, draft: t.draft }] : [],
       messages: snap?.messages ?? [],
       link: st?.link ?? (this.selected()?.draft ? 'new' : 'direct'),
       sites: this.courierSites,
@@ -437,9 +469,9 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       // 拉取失败即清空：daemon 不可达时没有可处理的审批，徽标绝不残留旧数字
       // 渠道总开关是可选的：旧版 daemon 没有这个接口，不影响列表。
       Promise.resolve().then(() => this.api.channel()).catch(() => null),
-      // 只有首次欢迎页/正在进行的 OpenAI 引导需要这些非敏感设置事实；
-      // 已有正常会话时不为侧栏轮询额外读取 /settings。旧 daemon 仍保持兼容。
-      this.mode === 'sessions' && (this.openaiSetup !== null || !this.sessions.some((s) => !s.draft))
+      // 登录欢迎页需要知道“是否已有保存连接配置”；运行状态不能替代这个事实。
+      // 已登录且没有首次流程时仍避免为侧栏每轮额外读取 /settings。
+      this.mode === 'sessions' && (this.account?.state === 'logged_out' || this.openaiSetup !== null || !this.sessions.some((s) => !s.draft))
         ? Promise.resolve().then(() => this.api.settings()).catch(() => null)
         : Promise.resolve(null),
     ]);
@@ -456,6 +488,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       const tunnelId = typeof settings.values.openaiTunnelId === 'string' ? settings.values.openaiTunnelId.trim() : '';
       const clientPath = typeof settings.values.openaiTunnelClientPath === 'string' ? settings.values.openaiTunnelClientPath.trim() : '';
       this.openaiSettings = { tunnelId, clientConfigured: !!clientPath };
+      this.setupConfigured = hasConnectionConfiguration(settings.values);
     }
     if (this.openaiSetup && this.openaiView?.status === 'ready') {
       this.openaiSetup = null;
@@ -528,11 +561,29 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     this.postUpdate();
   }
 
+  /** Refresh only the non-sensitive "has saved connection intent" fact for the login page. */
+  private async refreshSetupConfiguration(): Promise<void> {
+    try {
+      const settings = await this.api.settings();
+      if (this.disposed) return;
+      this.setupConfigured = hasConnectionConfiguration(settings.values);
+    } catch {
+      if (this.disposed) return;
+      this.setupConfigured = null;
+    }
+    this.postUpdate();
+  }
+
   /** 云端账号状态变化（登录、退出、刷新）：侧边栏据此显示或收起登录卡片。 */
   updateAccount(view: AuthView): void {
-    if (this.account === view.state) return;
-    this.account = view.state;
+    const key = accountViewKey(view);
+    if (this.accountKey === key) return;
+    this.accountKey = key;
+    this.account = view;
     this.postUpdate();
+    // Account changes are independent from daemon/channel polling. Fetch only the
+    // setup summary so a stale in-flight sidebar refresh cannot overwrite channel state.
+    if (view.state === 'logged_out') void this.refreshSetupConfiguration();
   }
 
   /** 侧边栏标题里的渠道总开关。缺 cloudflared 时展开引导卡片（下载要用户在卡片里确认），其他前提打开设置页。 */
@@ -549,7 +600,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
           this.channelNote = '还没有 cloudflared：用下面的「一键安装并启动」。';
         } else {
           this.channelNote = CHANNEL_MISSING[r.error] ?? `渠道没有启动（${r.error}）。`;
-          if (r.error === 'named_url' || r.error === 'openai_setup') void commands.executeCommand('blackhole.openSettings');
+          if (r.error === 'named_url' || r.error === 'openai_setup') void commands.executeCommand('blackhole.openSettings', 'connections');
         }
       }
     } catch (e) {
@@ -576,6 +627,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     try {
       if (!this.hooks.installCloudflared) throw new Error('当前版本不支持一键安装，请在设置页配置。');
       await this.hooks.installCloudflared();
+      this.setupConfigured = true;
     } catch (e) { fail('install', e); return; }
     if (this.disposed) return;
     step('restart');
@@ -612,6 +664,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (!this.hooks.installOpenaiTunnel) throw new Error('当前版本不支持 OpenAI tunnel-client 一键安装，请打开连接设置。');
       const result = await this.hooks.installOpenaiTunnel();
       if (this.disposed || generation !== this.openaiSetupGeneration) return;
+      this.setupConfigured = true;
       this.openaiSetup = { step: 'configure', runtimeReady: true, path: result.path, version: result.version };
     } catch (error) {
       if (this.disposed || generation !== this.openaiSetupGeneration) return;
@@ -745,11 +798,12 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       currentRoot: currentWorkspaceRoot(),
       tunnel: this.tunnel,
       openai: this.openai,
-      account: this.account,
+      account: this.account?.state ?? null,
       channel: this.channel,
       channelBusy: this.channelBusy,
       channelNote: this.channelNote,
       setup: this.setup,
+      setupConfigured: this.setupConfigured,
       setupDismissed: this.hooks.setupDismissed?.() ?? false,
       openaiOnboarding: this.openaiSetup ? {
         step: this.openaiSetup.step,
@@ -976,7 +1030,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         return;
       }
       case 'settings':
-        await commands.executeCommand('blackhole.openSettings');
+        await commands.executeCommand('blackhole.openSettings', m.page);
         return;
       case 'openOpenaiLink': {
         const url = typeof m.target === 'string' ? OPENAI_ONBOARD_LINKS.get(m.target) : undefined;
@@ -1699,7 +1753,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (web.busy.includes(s.id)) return st('run', '生成中', '网页 AI 正在回复');
       if (s.status === 'active' && s.activity === 'running') return st('run', '运行中', '正在调用工具');
       if (s.todos_total > 0 && s.todos_done < s.todos_total) return st('dim', s.todos_done + '/' + s.todos_total, 'Todo 进度');
-      if (s.pending_handoff) return st('dim', 'Handoff', '有待接手的 Handoff');
+      // The title's Handoff entry owns this state; do not repeat it in the status column.
       if (s.status === 'paused') return st('dim', '已暂停');
       return '';
     }
@@ -1751,7 +1805,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         + '<button class="ib" id="webagent" title="打开本地 Web">' + IC.globe + '</button>'
         + '<button class="ib" id="settings" title="设置">' + IC.gear + '</button>'
         + '<button class="ib" id="refresh" title="刷新">' + IC.refresh + '</button>';
-      $('chpill').addEventListener('click', () => vs.postMessage({ type: 'settings' }));
+      $('chpill').addEventListener('click', () => vs.postMessage({ type: 'settings', page: 'connections' }));
       // 开关是 button：空格和回车都会触发 click。
       $('chsw').addEventListener('click', () => {
         const sw = $('chsw');
@@ -1821,22 +1875,13 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     let openaiTunnelDraft = '', openaiKeyDraft = '', openaiDraftInitialized = false;
     const SETUP_STEPS = [['install', '安装并验证 cloudflared'], ['restart', '重启本地服务'], ['start', '启动临时公网渠道']];
     function onboardingState(d) {
-      const c = d.channel, s = d.setup, o = d.openaiOnboarding, empty = !(d.sessions || []).some(x => !x.draft);
-      if (d.daemon === 'running' && d.account === 'logged_out') return 'login';
-      // Cloudflare's real restart progress stays visible; OpenAI may be collapsed while its download finishes.
-      if (s) return s.step;
-      if (d.daemon !== 'running' || !c) return null;
-      if (d.setupDismissed && c.state !== 'on' && !d.channelBusy) return 'dismissed';
-      if (o) return 'openai';
-      const candidate = empty || onboardEngaged || !c.last || !!d.channelNote;
-      if (!candidate) return null;
-      if (d.channelBusy || c.state === 'starting') return 'start';
-      if (c.state === 'warn') return 'unverified';
-      if (c.on && c.state === 'on') return empty && d.account === 'verified' ? 'ready' : null;
-      if (empty && !onboardEngaged) return 'choose';
-      if ((c.state === 'error' && c.missing !== 'cloudflared') || (onboardEngaged && d.channelNote)) return 'failed';
-      if (c.missing && c.missing !== 'cloudflared') return 'configure';
-      return 'choose';
+      // Welcome is account-driven. Sessions and channel runtime state never bring it back.
+      if (d.account !== 'logged_out') return null;
+      // A setup explicitly started from the login page may keep showing progress.
+      // Once login completes the workspace takes over while setup continues in the host.
+      if (d.setup) return d.setup.step;
+      if (d.openaiOnboarding) return 'openai';
+      return 'login';
     }
     function onboardProgress(state, account) {
       const step = state === 'login' ? 0 : state === 'ready' ? 2 : 1;
@@ -1929,7 +1974,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       }
       const state = onboardingState(d), c = d.channel || {}, s = d.setup, o = d.openaiOnboarding, cfg = d.openaiConfig || {};
       if (!state) { onboardNode = null; onboardKey = ''; openaiKeyDraft = ''; return null; }
-      const key = JSON.stringify([state, d.account, c.next, c.running, c.reason, c.missing, s, o, cfg.tunnelId, cfg.credentialConfigured, cfg.status, d.channelNote, d.tunnel?.reason, signInOpened]);
+      const key = JSON.stringify([state, d.account, d.setupConfigured, d.setupDismissed, c.next, c.running, c.reason, c.missing, s, o, cfg.tunnelId, cfg.credentialConfigured, cfg.status, d.channelNote, d.tunnel?.reason, signInOpened]);
       if (onboardNode && key === onboardKey) return onboardNode;
       const openDetails = onboardNode ? [...onboardNode.querySelectorAll('details[open]')].map(x => x.id) : [];
       const el = document.createElement('section');
@@ -1942,7 +1987,23 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (state === 'dismissed') {
         body = '<div class="bh-onboard-resume"><span id="guideTitle">连接尚未完成</span><button type="button" class="link" id="guideResume">继续设置 →</button></div>';
       } else if (state === 'login') {
-        body = '<h2 id="guideTitle" tabindex="-1">连接你的工作区</h2><p>先登录 BlackHole，再选择连接方式。<br>让网页 AI 使用你选定的本地工作区。</p><div class="bh-onboard-actions">' + onboardButton('guideSignIn', signInOpened ? '重新打开登录页' : '在浏览器中登录 ↗') + '</div><div class="bh-onboard-status" id="guideSignInNote" role="status"' + (signInOpened ? '' : ' hidden') + '>等待登录完成，随后自动继续</div>' + helper('登录在浏览器中完成。<br>此步骤不会启动公网渠道。');
+        const knownUnconfigured = d.setupConfigured === false;
+        const showSetup = knownUnconfigured && !d.setupDismissed;
+        const setup = showSetup
+          ? '<div class="bh-onboard-options">'
+            + '<button type="button" class="bh-onboard-option" id="guideDirect"><strong>配置直连</strong><span>已有局域网、组网或自建 HTTPS 入口时使用；不会安装 Cloudflare。</span></button>'
+            + '<button type="button" class="bh-onboard-option" id="guideQuick"><strong>临时公网渠道</strong><span>最快开始；由 BlackHole 安装 cloudflared 并启动临时连接。</span></button>'
+            + '<button type="button" class="bh-onboard-option" id="guideOpenai"><strong>OpenAI Tunnel</strong><span>私有出站连接；准备官方 tunnel-client，不依赖 cloudflared。</span></button>'
+            + '</div><div class="bh-onboard-actions"><button type="button" class="link" id="guideLater">跳过渠道安装</button></div>'
+          : d.setupConfigured === true
+            ? helper('已检测到保存的连接配置。登录完成后直接进入工作区，不重复安装渠道。')
+            : d.setupDismissed
+              ? helper('你已跳过首次渠道安装。登录完成后可随时从设置 → 连接与渠道继续配置。')
+              : helper('正在确认这台电脑是否已有连接配置；未确认前不会自动安装任何渠道。');
+        body = '<h2 id="guideTitle" tabindex="-1">登录 BlackHole</h2><p>登录后进入工作区。渠道安装是可选步骤，不影响登录。</p>'
+          + '<div class="bh-onboard-actions">' + onboardButton('guideSignIn', signInOpened ? '重新打开登录页' : '在浏览器中登录 ↗') + '</div>'
+          + '<div class="bh-onboard-status" id="guideSignInNote" role="status"' + (signInOpened ? '' : ' hidden') + '>等待登录完成，完成后自动进入工作区</div>'
+          + setup;
       } else if (state === 'ready') {
         const names = (c.running || []).map(x => CHANNEL_NAMES[x] || x).join('、');
         body = '<h2 id="guideTitle" tabindex="-1">连接已就绪</h2><p>接下来创建会话，选择 AI 可以使用的工作区和权限。</p><dl class="bh-onboard-facts"><div><dt>登录状态</dt><dd>已登录</dd></div><div><dt>当前渠道</dt><dd>' + esc(names || '已连接') + '</dd></div></dl><div class="bh-onboard-actions">' + onboardButton('guideCreate', '创建会话 →') + '</div>' + helper('会话权限可随时在 BlackHole 中调整。');
@@ -1977,6 +2038,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
           button.textContent = '重新打开登录页';
           el.querySelector('#guideSignInNote').hidden = false;
           vs.postMessage({ type: 'signIn' });
+        } else if (id === 'guideDirect') {
+          vs.postMessage({ type: 'settings', page: 'connections' });
         } else if (id === 'guideQuick') {
           button.disabled = true; onboardEngaged = true;
           vs.postMessage({ type: 'setupStart' });
@@ -2004,7 +2067,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         } else if (id === 'guideChoose') {
           openaiKeyDraft = ''; openaiTunnelDraft = ''; openaiDraftInitialized = false;
           vs.postMessage({ type: 'setupChoose' });
-        } else if (id === 'guideSettings') vs.postMessage({ type: 'settings' });
+        } else if (id === 'guideSettings') vs.postMessage({ type: 'settings', page: 'connections' });
         else if (id === 'guideLater') { openaiKeyDraft = ''; vs.postMessage({ type: 'setupDismiss' }); }
         else if (id === 'guideResume') vs.postMessage({ type: 'setupResume' });
         else if (id === 'guideRefresh') vs.postMessage({ type: 'refresh' });
@@ -2734,13 +2797,10 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       wrap.append(btn, menu);
       return wrap;
     }
-    const msgSig = (m) => m.status + '|' + m.text.length + '|' + m.text.slice(-64);
-    // 模型信息属于 Composer：从网页 AI 的最新回复里按站点取，不写进会话消息。
-    function agentModel(site) {
-      const ms = ((cur && cur.courier) || {}).messages || [];
-      for (let i = ms.length - 1; i >= 0; i--) if (ms[i].kind === 'agent' && ms[i].model && (!site || ms[i].site === site)) return ms[i].model;
-      return '';
-    }
+    const msgSig = (m) => m.status + '|' + m.text;
+    // Current target metadata is authoritative; never revive a historical Arena label.
+    const currentModelLabel = ${courierModelLabel.toString()};
+    const isCourierGenerating = ${courierGenerating.toString()};
     // Chat stream: your messages as a light block on the right; agent replies full width as Markdown
     // (rendered and escaped by the extension, markdown.ts). Tool calls stay one compact line each.
     // A long message of yours folds to 200px with a toggle (only when clearly taller: +48px);
@@ -3146,7 +3206,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (openQuestion()) return false; // the agent waits for your answer
       const c = (cur && cur.courier) || {};
       const t = (c.targets || []).find((x) => x.targetId === chatPick) || (c.targets || [])[0];
-      return !!(t && t.busy) || (c.messages || []).some((m) => m.status === 'streaming');
+      return isCourierGenerating(t, c.messages || []);
     }
     function syncSend() {
       const c = (cur && cur.courier) || { connected: false };
@@ -3177,7 +3237,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (targets.length && !targets.some((t) => t.targetId === chatPick)) chatPick = targets[0].targetId;
       const picked = targets.find((x) => x.targetId === chatPick) || targets[0];
       // The model belongs to the composer, so it is part of the head signature
-      const model = picked ? agentModel(picked.site) : '';
+      const model = currentModelLabel(picked);
       // Receive only: the pairing was cut, or the web AI connected with a copied prompt (no Courier).
       const link = c.link || 'direct';
       const receiveOnly = link === 'unpaired' || link === 'direct';

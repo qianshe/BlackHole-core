@@ -185,11 +185,23 @@ async function main(): Promise<void> {
         ...(name ? { name } : {}),
       });
       if (status >= 400) fail(json);
-      const session = json as { mcp_url?: string; session_id?: string; id?: string; workspace_path?: string; name?: string | null };
+      const session = json as {
+        mcp_url?: string;
+        connection_routes?: { preferred_mcp_url?: string | null; needs_choice?: boolean; reason?: string | null };
+        session_id?: string;
+        id?: string;
+        workspace_path?: string;
+        name?: string | null;
+      };
       const output = { ...session, connector_prompt: buildConnectorPrompt(session) };
       if (flags.copy) {
-        const what = flags.copy === 'prompt' ? output.connector_prompt : output.mcp_url;
+        const what = flags.copy === 'prompt'
+          ? output.connector_prompt
+          : session.connection_routes
+            ? session.connection_routes.preferred_mcp_url ?? undefined
+            : output.mcp_url;
         if (typeof what === 'string') copyToClipboard(what);
+        else if (flags.copy !== 'prompt') process.stderr.write('BlackHole: 当前连接方式没有唯一可复制的 MCP URL；请先明确直连入口或检查所选渠道。\n');
       }
       print(output);
       return;

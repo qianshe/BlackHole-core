@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
 import type { AccountView, ChannelSwitchView, ProjectView, SessionView } from '../api';
 import { ChannelSwitch } from './ChannelSwitch';
 import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
@@ -142,24 +143,25 @@ function ProjectMenu({ p, onNew, onRename, onPin, onRemove }: { p: ProjectView; 
 }
 
 function accountLine(a: AccountView | null): { name: string; sub: string; tone: '' | 'warn' | 'bad' } {
-  if (!a || a.state === 'logged_out') return { name: '未登录', sub: '登录后使用', tone: 'warn' };
-  const name = a.account?.name || a.account?.email || '账号';
-  if (a.state === 'unavailable') return { name, sub: '登录已失效', tone: 'bad' };
-  const left = a.remainingSeconds ?? 0;
-  if (left <= 0) return { name, sub: '订阅已到期', tone: 'bad' };
-  const days = Math.floor(left / 86400);
-  const sub = days >= 1 ? `剩余 ${days} 天` : `剩余 ${Math.max(1, Math.floor(left / 3600))} 小时`;
-  return { name, sub, tone: left < 3 * 86400 ? 'warn' : '' };
+  const summary = accountSummary(a);
+  if (summary.authState === 'logged_out') return { name: '未登录', sub: '登录后使用', tone: 'warn' };
+  if (summary.accountStatus === 'suspended') return { name: summary.displayName, sub: '账号已停用', tone: 'bad' };
+  if (summary.accountStatus === 'pending') return { name: summary.displayName, sub: '订阅准备中', tone: 'warn' };
+  const sub = formatRemaining(summary.remainingSeconds);
+  if (summary.remainingSeconds === 0) return { name: summary.displayName, sub, tone: 'bad' };
+  if (summary.remainingSeconds === null) return { name: summary.displayName, sub, tone: 'warn' };
+  return { name: summary.displayName, sub, tone: summary.remainingSeconds < 3 * 86400 ? 'warn' : '' };
 }
 
 function AccountButton({ account, onAction }: { account: AccountView | null; onAction: Props['onAccount'] }) {
   const m = useMenu();
+  const summary = accountSummary(account);
   const a = accountLine(account);
   const pick = (k: Parameters<Props['onAccount']>[0]) => () => {
     m.close();
     onAction(k);
   };
-  const signedIn = !!account && account.state !== 'logged_out';
+  const signedIn = summary.canSignOut;
   return (
     <div className={c.sideBottom} ref={m.wrapRef} onKeyDown={m.onKeyDown}>
       <button type="button" className={c.accountBtn} aria-haspopup="menu" aria-expanded={m.open} onClick={m.toggle} title={`${a.name} · ${a.sub}`}>
@@ -179,7 +181,7 @@ function AccountButton({ account, onAction }: { account: AccountView | null; onA
           <div className={c.menuHead}>
             <div className={c.menuTitle}>{a.name}</div>
             <div className={c.menuMeta}>
-              {account?.account?.email ? `${account.account.email} · ` : ''}
+              {summary.email ? `${summary.email} · ` : ''}
               {a.sub}
             </div>
           </div>

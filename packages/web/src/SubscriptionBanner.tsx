@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { api, type AccountView } from './api';
+import type { AccountView } from './api';
 import s from './SubscriptionBanner.module.css';
 
 const SOON_S = 3 * 24 * 3600;
@@ -15,22 +14,8 @@ export function subscriptionNotice(view: AccountView | null, now = Date.now()): 
   return null;
 }
 
-export function SubscriptionBanner({ onRenew }: { onRenew: () => void }) {
-  const [view, setView] = useState<AccountView | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = () => void api.account().then((v) => alive && setView(v), () => undefined);
-    load();
-    const t = setInterval(load, 5 * 60_000);
-    const onFocus = () => load();
-    window.addEventListener('focus', onFocus);
-    return () => {
-      alive = false;
-      clearInterval(t);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, []);
-  const notice = subscriptionNotice(view);
+export function SubscriptionBanner({ account, onRenew }: { account: AccountView | null; onRenew: () => void }) {
+  const notice = subscriptionNotice(account);
   if (!notice) return null;
   return (
     <div className={notice.tone === 'bad' ? s.bad : s.warn} role="status">

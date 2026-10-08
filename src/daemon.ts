@@ -14,7 +14,7 @@ import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
 import { CourierHub } from './courier/hub.js';
-import { LanListener } from './lan/listener.js';
+import { DirectAccessListener, directAccessConfig } from './direct-access/listener.js';
 import { CourierMessages, purgeCourierMessagesOlderThan } from './courier/messages.js';
 import { importCourierMessagesJson } from './courier/messagesImport.js';
 import { CourierPairs } from './courier/pairs.js';
@@ -22,6 +22,7 @@ import { mountCourier } from './courier/mount.js';
 import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
 import { renderSandboxManual } from './courier/manual.js';
 import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
+import { resolveConnectionRoutes } from './connection/resolve.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
 import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
 import { mountMcp } from './mcp/router.js';
@@ -269,7 +270,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     bin: cfg.cloudflaredBin,
     namedUrl: cfg.publicBaseUrl,
     tunnelName: cfg.tunnelName,
-    probeProxy: cfg.tunnelProbeProxy,
+    probeProxy: () => settings.get().values.channelProxyUrl || cfg.tunnelProbeProxy,
     log,
     onEvent: (status, detail) => {
       events.append(null, 'tunnel_status', { status, ...detail });
@@ -298,8 +299,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // Public agent surface for sandboxes without a native MCP client. The prompt
   // points only at the generated Manual; bh.py remains an optional reference
   // client linked from that Manual.
-  app.get('/bh.md', (_req, res) => {
-    const endpoint = mcpUrl(deps);
+  app.get('/bh.md', (req, res) => {
+    const directOrigin = deps.directAccess?.requestOrigin(req);
+    const endpoint = directOrigin ? directOrigin + mcpPath() : resolveConnectionRoutes(deps, mcpPath()).sandbox_mcp_url ?? mcpUrl(deps);
     const client = new URL(endpoint);
     client.pathname = client.pathname.slice(0, client.pathname.lastIndexOf('/mcp/')) + '/bh.py';
     client.search = '';
@@ -327,7 +329,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     for (const file of candidates) {
       try {
         let body = fs.readFileSync(file, 'utf8');
-        body = body.replace("_INJECTED_URL = ''", `_INJECTED_URL = ${pyStr(mcpUrl(deps))}`);
+        const directOrigin = deps.directAccess?.requestOrigin(req);
+        const endpoint = directOrigin ? directOrigin + mcpPath() : resolveConnectionRoutes(deps, mcpPath()).sandbox_mcp_url ?? mcpUrl(deps);
+        body = body.replace("_INJECTED_URL = ''", `_INJECTED_URL = ${pyStr(endpoint)}`);
         if (sessionId) body = body.replace("_INJECTED_SESSIONID = ''", `_INJECTED_SESSIONID = ${pyStr(sessionId)}`);
         res.type('text/x-python; charset=utf-8').send(body);
         return;
@@ -364,6 +368,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     settings: () => settings.get(),
     credential: await openOpenAITunnelCredential(undefined, openAITunnelSecretFile(dataDir)),
     target: () => `http://127.0.0.1:${cfg.port}${mcpPath()}`,
+    proxy: () => settings.get().values.channelProxyUrl || undefined,
     log,
     onEvent: (status, detail) => {
       events.append(null, 'openai_tunnel_status', { status, ...detail });
@@ -384,17 +389,22 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     initialPrompt: (id, message, kind = 'connector') => {
       const s = deps.sessions.get(id);
       if (!s) return { code: 'session_inactive', message: '这个 BlackHole 会话已结束' };
-      const target = connectionTarget({
-        tunnel: deps.tunnel.status,
-        tunnel_url: deps.tunnel.url ?? null,
-        public_base_url: deps.cfg.publicBaseUrl ?? null,
-        openai_tunnel: deps.openaiTunnel ? { status: deps.openaiTunnel.view().status } : null,
-      });
+      const routes = resolveConnectionRoutes(deps, mcpPath());
+      const target = connectionTarget({ mcp_url: mcpUrl(deps), connection_routes: routes });
       if (kind === 'sandbox') {
-        if (!target.sandbox) return { code: 'no_channel', message: SANDBOX_NEEDS_PUBLIC_URL };
-        return { text: renderPrompt('sandbox', mcpUrl(deps), s.credential_id, { kind: 'user', text: message }) };
+        if (!target.sandboxMcpUrl) return { code: 'no_channel', message: SANDBOX_NEEDS_PUBLIC_URL };
+        return { text: renderPrompt('sandbox', target.sandboxMcpUrl, s.credential_id, { kind: 'user', text: message }) };
       }
-      if (!target.connector) return { code: 'no_channel', message: '还没有在线的渠道：请先启动 Cloudflare 或 OpenAI 渠道，网页 AI 才能调用 BlackHole' };
+      if (!target.connector) {
+        const messageText = target.reason === 'direct_unavailable'
+          ? '当前选择局域网直连，但监听不可用；不会改用 Cloudflare'
+          : target.reason === 'custom_unavailable'
+            ? '当前选择自定义地址，但尚未配置可用地址；不会改用其它渠道'
+            : target.openai === 'starting'
+              ? 'OpenAI Tunnel 正在启动'
+              : '当前选择的连接方式尚未就绪';
+        return { code: 'no_channel', message: messageText };
+      }
       return { text: renderPrompt('connector', '', s.credential_id, { kind: 'user', text: message }, deps.settings?.get().values.connectorName || 'BlackHole') };
     },
     onChange: () => changes.bump(),
@@ -427,7 +437,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
       link: courier.link(id),
       // Courier 是否在线：网页的输入框靠它区分「Courier 没连上」和「配对的网页不在 Courier 里」
       connected: courier.connected,
-      target: t ? { targetId: t.targetId, site: t.site, label: t.label, busy: t.busy, ready: t.ready, open: t.open, draft: t.draft, model: t.model, card: t.card } : null,
+      target: t ? { targetId: t.targetId, site: t.site, label: t.label, busy: t.busy, turnState: t.turnState, ready: t.ready, open: t.open, draft: t.draft, model: t.model, modelAttribution: t.modelAttribution, card: t.card } : null,
     };
   });
   entitlement?.onChange(() => courier.pushAccess());
@@ -471,11 +481,12 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // long-lived SSE streams (MCP GET) must not be cut by the default 5-min cap
   server.requestTimeout = 0;
 
-  // 局域网直连（设置里的开关，默认关闭）：另起一个 0.0.0.0 监听器，只开放 MCP。
+  // One stable data-plane port for direct access and a user-managed reverse
+  // proxy. The control plane is still exclusively on the main loopback socket.
   const mainAddr = server.address();
-  const lan = new LanListener(app, mainAddr && typeof mainAddr === 'object' ? mainAddr.port : cfg.port, log);
-  deps.lan = lan;
-  await lan.apply(settings.get().values.lanAccess, settings.get().values.lanPort);
+  const directAccess = new DirectAccessListener(app, mainAddr && typeof mainAddr === 'object' ? mainAddr.port : cfg.port, log);
+  deps.directAccess = directAccess;
+  await directAccess.apply(directAccessConfig(settings.get().values));
 
   // no tunnel auto-start at boot: the channel is started on demand by the
   // extension sidebar / CLI (`tunnel start`), persistent or temporary.
@@ -506,7 +517,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     clearInterval(processSweep);
     courier.close();
     feed.shutdown(); // 放走所有挂起的长轮询请求，server.close() 才能完成
-    await lan.close();
+    await directAccess.close();
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();

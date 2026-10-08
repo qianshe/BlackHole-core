@@ -25,13 +25,11 @@ const shortDir = (p: string): string => {
   return (parts.length > 2 ? '…/' : '') + parts.slice(-2).join('/');
 };
 
-export function NewChatPane({ initialPath, projects, sessions, actions, connectorName, mcpUrl, onOpen }: {
+export function NewChatPane({ initialPath, projects, sessions, actions, onOpen }: {
   initialPath: string;
   projects: ProjectView[];
   sessions: SessionView[];
   actions: SessionActions;
-  connectorName: string;
-  mcpUrl: string | null;
   /** The session exists now (first message sent, or the web AI made its first call): show it. */
   onOpen: (id: string) => void;
 }) {

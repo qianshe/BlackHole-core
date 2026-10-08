@@ -268,6 +268,9 @@ test('relays a send to Courier and returns its result', async () => {
   const pending = post({ targetId: 't-1', text: '你好', sessionId: 's-1' });
   const cmd = await c.next();
   assert.equal(cmd.type, 'compose.send');
+  assert.ok(Number.isFinite(cmd.deadline), 'compose carries an absolute expiration');
+  assert.ok(cmd.deadline <= Date.now() + 400, 'expiration fits the configured hub timeout');
+  assert.ok(cmd.deadline > Date.now() - 400, 'short configured timeouts retain a usable budget');
   assert.deepEqual(cmd.target, { targetId: 't-1' });
   assert.equal(cmd.text, '你好');
   assert.equal(cmd.sessionId, 's-1');

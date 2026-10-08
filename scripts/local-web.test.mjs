@@ -117,6 +117,12 @@ if (process.argv.includes('--fixture-daemon')) {
       });
     assert.equal((await web('/sessions')).status, 401);
 
+    // Login bootstrap may read only a non-sensitive channel-configuration summary.
+    const setupSummary = await web('/auth/setup');
+    assert.equal(setupSummary.status, 200);
+    assert.deepEqual(await setupSummary.json(), { configuration: 'absent' });
+    assert.equal((await fetch(base + '/web-api/v1/auth/setup')).status, 403, 'setup summary still requires the local Web client marker');
+
     // Exchange: exact Origin + client header, one use only.
     assert.equal((await web('/auth/exchange', { method: 'POST', body: { ticket: issued.ticket }, headers: { origin: 'http://evil.test' } })).status, 403);
     assert.equal((await web('/auth/exchange', { method: 'POST', body: { ticket: 'A'.repeat(43) } })).status, 401);
@@ -217,6 +223,47 @@ if (process.argv.includes('--fixture-daemon')) {
     const todos = await (await web(`/sessions/${session.id}/todos`, { cookie })).json();
     assert.deepEqual(todos.items.map((i) => i.content), ['first step', 'second step']);
     assert.equal((await web('/sessions/nope/todos', { cookie })).status, 404);
+
+    // Current-turn review uses the persisted Editor navigation hashes and the latest sent user message,
+    // not earlier Editor calls in the same session.
+    await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'turn.txt', operation: { command: 'create', content: 'before\n' } } });
+    await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'old-only.txt', operation: { command: 'create', content: 'prior\n' } } });
+    const [{ openDb }, { CourierMessages }] = await Promise.all([
+      import('../dist/storage/db.js'), import('../dist/courier/messages.js'),
+    ]);
+    const turnStorage = openDb(iso.dbPath);
+    try {
+      const messageStore = new CourierMessages(turnStorage.db);
+      const turnAt = Date.now();
+      messageStore.add({ sessionId: session.id, kind: 'user', text: 'current turn', at: turnAt, status: 'sent', site: null, targetId: null, conversationKey: null });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'turn.txt', operation: { command: 'str_replace', old_text: 'before', new_text: 'after' } } });
+      const turnResponse = await web(`/sessions/${session.id}/current-turn-diff`, { cookie });
+      assert.equal(turnResponse.status, 200);
+      assert.equal(turnResponse.headers.get('cache-control'), 'no-store');
+      const turnDiff = await turnResponse.json();
+      assert.equal(turnDiff.turnAt, turnAt);
+      assert.equal(turnDiff.files.length, 1, 'previous-turn files are not included');
+      assert.equal(turnDiff.files[0].path, 'turn.txt');
+      assert.equal(turnDiff.files[0].status, 'ready');
+      assert.deepEqual([turnDiff.files[0].added, turnDiff.files[0].removed], [1, 1]);
+      assert.ok(turnDiff.files[0].lines.some((line) => line.type === 'remove' && line.text === 'before'));
+      assert.ok(turnDiff.files[0].lines.some((line) => line.type === 'add' && line.text === 'after'));
+      assert.equal((await fetch(`${base}/remote-api/v1/sessions/${session.id}/current-turn-diff`)).status, 404, 'the feature is Web-only');
+
+      // A delete has only hashes and summary stats in the audit row, not the deleted source text.
+      const deleteTurnAt = Date.now();
+      messageStore.add({ sessionId: session.id, kind: 'user', text: 'delete turn', at: deleteTurnAt, status: 'sent', site: null, targetId: null, conversationKey: null });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'old-only.txt', operation: { command: 'delete' } } });
+      const deleted = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+      assert.equal(deleted.turnAt, deleteTurnAt);
+      assert.deepEqual(deleted.files.map((file) => file.path), ['old-only.txt']);
+      assert.equal(deleted.files[0].status, 'deleted');
+      assert.deepEqual(deleted.files[0].lines, [], 'deleted content is not fabricated from summary stats');
+    } finally {
+      turnStorage.close();
+    }
 
     // Cross-origin and header-less callers are refused even with the cookie.
     assert.equal((await web('/sessions', { cookie, headers: { 'x-blackhole-web': '' } })).status, 403);

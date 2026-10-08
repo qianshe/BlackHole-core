@@ -96,6 +96,8 @@ jobs:
         run: pnpm test:handoff
       - name: Local Web and account tests with isolated data
         run: pnpm test:local-web
+      - name: Phone entry point probing and pairing state (synthetic only)
+        run: node --test scripts/remote-probe.test.mjs scripts/remote-access-state.test.mjs
       - name: Tunnel installers (no real downloads)
         run: node --test --experimental-test-isolation=none packages/vscode/test/cloudflared-install.test.mjs packages/vscode/test/openai-tunnel-install.test.mjs
       - name: Desktop bootstrap against an isolated daemon
@@ -142,6 +144,60 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  vsix-artifact:
+    name: Audited VSIX smoke (Windows-x64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Never install, upload, sign or publish this isolated CI candidate.
+      # Production uses the checked-in public origin/key only, with no credentials.
+      - name: Package a production-profile VSIX candidate and audit the archive
+        run: node scripts/package-vsix.mjs --environment production --out .cache/ci-vsix-candidate.vsix
+      - name: Independently validate the VSIX contents and build identity
+        run: node scripts/audit-universal-vsix.mjs .cache/ci-vsix-candidate.vsix
+      - name: Boot the packaged daemon with isolated home, port and credentials
+        run: node scripts/packed-daemon-smoke.mjs .cache/ci-vsix-candidate.vsix
+
+  settings-browser:
+    name: Shared settings browser (Linux-x64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install pinned headless Chromium (CI only)
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+      - name: Build the two real settings renderers, with no backend access
+        run: pnpm build && pnpm --dir packages/web build && pnpm --dir packages/vscode run build:test && node scripts/build-shared-settings-preview.mjs
+      - name: Desktop/mobile header, navigation, switches and QR dialog
+        run: node --test scripts/settings-ui-browser.test.mjs
+
   openai-runtime-native:
     name: OpenAI runtime native (${{ matrix.name }})
     needs: changes
@@ -181,7 +237,7 @@ jobs:
   ci-result:
     name: Core CI
     if: always()
-    needs: [changes, runtime, openai-runtime-native]
+    needs: [changes, runtime, openai-runtime-native, vsix-artifact, settings-browser]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -191,13 +247,19 @@ jobs:
           CODE: ${{ needs.changes.outputs.code }}
           RUNTIME: ${{ needs.runtime.result }}
           OPENAI_NATIVE: ${{ needs.openai-runtime-native.result }}
+          VSIX: ${{ needs.vsix-artifact.result }}
+          SETTINGS_BROWSER: ${{ needs.settings-browser.result }}
         run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
             test "$RUNTIME" = success
             test "$OPENAI_NATIVE" = success
+            test "$VSIX" = success
+            test "$SETTINGS_BROWSER" = success
           else
             test "$CODE" = false
             test "$RUNTIME" = skipped
             test "$OPENAI_NATIVE" = skipped
+            test "$VSIX" = skipped
+            test "$SETTINGS_BROWSER" = skipped
           fi

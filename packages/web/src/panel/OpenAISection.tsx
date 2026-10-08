@@ -1,8 +1,7 @@
-// OpenAI Secure MCP Tunnel tab of the Web settings panel: the same flows as the VS Code
-// settings page (packages/vscode/src/configPanel.ts, channelOpenai) — one-click install
-// of the pinned runtime, Runtime API Key save/clear, start/stop and diagnostics. The
-// daemon serves these routes to this computer only; the API key is never read back.
+// Shared OpenAI settings for browser and native hosts. The host adapter owns
+// transport and clipboard access; the API key is never read back.
 import { useState, type ReactNode } from 'react';
+import { copyText } from '../console/common';
 import { ApiError, panel, type Health, type OpenAITunnelView } from '../api';
 import { OPENAI_ERRORS, OPENAI_LINK_URLS, OPENAI_STATUS_LABELS } from './openaiCopy';
 
@@ -22,6 +21,7 @@ export function openaiStatus(health: Health | null, reachable: boolean, clientPa
   const v = health?.openai_tunnel ?? null;
   if (!clientPath.trim() && !v?.run_id) return { text: '未安装 tunnel-client', cls: 'dim' };
   if (!v) return { text: 'tunnel-client 已就绪', cls: 'ok' };
+  if (v.proxy_pending_restart) return { text: 'OpenAI · 代理已更改，请停止后重新启动', cls: 'warn' };
   const [tone, label] = OPENAI_STATUS_LABELS[v.status] ?? ['', v.status];
   return { text: 'OpenAI · ' + label, cls: tone || 'dim' };
 }
@@ -103,7 +103,7 @@ export function OpenAISection({ health, reachable, clientPath, fields, confirm, 
     const text = JSON.stringify(await panel.openaiDiagnostics(), null, 2);
     const pick = await confirm('OpenAI 渠道诊断（本机观测，已脱敏）', ['复制'], <pre className="bhp-diag">{text}</pre>);
     if (pick === '复制') {
-      const ok = await navigator.clipboard.writeText(text).then(() => true, () => false);
+      const ok = await copyText(text);
       toast(ok ? 'BlackHole：诊断信息已复制。' : 'BlackHole：复制失败，请手动选择文本。', ok ? 'info' : 'warn');
     }
     return null;
@@ -135,8 +135,10 @@ export function OpenAISection({ health, reachable, clientPath, fields, confirm, 
   return (
     <div id="channelOpenai">
       <div className="fgrid channel-config">{fields(install.busy)}</div>
-      {!hasPath && <button id="oaInstall" className="secondary" type="button" disabled={install.busy} onClick={() => void runInstall()}>{install.busy ? '安装中…' : '一键安装'}</button>}
-      {(!hasPath || install.keep) && <div id="oaInstallMessage" className={install.cls} role="status" aria-live="polite">{install.text}</div>}
+      {(!hasPath || install.keep) && <div className="channel-install runtime-install-row">
+        <div className="runtime-install-copy"><strong>OpenAI Tunnel 客户端</strong><div id="oaInstallMessage" className={install.cls} role="status" aria-live="polite">{install.text}</div></div>
+        {!hasPath && <button id="oaInstall" className="secondary" type="button" disabled={install.busy} onClick={() => void runInstall()}>{install.busy ? '安装中…' : '一键安装'}</button>}
+      </div>}
       <div className="fgrid channel-config">
         <div className="f" style={{ gridColumn: '1 / -1' }}>
           <label htmlFor="oaKey">Runtime API Key</label>
@@ -144,7 +146,7 @@ export function OpenAISection({ health, reachable, clientPath, fields, confirm, 
             <input id="oaKey" type="password" spellCheck={false} autoComplete="off" placeholder="保存后只存在本机" value={key}
               onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && key.trim()) void saveKey(); }} />
             <button className="secondary" type="button" disabled={off || !key.trim()} onClick={() => void saveKey()}>保存密钥</button>
-            {v?.credential_configured && <button className="secondary" type="button" disabled={off} onClick={() => void clearKey()}>清除密钥</button>}
+            {v?.credential_configured && <button className="secondary danger-secondary" type="button" disabled={off} onClick={() => void clearKey()}>清除密钥</button>}
           </div>
           <div className="chrow"><span className={'chst ' + keyState.cls}>{keyState.text}</span></div>
           <div className="d">OpenAI Platform 中创建的 Runtime API Key（需 Tunnels Read/Use 权限）。只保存在本机，不写入设置文件，也不会回显。</div>

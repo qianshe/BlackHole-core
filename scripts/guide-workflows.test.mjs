@@ -208,7 +208,7 @@ test('base guide requires explicit keywords and retains routing boundaries', asy
     assert.match(selectorDescription, /Omit for.*quoted or negated.*template-editing/i);
     assert.equal((response.structuredContent.manual.match(/## WORKFLOW/g) ?? []).length, 1);
     assert.doesNotMatch(response.structuredContent.manual, /# (Plan|Handoff|Review) workflow|Stop after the plan|copyable form and stop|Stop after the review/);
-    assert.deepEqual(Object.keys(response.structuredContent).sort(), ['instruction', 'manual', 'runtime']);
+    assert.deepEqual(Object.keys(response.structuredContent).sort(), ['instruction', 'manual', 'runtime', 'session']);
     assert.equal(response.structuredContent.skills, undefined);
     assert.equal(guide.outputSchema.properties.skills, undefined);
     assert.equal(guide.outputSchema.properties.project_instructions, undefined);
@@ -240,7 +240,7 @@ for (const spec of WORKFLOW_CASES) {
       for (const pattern of spec.required) assert.match(result.manual, pattern);
       assert.doesNotMatch(JSON.stringify(result), new RegExp(SYNTHETIC_SESSION_ID));
       assert.doesNotMatch(result.manual, /forced read-only|Workspace root:/i);
-      assert.deepEqual(Object.keys(result).sort(), ['instruction', 'manual', 'runtime', 'workflow']);
+      assert.deepEqual(Object.keys(result).sort(), ['instruction', 'manual', 'runtime', 'session', 'workflow']);
       assert.deepEqual(fixture.audit.at(-1), [null, 'guide_fetched', { workflow: spec.id }]);
     } finally {
       await fixture.close();
@@ -254,7 +254,7 @@ test('guide selectors fail closed and old calls keep their response shape', asyn
     const tool = await fixture.client.callTool({ name: 'guide', arguments: { tool: 'exec' } });
     assert.equal(tool.isError, false);
     assert.equal(tool.structuredContent.manual, 'Fixture exec help.');
-    assert.deepEqual(Object.keys(tool.structuredContent).sort(), ['instruction', 'manual', 'runtime']);
+    assert.deepEqual(Object.keys(tool.structuredContent).sort(), ['instruction', 'manual', 'runtime', 'session']);
 
     const conflict = await fixture.client.callTool({ name: 'guide', arguments: { tool: 'exec', workflow: 'plan' } });
     assert.equal(conflict.isError, true);

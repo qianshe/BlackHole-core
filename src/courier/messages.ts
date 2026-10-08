@@ -144,6 +144,14 @@ export class CourierMessages {
     return r ? toMessage(r) : null;
   }
 
+  /** Exact boundary for current-turn review; user `at` is captured when send/start begins. */
+  latestUserAt(sessionId: string): number | null {
+    const row = this.db
+      .prepare("SELECT at FROM courier_messages WHERE session_id = ? AND kind = 'user' AND status IN ('sent', 'unconfirmed') ORDER BY at DESC, rowid DESC LIMIT 1")
+      .get(sessionId) as { at: number } | undefined;
+    return row?.at ?? null;
+  }
+
   /** feed 增量：该会话 `rev > after` 的消息，按 rev 升序，最多 `limit` 条（走 idx_courier_messages_session_rev）。 */
   changedSince(sessionId: string, after: number, limit: number): CourierMessage[] {
     const rows = this.db.prepare('SELECT * FROM courier_messages WHERE session_id = ? AND rev > ? ORDER BY rev ASC LIMIT ?')

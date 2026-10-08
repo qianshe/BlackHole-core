@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, panel, remoteAdmin, type ChannelSwitchView, type Health, type RemoteView, type SettingsValues } from '../api';
 import { Icon } from '../ui';
+import type { SettingsSection } from '../format';
 import { ChannelSwitch } from './ChannelSwitch';
 import { copyText, failText, useToast } from './common';
 import c from './console.module.css';
@@ -56,7 +57,7 @@ export function channelSummary(h: Health | null, mode: SettingsValues['channelMo
 const MODE_LABEL: Record<SettingsValues['channelMode'], [string, string]> = {
   cloudflare: ['Cloudflare', '通过 Cloudflare 隧道让网页版 AI 连到这台电脑'],
   openai: ['OpenAI', '通过 OpenAI 隧道连接 ChatGPT'],
-  custom: ['自定义 HTTPS', '使用你自己的公网 HTTPS 地址'],
+  custom: ['自定义公网', '使用你自己的公网 HTTP(S) 地址'],
 };
 
 export function ChannelsPane({
@@ -73,7 +74,7 @@ export function ChannelsPane({
   values: SettingsValues | null;
   remote: RemoteView | null;
   onRefresh: () => void;
-  onSettings: (section: string) => void;
+  onSettings: (section: SettingsSection) => void;
   /** 渠道总开关（与侧栏同一个）；旧版 daemon 没有 /channel 时为 null。 */
   channelSwitch?: ChannelSwitchView | null;
   channelBusy?: boolean;
@@ -127,7 +128,7 @@ export function ChannelsPane({
             <h1>公网渠道</h1>
             <p>网页版 AI 通过连接渠道连到这台电脑。Cloudflare / 自定义提供公网地址；OpenAI 渠道经 OpenAI 隧道只连 ChatGPT，可与 Cloudflare 同时运行。</p>
           </div>
-          <button type="button" className={c.btnPrimary} onClick={() => onSettings('channel')}>
+          <button type="button" className={c.btnPrimary} onClick={() => onSettings('connections')}>
             <Icon name="plus" size={14} /> 添加渠道
           </button>
         </header>
@@ -202,7 +203,7 @@ export function ChannelsPane({
                   停止
                 </button>
               )}
-              <button type="button" className={c.btnGhost} onClick={() => onSettings('channel')}>
+              <button type="button" className={c.btnGhost} onClick={() => onSettings('connections')}>
                 设置
               </button>
             </div>
@@ -226,7 +227,7 @@ export function ChannelsPane({
                 </span>
               </div>
               <div className={c.rowActions}>
-                <button type="button" className={c.btn} onClick={() => onSettings('channel')}>
+                <button type="button" className={c.btn} onClick={() => onSettings('connections')}>
                   管理
                 </button>
                 {remote.devices.length > 0 && (
@@ -242,7 +243,7 @@ export function ChannelsPane({
         {needCf && (
           <div className={c.channelEmpty}>
             <span>使用 Cloudflare 渠道需要先安装 cloudflared。</span>
-            <button type="button" className={c.btn} onClick={() => onSettings('channel')}>
+            <button type="button" className={c.btn} onClick={() => onSettings('connections')}>
               去安装
             </button>
           </div>

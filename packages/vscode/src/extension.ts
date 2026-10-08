@@ -3,7 +3,7 @@ import path from 'node:path';
 import { registerCloudAccount } from './cloudAccount';
 import { commands, ConfigurationTarget, ProgressLocation, workspace, window, type ExtensionContext } from 'vscode';
 import { ApprovalsWatcher } from './approvals';
-import { ConfigPanel } from './configPanel';
+import { SharedConfigPanel as ConfigPanel } from './sharedConfigPanel';
 import { getConfig } from './config';
 import { ControlApi, type SessionInfo } from './controlApi';
 import { DaemonManager } from './daemonManager';
@@ -28,20 +28,18 @@ export function activate(context: ExtensionContext): void {
     setupDismissed: () => context.globalState?.get<boolean>('blackhole.setupDismissed') === true,
     dismissSetup: (dismissed) => void context.globalState?.update('blackhole.setupDismissed', dismissed || undefined),
     installCloudflared: async () => {
-      // 用到时才加载安装程序：启动插件时不必载入。
-      const { initializeCloudflared } = await import('./cloudflaredInstall');
       const c = workspace.getConfiguration('blackhole');
-      const result = await initializeCloudflared(c.get<string>('cloudflaredPath') ?? '');
+      const result = await api.installRuntime('cloudflared', c.get<string>('cloudflaredPath') ?? '');
       if ((c.get<string>('cloudflaredPath') ?? '') !== result.path) await c.update('cloudflaredPath', result.path, ConfigurationTarget.Global);
     },
     installOpenaiTunnel: async () => {
-      const { initializeOpenAITunnelClient } = await import('./openaiTunnelInstall');
       const before = workspace.getConfiguration('blackhole').get<string>('openaiTunnelClientPath') ?? '';
-      const result = await initializeOpenAITunnelClient(before);
+      const result = await api.installRuntime('openai', before);
+      if (!result.version) throw new Error('tunnel-client 安装结果缺少版本信息；未保存路径。');
       const current = workspace.getConfiguration('blackhole').get<string>('openaiTunnelClientPath') ?? '';
       if (current !== before && current !== result.path) throw new Error('tunnel-client 路径刚在别处发生变化；请重试。');
       if (current !== result.path) await workspace.getConfiguration('blackhole').update('openaiTunnelClientPath', result.path, ConfigurationTarget.Global);
-      return result;
+      return { ...result, version: result.version };
     },
     create: () => void createSession(api, daemon, openCreated),
     act: (s, a) => void sessionAction(api, s, a, refresh),
@@ -111,7 +109,7 @@ export function activate(context: ExtensionContext): void {
     commands.registerCommand('blackhole.showProcesses', () => processTerminals.show()),
     commands.registerCommand('blackhole.stopProcess', () => processTerminals.stopSelected()),
     commands.registerCommand('blackhole.stopAndCloseProcess', () => processTerminals.stopAndCloseSelected()),
-    commands.registerCommand('blackhole.openSettings', () => ConfigPanel.open(api, daemon, poller, settingsSync)),
+    commands.registerCommand('blackhole.openSettings', (route?: unknown) => ConfigPanel.open(api, daemon, poller, settingsSync, context.globalState, route, context.extensionUri)),
     commands.registerCommand('blackhole.openSession', (s?: SessionInfo) => void withSession(api, s, (x) => sidebar.showCalls(x))),
     commands.registerCommand('blackhole.pauseSession', (s?: SessionInfo) =>
       void withSession(api, s, (x) => sessionAction(api, x, 'pause', refresh)),

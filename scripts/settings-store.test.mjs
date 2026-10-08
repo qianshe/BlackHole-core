@@ -16,13 +16,24 @@ const deps = (store) => ({ settings: store, startedSettings: { ...DEFAULT_SETTIN
 
 test('validation: allowed values, normalization and rejects', () => {
   assert.deepEqual(normalizeSettingsPatch({ connectorName: ' @@Me ', publicBaseUrl: 'https://x.example.com/' }).values, { connectorName: 'Me', publicBaseUrl: 'https://x.example.com' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessUrl: 'https://bh.example.test/' }).values, { directAccessUrl: 'https://bh.example.test' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessUrl: 'http://bh.example.test:7307/' }).values, { directAccessUrl: 'http://bh.example.test:7307' });
+  assert.deepEqual(normalizeSettingsPatch({ channelProxyUrl: ' http://127.0.0.1:7890/ ' }).values, { channelProxyUrl: 'http://127.0.0.1:7890' });
+  assert.deepEqual(normalizeSettingsPatch({ aiDefaultRoute: 'openai' }).values, { aiDefaultRoute: 'openai' });
+  assert.deepEqual(normalizeSettingsPatch({ directAccessEnabled: true }).values, { directAccessEnabled: true });
   for (const bad of [
     { unknown: 'x' },
     { publicBaseUrl: 'ftp://x' },
     { publicBaseUrl: 'https://u:p@x.example.com' },
     { publicBaseUrl: 'https://x.example.com/path' },
     { publicBaseUrl: 'https://x.example.com/?a=1' },
+    { directAccessUrl: 'https://bh.example.test/path' },
     { channelMode: 'tailscale' },
+    { aiDefaultRoute: 'magic' },
+    { directAccessEnabled: 'true' },
+    { channelProxyUrl: 'socks5://127.0.0.1:7890' },
+    { channelProxyUrl: 'http://user:pass@127.0.0.1:7890' },
+    { channelProxyUrl: 'http://127.0.0.1' },
     { openaiTunnelId: 'https://api.openai.com/v1/tunnels/x' },
     { openaiTunnelId: 'tun 1' },
     { openaiTunnelId: 'tun_abc-123' },
@@ -72,6 +83,28 @@ test('patch service: revision required for Web, 409 carries current values, pend
   assert.equal(conflict.body.current.revision, 1);
   assert.deepEqual(pendingRestartKeys(DEFAULT_SETTINGS, DEFAULT_SETTINGS), []);
 });
+
+test('unified direct access does not require an advertised URL and has no enabling aliases', () => {
+  const s = new SettingsStore(repo());
+  const d = deps(s);
+  const on = patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false);
+  assert.equal(on.status, 200);
+  assert.equal(on.body.values.directAccessEnabled, true);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: 'https://192.168.1.9' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: '' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { publicDirectEnabled: true } }, 'web', false).status, 400, 'unpublished aliases are not part of the production API');
+});
+
+test('direct re-apply receives immutable settings snapshots, not a callback reading newer state', () => {
+  const s = new SettingsStore(repo());
+  const calls = [];
+  const d = { ...deps(s), directAccess: { apply(config) { calls.push(config); return Promise.resolve(); } } };
+  assert.equal(patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directAccessUrl: 'https://bh.example.test' } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directPort: 8100 } }, 'web', false).status, 200);
+  assert.deepEqual(calls.map((c) => [c.enabled, c.port, c.advertisedUrl]), [[true, 7307, ''], [true, 7307, 'https://bh.example.test'], [true, 8100, 'https://bh.example.test']]);
+});
+
 
 test('startup overlay: daemon values win, explicit overrides win, tunnel is never switched on', () => {
   const base = () => ({ publicBaseUrl: 'https://env.example.com', cloudflaredBin: '/bundled/cloudflared', skillsDir: '/env', semantic: 'explicit', tunnel: 'off' });
@@ -177,21 +210,18 @@ test('courierSites from Courier: put keeps one entry per origin, remove deletes,
   assert.equal(pushed, 5);
 });
 
-test('lanAccess / lanPort: off by default, validated, daemon-owned, re-applied live only when they change', () => {
-  assert.equal(DEFAULT_SETTINGS.lanAccess, false, '局域网直连默认关闭');
-  assert.equal(DEFAULT_SETTINGS.lanPort, 7307);
-  assert.ok('values' in normalizeSettingsPatch({ lanAccess: true, lanPort: 8000 }));
-  for (const bad of [{ lanAccess: 'yes' }, { lanAccess: 1 }, { lanPort: 80 }, { lanPort: 70000 }, { lanPort: 8000.5 }, { lanPort: '8000' }]) {
-    assert.ok('error' in normalizeSettingsPatch(bad), JSON.stringify(bad));
-  }
-  const s = new SettingsStore(repo());
-  s.update({ connectorName: 'x' });
+test('canonical direct switch and port are validated, daemon-owned and applied live', () => {
+  assert.equal(DEFAULT_SETTINGS.directAccessEnabled, false);
+  assert.equal(DEFAULT_SETTINGS.directPort, 7307);
+  assert.ok('values' in normalizeSettingsPatch({ directAccessEnabled: true, directPort: 8000 }));
+  for (const bad of [{ directAccessEnabled: 'yes' }, { directAccessEnabled: 1 }, { directPort: 80 }, { directPort: 70000 }, { directPort: 8000.5 }, { directPort: '8000' }]) assert.ok('error' in normalizeSettingsPatch(bad), JSON.stringify(bad));
+  const s = new SettingsStore(repo()); s.update({ connectorName: 'x' });
   const unseeded = unseededKeys(s.get());
-  assert.ok(!unseeded.includes('lanAccess') && !unseeded.includes('lanPort'), 'the VS Code extension never hands these over');
+  assert.ok(!unseeded.includes('directAccessEnabled') && !unseeded.includes('directPort'));
   const applied = [];
-  const d = { ...deps(s), lan: { apply: (on, port) => { applied.push([on, port]); return Promise.resolve(); } } };
-  assert.equal(patchSettings(d, { values: { lanAccess: true } }, 'web', false).status, 200);
-  assert.equal(patchSettings(d, { values: { lanPort: 9000 } }, 'web', false).status, 200);
+  const d = { ...deps(s), directAccess: { apply: (config) => { applied.push(config); return Promise.resolve(); } } };
+  assert.equal(patchSettings(d, { values: { directAccessEnabled: true } }, 'web', false).status, 200);
+  assert.equal(patchSettings(d, { values: { directPort: 9000 } }, 'web', false).status, 200);
   assert.equal(patchSettings(d, { values: { connectorName: 'y' } }, 'web', false).status, 200);
-  assert.deepEqual(applied, [[true, 7307], [true, 9000]], 'only lan changes re-apply the listener');
+  assert.deepEqual(applied.map((c) => c.port), [7307, 9000], 'unrelated saves do not re-apply the listener');
 });

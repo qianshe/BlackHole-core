@@ -124,10 +124,14 @@ await check('Sandbox client source URL uses only a public route and preserves it
     bhClientSourceUrl({ cfg: {}, tunnel: { status: 'online', url: 'https://example.invalid/bridge' } }),
     'https://example.invalid/bridge/bh.py',
   );
-  assert.equal(
-    bhClientSourceUrl({ cfg: { publicBaseUrl: 'https://fixed.example/base/' }, tunnel: { status: 'off', url: null } }),
-    'https://fixed.example/base/bh.py',
-  );
+  const fixed = {
+    cfg: {}, tunnel: { status: 'off', url: null },
+    settings: { get: () => ({ values: { channelMode: 'custom', publicBaseUrl: 'https://fixed.example/base/' } }) },
+    directAccess: { view: () => ({ state: 'listening', listening: true, proxy_origin: 'https://fixed.example' }) },
+  };
+  assert.equal(bhClientSourceUrl(fixed), 'https://fixed.example/base/bh.py');
+  assert.equal(bhClientSourceUrl({ ...fixed, directAccess: { view: () => ({ state: 'off', listening: false }) } }), null, 'saved custom address alone is not a ready route');
+  assert.equal(bhClientSourceUrl({ ...fixed, settings: { get: () => ({ values: { channelMode: 'cloudflare', publicBaseUrl: 'https://fixed.example/base/' } }) } }), null, 'offline Cloudflare does not fall back to custom');
   assert.equal(bhClientSourceUrl({ cfg: {}, tunnel: { status: 'unverified', url: 'https://unverified.example' } }), null);
   assert.equal(bhClientSourceUrl({ cfg: { publicBaseUrl: 'http://127.0.0.1:7306' }, tunnel: { status: 'off', url: null } }), null);
 });

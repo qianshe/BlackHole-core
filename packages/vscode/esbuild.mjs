@@ -51,6 +51,13 @@ const extensionOptions = {
   ...hardening,
 };
 
+// One settings component tree is bundled for both hosts; only this entry installs the native adapter.
+const settingsOptions = {
+  bundle: true, platform: 'browser', format: 'iife', target: 'es2022', jsx: 'automatic',
+  entryPoints: ['../web/src/settings/vscode.tsx'], outfile: 'dist/settings/settings.js',
+  define: { 'process.env.NODE_ENV': '"production"' }, minify: production, sourcemap: false, logLevel: 'info',
+};
+
 // The daemon itself, bundled so the vsix ships zero runtime dependencies.
 // Builtins stay external (platform=node); the client script and the working
 // rules file are copied next to it so /bh.py and the appended agent rules
@@ -260,17 +267,18 @@ function sealIntegrity() {
 }
 
 if (watch) {
-  const contexts = await Promise.all([extensionOptions, daemonOptions, supervisorOptions].map(options => esbuild.context(options)));
+  const contexts = await Promise.all([extensionOptions, daemonOptions, supervisorOptions, settingsOptions].map(options => esbuild.context(options)));
   await Promise.all(contexts.map(context => context.watch()));
   console.log('watching for changes...');
 } else {
+  await esbuild.build(settingsOptions);
   await esbuild.build(extensionOptions);
   // check-webview resolves the embedded scripts by source identifier names, which minify renames;
   // the script text itself is unchanged, so production checks an unminified twin (never shipped).
   if (production) await esbuild.build({ ...extensionOptions, minify: false, keepNames: false, sourcemap: false, logLevel: 'silent', outfile: join(process.cwd(), '../../.tmp/webview-check/extension.js') });
   await esbuild.build(daemonOptions);
   await esbuild.build(supervisorOptions);
-  const writeCloudBuild = () => writeFileSync('dist/cloud-build.json', JSON.stringify({ ...cloudBuild, extensionSha256: createHash('sha256').update(readFileSync('dist/extension.js')).digest('hex'), daemonSha256: createHash('sha256').update(readFileSync('dist/daemon/cli.js')).digest('hex'), processSupervisorSha256: createHash('sha256').update(readFileSync('dist/daemon/process-supervisor.cjs')).digest('hex') }, null, 2) + '\n');
+  const writeCloudBuild = () => writeFileSync('dist/cloud-build.json', JSON.stringify({ ...cloudBuild, extensionSha256: createHash('sha256').update(readFileSync('dist/extension.js')).digest('hex'), settingsSha256: createHash('sha256').update(readFileSync('dist/settings/settings.js')).digest('hex'), settingsCssSha256: createHash('sha256').update(readFileSync('dist/settings/settings.css')).digest('hex'), daemonSha256: createHash('sha256').update(readFileSync('dist/daemon/cli.js')).digest('hex'), processSupervisorSha256: createHash('sha256').update(readFileSync('dist/daemon/process-supervisor.cjs')).digest('hex') }, null, 2) + '\n');
   copyAsset('../../client/bh.py', 'dist/daemon/bh.py');
   // Mermaid: the sidebar reuses the Web build's copy (dist/daemon/web/assets/mermaid-<hash>.min.js,
   // copied below); only the license is added here.

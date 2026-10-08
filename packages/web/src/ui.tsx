@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { SETTINGS_ICON_SHAPES, type SettingsIconName, type SettingsIconShape } from '../../contracts/src/settings-navigation';
 import type { Tone } from './format';
 import s from './ui.module.css';
 
@@ -83,6 +84,35 @@ export function Icon({ name, size = 16, className }: { name: IconName; size?: nu
       focusable="false"
     >
       {PATHS[name]}
+    </svg>
+  );
+}
+
+function renderSettingsShape(shape: SettingsIconShape, key: number) {
+  if (shape.tag === 'path') return <path key={key} d={shape.d} />;
+  if (shape.tag === 'circle') return <circle key={key} cx={shape.cx} cy={shape.cy} r={shape.r} />;
+  return <rect key={key} x={shape.x} y={shape.y} width={shape.width} height={shape.height} rx={shape.rx} />;
+}
+
+/** Settings-only glyphs are shared with the VS Code Webview's HTML renderer. */
+export function SettingsIcon({ name, size = 16, strokeWidth = 1.8, className }: {
+  name: SettingsIconName; size?: number; strokeWidth?: number; className?: string;
+}) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {SETTINGS_ICON_SHAPES[name].map(renderSettingsShape)}
     </svg>
   );
 }

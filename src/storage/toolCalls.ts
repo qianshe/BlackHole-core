@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { randomId } from '../util/token.js';
-import { WORKSPACE_FILE_TOOL } from '../tool-routing.js';
+import { WORKSPACE_FILE_TOOL, WORKSPACE_FILE_TOOL_HISTORY } from '../tool-routing.js';
 import type { ApprovalScope, ToolCallRow } from './db.js';
 import type { FeedLog } from './feedLog.js';
 import type { TimelineKey } from '../feed/timeline.js';
@@ -129,6 +129,15 @@ export class ToolCallsRepo {
         'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND rowid > ? AND (rowid > ? OR updated_at > ?) ORDER BY rowid ASC LIMIT ?',
       )
       .all(sessionId, minSeq, afterSeq, updatedSince, limit) as unknown as (ToolCallRow & { seq: number })[];
+  }
+
+  /** Current-turn review: editor calls strictly after the latest user message, oldest first. */
+  listEditorCallsAfter(sessionId: string, afterAt: number, limit = 501): (ToolCallRow & { seq: number })[] {
+    return this.db
+      .prepare(
+        'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND tool IN (?, ?) AND created_at > ? ORDER BY created_at ASC, rowid ASC LIMIT ?',
+      )
+      .all(sessionId, WORKSPACE_FILE_TOOL_HISTORY[0], WORKSPACE_FILE_TOOL_HISTORY[1], afterAt, limit) as unknown as (ToolCallRow & { seq: number })[];
   }
 
   /** feed 增量：该会话 `rev > after` 的行，按 rev 升序，最多 `limit` 条（走 idx_tool_calls_session_rev）。 */

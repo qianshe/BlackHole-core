@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, type CallView, type ConfirmationView, type SessionView } from '../api';
 import { toolCallDisplay } from '../../../vscode/src/callDisplay';
-import { displayToolName } from '../../../vscode/src/toolNames';
+import { displayToolName, isWorkspaceFileTool } from '../../../vscode/src/toolNames';
 import { useSessionFeed, WEB_FEED_LIMIT, type FeedState } from '../feed/useSessionFeed';
 import { anchorShift, captureAnchor, type ScrollAnchor } from '../feed/scrollAnchor';
 import { Bubble, ChatDock, usePairLink, type Message } from './ChatDock';
@@ -23,6 +23,7 @@ import {
 import { POLL_MS, usePoll } from '../usePoll';
 import { CopyButton, Icon } from '../ui';
 import { ApprovalCard } from './Approval';
+import { TurnChanges } from './TurnChanges';
 import { failText, useMenu } from './common';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
@@ -107,13 +108,21 @@ interface Props {
   onChanged: () => void;
   /** Composer inputs; the composer lives in the feed column of this pane. */
   connectorName: string;
-  mcpUrl: string | null;
 }
 
 /** Pending approval for an awaiting row: same tool and args, else the oldest of the session. */
 function approvalFor(call: CallView, list: ConfirmationView[]): ConfirmationView | undefined {
   const same = JSON.stringify(call.args);
   return list.find((x) => x.tool === call.tool && JSON.stringify(x.args) === same) ?? list[0];
+}
+
+const EDITOR_WRITE_COMMANDS = new Set(['create', 'str_replace', 'insert', 'delete']);
+function isEditorWriteCall(call: CallView): boolean {
+  if (!isWorkspaceFileTool(call.tool) || !call.args || typeof call.args !== 'object' || Array.isArray(call.args)) return false;
+  const args = call.args as Record<string, unknown>;
+  const operation = args.operation && typeof args.operation === 'object' && !Array.isArray(args.operation)
+    ? args.operation as Record<string, unknown> : args;
+  return typeof operation.command === 'string' && EDITOR_WRITE_COMMANDS.has(operation.command);
 }
 
 /** Codex-style: the state is one glyph; the words are only its accessible name. */
@@ -139,7 +148,7 @@ function Clip({ text }: { text: string }) {
   );
 }
 
-function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: boolean; fresh: boolean; onToggle: () => void; onApprove?: () => void }) {
+function CallItem({ x, open, fresh, onToggle, onNavigateToDiff, onApprove }: { x: CallView; open: boolean; fresh: boolean; onToggle: () => void; onNavigateToDiff?: () => void; onApprove?: () => void }) {
   // same wording as the VS Code sidebar card (tool name, summary, details)
   const shown = toolCallDisplay(x.tool, JSON.stringify(x.args ?? {}));
   const head = callHeadline(displayToolName(x.tool), x.args, shown.summary);
@@ -150,7 +159,7 @@ function CallItem({ x, open, fresh, onToggle, onApprove }: { x: CallView; open: 
   const dur = callDuration(x);
   return (
     <li data-feed-key={x.id} className={`${c.call} ${open ? c.callOpen : ''} ${fresh ? c.fresh : ''}`}>
-      <button type="button" className={c.callRow} aria-expanded={open} aria-controls={`call-${x.id}`} onClick={onToggle}>
+      <button type="button" className={c.callRow} aria-expanded={open} aria-controls={`call-${x.id}`} onClick={() => { onToggle(); onNavigateToDiff?.(); }}>
         <span className={c.bullet} data-tone={tone} role="img" aria-label={CALL_STATUS_LABEL[x.status] ?? x.status} title={CALL_STATUS_LABEL[x.status] ?? x.status}>
           {STATUS_GLYPH[tone] ?? '·'}
         </span>
@@ -234,14 +243,22 @@ function useTimeline(sessionId: string, ended: boolean) {
 
 type Entry = { kind: 'call'; x: CallView; at: number } | { kind: 'msg'; m: Message; at: number };
 
-export function SessionPane({ session, approvals, now, actions, onApprove, onApprovalsChanged, onChanged, connectorName, mcpUrl }: Props) {
+export function SessionPane({ session, approvals, now, actions, onApprove, onApprovalsChanged, onChanged, connectorName }: Props) {
   const split = useInspectorResize();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<'overview' | 'changes'>('overview');
+  const [focusRequest, setFocusRequest] = useState<{ callId: string; sequence: number } | null>(null);
+  const focusSequence = useRef(0);
+  const overviewTabRef = useRef<HTMLButtonElement>(null);
+  const changesTabRef = useRef<HTMLButtonElement>(null);
+  const inspectorToggleRef = useRef<HTMLButtonElement>(null);
   const seen = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     setOpen(new Set());
+    setInspectorTab('overview');
+    setFocusRequest(null);
     seen.current = null;
   }, [session.id]);
 
@@ -265,6 +282,23 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
     }
     return out;
   }, [tl.entries, questionsInThread]);
+  // The feed marker is only a refresh hint; the API reads the authoritative latest user send from SQLite.
+  const turnAt = useMemo(() => {
+    let latest: number | null = null;
+    for (const message of tl.messages) {
+      if (message.kind !== 'user' || (message.status !== 'sent' && message.status !== 'unconfirmed') || !Number.isFinite(message.at)) continue;
+      latest = latest === null ? message.at : Math.max(latest, message.at);
+    }
+    return latest;
+  }, [tl.messages]);
+  useEffect(() => { setFocusRequest(null); }, [session.id, turnAt]);
+  const onInspectorTabKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const next = inspectorTab === 'overview' ? 'changes' : 'overview';
+    setInspectorTab(next);
+    (next === 'overview' ? overviewTabRef.current : changesTabRef.current)?.focus();
+  };
   // The final reply of each turn: the last agent message before your next message (calls between
   // don't count). Only these get a copy button; the segments between tool calls do not.
   const finalReplies = useMemo(() => {
@@ -278,14 +312,6 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
     if (last) out.add(last);
     return out;
   }, [entries]);
-
-  // The model of the web AI is composer metadata: it stays on the composer and is
-  // keyed by site, so switching the bound chat switches the model with it.
-  const models = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const m of tl.messages) if (m.kind === 'agent' && m.model && m.site) out[m.site] = m.model;
-    return out;
-  }, [tl.messages]);
 
   // The last unanswered question from the web agent (nothing of yours sent after it):
   // the composer shows it as a card so one click answers it.
@@ -494,6 +520,12 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
                         return n;
                       })
                     }
+                    onNavigateToDiff={isEditorWriteCall(x) ? () => {
+                      focusSequence.current += 1;
+                      setFocusRequest({ callId: x.id, sequence: focusSequence.current });
+                      setInspectorTab('changes');
+                      if (window.matchMedia('(max-width: 1100px)').matches) requestAnimationFrame(() => inspectorToggleRef.current?.focus());
+                    } : undefined}
                     onApprove={a ? () => onApprove(a) : undefined}
                   />
                 );
@@ -512,7 +544,7 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
         {/* The composer shares the feed column: pinned under the timeline, never
             crossing onto the session-detail inspector. */}
         <div className={c.dockCell}>
-          <ChatDock key={session.id} session={session} connectorName={connectorName} mcpUrl={mcpUrl} models={models} question={question} />
+          <ChatDock key={session.id} session={session} question={question} />
         </div>
 
         <div
@@ -536,12 +568,11 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             focus and closes when the pointer/focus leaves. Approvals keep their
             click-to-open bar in the feed. */}
         <div className={c.inspectorDock}>
-        <button type="button" className={c.inspectorToggle} aria-label="会话详情" title="会话详情" aria-controls="session-inspector">
+        <button ref={inspectorToggleRef} type="button" className={c.inspectorToggle} aria-label="会话详情" title="会话详情" aria-controls="session-inspector">
           <Icon name="list" size={14} />
           {approvals.length > 0 && <span className={c.inspectorBadge} aria-hidden="true" />}
         </button>
         <aside id="session-inspector" className={c.inspector} aria-label="会话详情">
-          <h2 className={c.inspectorTitle}>会话详情</h2>
           {approvals.length > 0 && (
             <div className={c.group}>
               <h3 className={c.groupTitle}>
@@ -559,6 +590,15 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               )}
             </div>
           )}
+          <div className={c.inspectorTabs} role="tablist" aria-label="会话详情" onKeyDown={onInspectorTabKeyDown}>
+            <button ref={overviewTabRef} id="inspector-tab-overview" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'overview'} aria-controls="inspector-panel-overview" tabIndex={inspectorTab === 'overview' ? 0 : -1} onClick={() => setInspectorTab('overview')}>
+              概览
+            </button>
+            <button ref={changesTabRef} id="inspector-tab-changes" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'changes'} aria-controls="inspector-panel-changes" tabIndex={inspectorTab === 'changes' ? 0 : -1} onClick={() => setInspectorTab('changes')}>
+              本轮修改
+            </button>
+          </div>
+          <div id="inspector-panel-overview" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-overview" tabIndex={0} hidden={inspectorTab !== 'overview'}>
           <div className={c.group}>
             <h3 className={c.groupTitle}>任务</h3>
             {board?.contract ? (
@@ -627,6 +667,10 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               <dt>创建</dt>
               <dd>{formatFull(session.created_at)}</dd>
             </dl>
+          </div>
+          </div>
+          <div id="inspector-panel-changes" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-changes" tabIndex={0} hidden={inspectorTab !== 'changes'}>
+            <TurnChanges sessionId={session.id} active={inspectorTab === 'changes'} turnAt={turnAt} focusRequest={focusRequest} />
           </div>
         </aside>
         </div>
