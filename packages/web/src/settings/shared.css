@@ -1,4 +1,6 @@
-/* Authoritative settings appearance, based on unified.html. Both hosts import this file. */
+/* One authoritative settings appearance for Web and VS Code renderers. */
+/* Settings is a full-page workspace in every host; only small confirmations remain dialogs. */
+dialog[aria-label='设置'] { padding: 0; place-items: stretch; }
 .settings-shell.settings-shell {
   --settings-fg: var(--vscode-foreground, #ccc);
   --settings-muted: var(--vscode-descriptionForeground, #9d9d9d);
@@ -13,7 +15,9 @@
   --settings-danger: var(--vscode-errorForeground, #e51400);
   --settings-button: var(--vscode-button-background, #0e639c);
   --settings-secondary: var(--vscode-button-secondaryBackground, #3a3d41);
-  width: min(1040px, calc(100vw - 40px)); grid-template-columns: 190px minmax(0, 1fr);
+  width: 100%; max-width: none; height: 100%; max-height: none;
+  border: 0; border-radius: 0; box-shadow: none;
+  grid-template-columns: 190px minmax(0, 1fr);
   background: var(--settings-bg); color: var(--settings-fg); font: 13px/1.55 var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
 }
 @media(prefers-color-scheme: dark) {
