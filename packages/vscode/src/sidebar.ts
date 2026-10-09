@@ -2141,8 +2141,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
           + rowStatus(s, d)
           + '<button class="ract" title="会话操作">' + IC.more + '</button>';
         row.querySelector('.txt').textContent = name;
-        handoffView.attach(row.querySelector('.name'), s);
         if (isCur) { const tag = document.createElement('span'); tag.className = 'cur'; tag.textContent = '当前'; row.querySelector('.name').appendChild(tag); }
+        handoffView.attach(row.querySelector('.name'), s);
         // 账本式副行：完整工作区路径 · 权限模式（状态移到行右侧彩字）
         const modeLabel = s.permission_mode === 'read-only' ? '只读' : s.permission_mode === 'danger-full-access' ? '完全访问' : '工作区可写';
         row.title = name + ' · ' + s.workspace_path + ' · ' + modeLabel; // single-line row: path and mode on hover

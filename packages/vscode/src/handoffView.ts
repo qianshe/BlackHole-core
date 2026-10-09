@@ -7,8 +7,8 @@ export const handoffStyles = `
   .handoffBar button:disabled { opacity:.5; cursor:default; }
   .handoffBar button:focus-visible, #handoffDialog button:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:1px; }
   .row .name .txt { min-width:0; }
-  .row .name:has(.handoffBar) { align-items:baseline; gap:6px; }
-  /* Shared intrinsic status column: keep actions aligned without reserving 7em.
+  .row .name:has(.handoffBar) { align-items:center; gap:6px; }
+  /* Shared intrinsic status column: keep live states aligned without reserving 7em.
      Outer tracks include row padding; subgrid preserves the existing hit targets. */
   #list[data-mode="sessions"] { display:grid; grid-template-columns:28px minmax(0,1fr) max-content 32px; column-gap:6px; align-content:start; }
   #list[data-mode="sessions"] > .row { display:grid; grid-column:1/-1; grid-template-columns:subgrid; }
@@ -19,8 +19,11 @@ export const handoffStyles = `
   #list[data-mode="sessions"] > .row > .ract { grid-column:4; }
   #list[data-mode="sessions"] > .empty { grid-column:1/-1; }
   #list[data-mode="sessions"] .row .st { text-align:right; }
-  .row .handoffBar { margin-left:auto; border-left:1px solid var(--vscode-panel-border); padding-left:4px; }
-  .row .handoffBar button:first-child { color:var(--vscode-descriptionForeground); padding:3px 6px; min-height:22px; border:1px solid var(--vscode-panel-border); border-radius:4px; }
+  /* Keep the preview action right-aligned within the session title track. */
+  .row .handoffBar { margin-left:auto; padding-left:0; align-items:center; }
+  /* Compact actionable pill: match Current's scale without stealing the status column. */
+  .row .handoffBar button:first-child { color:var(--vscode-descriptionForeground); padding:0 6px; min-height:18px; line-height:16px; border:1px solid var(--vscode-panel-border); border-radius:999px; background:transparent; }
+  .row .handoffBar button:first-child:hover:not(:disabled) { color:var(--vscode-textLink-foreground); border-color:var(--vscode-textLink-foreground); background:var(--vscode-toolbar-hoverBackground); }
 
   /* Compress all rows alike on narrow sidebars: pending state must not shift titles. */
   @media (max-width:300px) {

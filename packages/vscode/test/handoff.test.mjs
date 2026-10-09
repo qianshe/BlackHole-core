@@ -159,8 +159,13 @@ test('handoff has one list entry while urgent and paused statuses remain visible
   assert.ok(!handoffStyles.includes(String.raw`.row:has(.handoffBar) .cur { display:none; }`), 'Handoff must not hide the Current marker');
 });
 
-test('list Handoff actions use a right anchor and a shared status column', () => {
+test('list Handoff anchors at the right, while Current stays next to the title', () => {
   assert.match(handoffStyles, /\.row \.handoffBar\s*\{[^}]*margin-left:auto/);
+  assert.doesNotMatch(handoffStyles, /\.row \.handoffBar\s*\{[^}]*margin-left:0/);
+  const source = fs.readFileSync(new URL('../src/sidebar.ts', import.meta.url), 'utf8');
+  const current = source.indexOf("tag.className = 'cur'; tag.textContent = '当前';");
+  const handoff = source.indexOf("handoffView.attach(row.querySelector('.name'), s);");
+  assert.ok(current >= 0 && handoff > current, 'Current follows the title and Handoff follows Current');
   assert.match(handoffStyles, /#list\[data-mode="sessions"\]\s*\{[^}]*grid-template-columns:28px minmax\(0,1fr\) max-content 32px/);
   assert.match(handoffStyles, /#list\[data-mode="sessions"\] > \.row\s*\{[^}]*grid-column:1\/-1;[^}]*grid-template-columns:subgrid/);
   assert.match(handoffStyles, /#list\[data-mode="sessions"\] > \.empty\s*\{[^}]*grid-column:1\/-1/);

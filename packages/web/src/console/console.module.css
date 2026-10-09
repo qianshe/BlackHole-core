@@ -390,12 +390,33 @@
 .sessionRow[aria-current='true'] .rowMeta {
   color: var(--text-2);
 }
+.rowTitle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .rowLabel {
   flex: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.rowHandoff {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 18px;
+  white-space: nowrap;
 }
 .rowMeta {
   font-size: 11px;

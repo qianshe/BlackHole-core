@@ -70,7 +70,6 @@ function rowState(x: SessionView, pending: number, web: WebFlags): { text: strin
   if (web.busy.has(x.id)) return { text: '生成中', tone: 'run', title: '网页 AI 正在回复' };
   if (x.status === 'active' && x.activity === 'running') return { text: '运行中', tone: 'run', title: '正在调用工具' };
   if (x.todos_total > 0 && x.todos_done < x.todos_total) return { text: `${x.todos_done}/${x.todos_total}`, tone: 'muted', title: 'Todo 进度' };
-  if (x.pending_handoff) return { text: 'Handoff', tone: 'muted', title: '有待接手的 Handoff' };
   if (x.status === 'paused') return { text: SESSION_STATUS_LABEL.paused ?? '已暂停', tone: 'muted' };
   return null;
 }
@@ -92,8 +91,11 @@ function SessionItem({ x, current, pending, web, onSelect, actions }: { x: Sessi
   return (
     <li className={c.sessionItem}>
       <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} · ${state}`}>
-        <span className={c.rowLabel}>{sessionTitle(x)}</span>
+        <span className={c.rowTitle}>
+          <span className={c.rowLabel}>{sessionTitle(x)}</span>
+        </span>
         {st && <span className={st.tone === 'warn' ? c.rowMetaWarn : st.tone === 'run' ? c.rowMetaRun : c.rowMeta} title={st.title}>{st.text}</span>}
+        {x.pending_handoff && <span className={c.rowHandoff} title="待接手的 Handoff · 打开会话可查看和复制">Handoff</span>}
       </button>
       {/* sibling of the row button: a button inside a button is invalid */}
       <div ref={m.wrapRef} onKeyDown={m.onKeyDown}>

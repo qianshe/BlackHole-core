@@ -464,7 +464,8 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             调用 <b>{total}</b>
           </span>
         </div>
-        <HandoffBar session={session} connectorName={connectorName} now={now} />
+        {/* Prevent a preview for one handoff from surviving a session switch or replacement. */}
+        <HandoffBar key={`${session.id}:${session.pending_handoff?.id ?? ''}`} session={session} connectorName={connectorName} now={now} />
       </header>
 
       <div ref={split.ref} className={`${c.workspace} ${split.dragging ? c.resizing : ''}`} style={{ '--inspector-w': `${split.width}px` } as CSSProperties}>
