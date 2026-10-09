@@ -701,3 +701,26 @@ test('a ChatGPT reply seen again after a page reload stays one record (page mess
   assert.equal(list.length, 2);
   assert.deepEqual(list.map((m) => m.messageId), ['m-1', 'm-2']);
 });
+
+
+test('distinct ChatGPT text segments sharing one page message ID stay ordered separately around tool calls', () => {
+  const store = memoryMessages();
+  const sid = '123456789012345678901234567890123456789';
+  const base = { sessionId: sid, kind: 'agent', site: 'chatgpt', targetId: 't-1', conversationKey: 'c1', status: 'reply', messageId: 'shared-turn-id' };
+  store.upsertSegment({ ...base, text: 'Before tool', segment: 'gpt-c1-run-1' });
+  store.upsertSegment({ ...base, text: 'After tool', segment: 'gpt-c1-run-2' });
+  const list = store.list(sid);
+  assert.equal(list.length, 2);
+  assert.deepEqual(list.map(m => m.text), ['Before tool', 'After tool']);
+  assert.deepEqual(list.map(m => m.segment), ['gpt-c1-run-1', 'gpt-c1-run-2']);
+});
+
+
+test('identical text with one page message ID remains separate within the same page run', () => {
+  const store = memoryMessages();
+  const sid = '123456789012345678901234567890123456789';
+  const base = { sessionId: sid, kind: 'agent', site: 'chatgpt', targetId: 't-1', conversationKey: 'c1', status: 'reply', messageId: 'shared-turn-id' };
+  store.upsertSegment({ ...base, text: 'Working', segment: 'gpt-c1-run-1' });
+  store.upsertSegment({ ...base, text: 'Working', segment: 'gpt-c1-run-2' });
+  assert.equal(store.list(sid).length, 2);
+});

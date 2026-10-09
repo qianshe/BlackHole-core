@@ -33,7 +33,7 @@ const MAX_STORED_BYTES = 64 * 1024 * 1024;
 /** Built-in sites; user-added ones come from the courierSites setting (opts.sites). */
 const SITES = new Set(['arena', 'chatgpt']);
 const BUILTIN_SITE_NAMES = [{ id: 'arena', name: 'Arena' }, { id: 'chatgpt', name: 'ChatGPT' }];
-const MAX_REPLY = 60000;
+const MAX_REPLY = 250000;
 /** No valid subscription ticket: sending and new pairings stop; pairings and threads are kept. */
 export const SUBSCRIPTION_REQUIRED = 'subscription_required';
 const SUBSCRIPTION_MESSAGE = 'BlackHole 订阅已到期或需要重新登录：续费或登录后即可继续发送，已有的配对和消息都保留';
@@ -344,7 +344,7 @@ export class CourierHub {
    */
   private onReply(m: Record<string, unknown>): void {
     const key = str(m.conversationKey, 128);
-    const text = typeof m.text === 'string' ? m.text.slice(0, MAX_REPLY) : '';
+    const text = typeof m.text === 'string' && m.text.length <= MAX_REPLY ? m.text : '';
     if (!key || !text.trim()) return;
     const target = this.targets.find((t) => t.conversationKey === key && t.sessionId);
     if (!target?.sessionId) return;

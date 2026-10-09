@@ -200,6 +200,19 @@ export class CourierMessages {
         .get(m.sessionId, ...args) as unknown as Row | undefined;
       return r ? toMessage(r) : undefined;
     };
+    const segmentRun = (segment: string | undefined): string | null =>
+      /^gpt-.+-([a-z0-9]+)-\d+$/.exec(segment ?? '')?.[1] ?? null;
+    const findReloadMatch = (cond: string, ...args: (string | number | null)[]): CourierMessage | undefined => {
+      const rows = this.db.prepare(`SELECT * FROM courier_messages WHERE session_id = ? AND ${cond} ORDER BY at, rowid`)
+        .all(m.sessionId, ...args) as unknown as Row[];
+      const run = segmentRun(m.segment);
+      if (!run) return undefined;
+      const row = rows.find(candidate => {
+        const oldRun = segmentRun(candidate.segment ?? undefined);
+        return oldRun !== null && oldRun !== run;
+      });
+      return row ? toMessage(row) : undefined;
+    };
     // Same segment, or the same page message seen again after a reload (the segment is per page
     // load, the page's message id is not). A final reply stored before message ids were sent is
     // matched once by its text and gets the id.
@@ -207,9 +220,13 @@ export class CourierMessages {
     // 调用方可能省略 conversationKey（undefined），SQLite 绑定不接受 undefined，一律规范成 null。
     const key = m.conversationKey ?? null;
     const old = find('segment = ? AND conversation_key IS ?', m.segment, key)
-      ?? (m.messageId ? find("kind = 'agent' AND message_id = ? AND conversation_key IS ?", m.messageId, key) : undefined)
+      // A page may expose one message ID for multiple text blocks around tool calls.
+      // Only deduplicate matching text across different page runs, never within one run.
       ?? (m.messageId && m.status === 'reply'
-        ? find("kind = 'agent' AND message_id IS NULL AND status = 'reply' AND conversation_key IS ? AND text = ?", key, m.text)
+        ? findReloadMatch("kind = 'agent' AND message_id = ? AND status = 'reply' AND conversation_key IS ? AND text = ?", m.messageId, key, m.text)
+        : undefined)
+      ?? (m.messageId && m.status === 'reply'
+        ? findReloadMatch("kind = 'agent' AND message_id IS NULL AND status = 'reply' AND conversation_key IS ? AND text = ?", key, m.text)
         : undefined);
     if (!old) return this.add(m);
     if (m.messageId && old.messageId !== m.messageId) {
