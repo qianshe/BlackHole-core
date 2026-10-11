@@ -11,6 +11,7 @@ const vscode = readFileSync(new URL('../../vscode/src/sharedConfigPanel.ts', imp
 const nativeEntry = readFileSync(new URL('../src/settings/vscode.tsx', import.meta.url), 'utf8');
 const appearance = readFileSync(new URL('../src/settings/shared.css', import.meta.url), 'utf8');
 const openai = readFileSync(new URL('../src/panel/OpenAISection.tsx', import.meta.url), 'utf8');
+const nativeFrame = readFileSync(new URL('../src/settings/native.css', import.meta.url), 'utf8');
 
 test('connection cards are flat and ordered current → channels → connector → default', () => {
   const connection = panel.slice(panel.indexOf("{page === 'connections' &&"), panel.indexOf("{page === 'network' &&"));
@@ -177,11 +178,11 @@ test('shared settings owns form typography, focus and stable content width', () 
   assert.doesNotMatch(readFileSync(new URL('../src/panel/panel.css', import.meta.url), 'utf8'), /textarea:focus \{ outline: 1px|pchip\[data-tools\]:focus-visible \{ outline: 1px|#cloudPlan:focus \{ outline:1px/);
 });
 
-test('desktop section blurbs stay inline and narrow Web settings use the full viewport', () => {
+test('desktop section blurbs stay inline and narrow Web settings keep their modal inset', () => {
   const panelCss = readFileSync(new URL('../src/panel/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(panelCss, /\.bhp \.sec small \{ display: block/);
   assert.match(appearance, /\.sec small \{ display: inline/);
-  assert.match(css, /\.overlay\[aria-label='设置'\] \{ padding: 0; \}/);
+  assert.match(css, /\.overlay\[aria-label='设置'\] \{ padding: 12px; \}/);
   assert.match(css, /\.overlay\[aria-label='设置'\] \.modal \{/);
 });
 
@@ -292,4 +293,19 @@ test('mobile title, menu and close share one top row, not fixed at separate heig
   assert.match(css, /\.settingsHead \{[\s\S]*?align-items: center;/);
   assert.match(css, /\.settingsHead \.close \{[^\n]*width: 32px; height: 32px;/);
   assert.match(modal, /aria-label="关闭设置"/);
+});
+
+
+test('shared settings separate the Web modal frame from the VS Code full-page host', () => {
+  assert.doesNotMatch(appearance, /^dialog\[aria-label='设置'\]\s*\{/m,
+    'shared content styles must not stretch every dialog');
+  assert.doesNotMatch(appearance, /\.settings-shell\.settings-shell\s*\{[^}]*width:\s*100%/m,
+    'shared content styles must not make Web settings full-screen');
+  assert.match(nativeFrame, /body\.settings-native-host dialog\[aria-label='设置'\]/);
+  assert.match(nativeFrame, /body\.settings-native-host \.settings-shell\.settings-shell \{/);
+  assert.match(css, /\.overlay\[aria-label='设置'\] \{ padding: 12px; \}/);
+  assert.equal((modal.match(/window\.matchMedia\('\(max-width: 760px\)'\)/g) ?? []).length, 2,
+    'React breakpoint must match the CSS mobile drawer breakpoint');
+  assert.match(appearance, /@media\(max-width:760px\)/);
+  assert.match(appearance, /@media\(max-width:460px\)\s*\{\s*\.settings-shell \.bhp \.cockpit \{ grid-template-columns: minmax\(0,1fr\)/);
 });

@@ -34,11 +34,11 @@ export function SettingsModal({ section, account, onAccountChange, refreshAccoun
   const first: SettingsSection = validPage(section) ? section : validPage(savedPage) ? savedPage : 'home';
   const [active, setActive] = useState<SettingsSection>(first);
   const [collapsed, setCollapsed] = useState(() => stored(COLLAPSED_KEY) === '1');
-  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 720px)').matches);
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
-    const mq = window.matchMedia('(max-width: 720px)');
+    const mq = window.matchMedia('(max-width: 760px)');
     const change = () => { setNarrow(mq.matches); setDrawerOpen(false); };
     mq.addEventListener('change', change);
     return () => mq.removeEventListener('change', change);

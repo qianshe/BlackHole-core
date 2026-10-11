@@ -1,6 +1,5 @@
 /* One authoritative settings appearance for Web and VS Code renderers. */
-/* Settings is a full-page workspace in every host; only small confirmations remain dialogs. */
-dialog[aria-label='设置'] { padding: 0; place-items: stretch; }
+/* Shared content styles only. The Web modal and native full-page frame own their outer geometry. */
 .settings-shell.settings-shell {
   --settings-fg: var(--vscode-foreground, #ccc);
   --settings-muted: var(--vscode-descriptionForeground, #9d9d9d);
@@ -15,8 +14,6 @@ dialog[aria-label='设置'] { padding: 0; place-items: stretch; }
   --settings-danger: var(--vscode-errorForeground, #e51400);
   --settings-button: var(--vscode-button-background, #0e639c);
   --settings-secondary: var(--vscode-button-secondaryBackground, #3a3d41);
-  width: 100%; max-width: none; height: 100%; max-height: none;
-  border: 0; border-radius: 0; box-shadow: none;
   grid-template-columns: 190px minmax(0, 1fr);
   background: var(--settings-bg); color: var(--settings-fg); font: 13px/1.55 var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
 }
@@ -187,8 +184,8 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp
 .settings-shell .bhp .runtime-install-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .settings-shell .bhp .runtime-install-copy { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
 .settings-shell .bhp .runtime-install-row > button { flex: 0 0 auto; }
-@media(max-width:720px) {
-  .settings-shell.settings-shell { width: 100%; grid-template-columns: minmax(0,1fr); }
+@media(max-width:760px) {
+  .settings-shell.settings-shell { grid-template-columns: minmax(0,1fr); }
   .settings-shell > div[tabindex] { padding: 0; }
   .settings-shell #settingsNav { padding: 56px 10px 14px; }
   .settings-shell #settingsNav [data-settings-target] { min-height: 44px; }
@@ -214,6 +211,11 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp
   .settings-shell .bhp .pxs .hd > .pxb { grid-column: 2; grid-row: 1; justify-self: end; }
   .settings-shell .bhp .pxs .hd > button.pchip { grid-column: 1; grid-row: 2; justify-self: start; }
   .settings-shell .bhp .pxs .hd > .pxbtns { grid-column: 2; grid-row: 2; justify-self: end; margin-left: 0; }
+}
+/* A 2-column cockpit is unreadable in very narrow VS Code editor groups and mobile dialogs. */
+@media(max-width:460px) {
+  .settings-shell .bhp .cockpit { grid-template-columns: minmax(0,1fr); }
+  .settings-shell .bhp .cockpit .cell:nth-child(2) { border-left: 0; border-top: 1px solid var(--settings-border); }
 }
 @media(prefers-reduced-motion:reduce) { .settings-shell *, .settings-shell *::after { transition: none !important; animation: none !important; } }
 
