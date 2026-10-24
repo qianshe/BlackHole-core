@@ -13,7 +13,7 @@ export function hostExtensionFile(relative) {
   if (!relative.startsWith('dist/')) return /^(?:media\/|licenses\/|LICENSE$|NOTICE$|README\.md$|CHANGELOG\.md$|SUPPORT\.md$|THIRD_PARTY_(?:LICENSES|NOTICES)\.md$)/.test(relative);
   return ['dist/extension.js','dist/settings/settings.js','dist/settings/settings.css','dist/cloud-build.json','dist/mermaid-LICENSE'].includes(relative);
 }
-export async function hostCoreInputs(archive, publicKey, keyId, build, corePackage, coreUrl, previousTestRoot) {
+export async function hostCoreInputs(archive, publicKey, keyId, build, corePackage, coreUrl, previousTestRoot, platform = 'win32', arch = 'x64') {
   if (!archive || !publicKey || !keyId) throw Error('host_core_reference_required: supply a signed v2 code archive and verification public key');
   const trust = { environment: build.environment, publicKeys: { [keyId]: publicKey } };
   // During local Test upgrades an older ephemeral-signed Core may still be
@@ -33,7 +33,7 @@ export async function hostCoreInputs(archive, publicKey, keyId, build, corePacka
     } catch { throw Error('previous_test_trust_invalid'); }
     trust.publicKeys[previous.keyId] = previous.publicKey;
   }
-  const verified = await verifyCoreArchive(archive, { ...trust, platform: 'win32', arch: 'x64' });
+  const verified = await verifyCoreArchive(archive, { ...trust, platform, arch });
   if (verified.descriptor.formatVersion !== 2 || verified.descriptor.runtimeProvider !== 'host-node') throw Error('vsix_node_bundling_forbidden: require Core v2 host-node');
   if (verified.descriptor.cloudOrigin !== build.origin) throw Error('host_core_cloud_mismatch');
   // A host can ship a newer/older Core version, but only if its API contract is

@@ -11,7 +11,15 @@ const output = value('output');
 const nodeExe = value('node-exe');
 const nodeLicense = value('node-license');
 const hostProvided = argv.includes('--without-node');
-if (!output || (!hostProvided && (!nodeExe || !nodeLicense)) || (hostProvided && (nodeExe || nodeLicense))) throw new Error('usage: --output DIR [--without-node | --node-exe FILE --node-license FILE]');
+// The signed Core descriptor is platform-bound; the default keeps the
+// established Windows candidate behavior. Cross-platform CI passes the
+// runner's native pair so handoff and layout metadata match the descriptor.
+const platform = value('platform') ?? 'win32';
+const arch = value('arch') ?? 'x64';
+const goosMap = { win32: 'windows', darwin: 'darwin', linux: 'linux' };
+const goarchMap = { x64: 'amd64', arm64: 'arm64' };
+if (!goosMap[platform] || !goarchMap[arch]) throw new Error(`unsupported platform/arch: ${platform}/${arch}`);
+if (!output || (!hostProvided && (!nodeExe || !nodeLicense)) || (hostProvided && (nodeExe || nodeLicense))) throw new Error('usage: --output DIR [--without-node | --node-exe FILE --node-license FILE] [--platform win32|darwin|linux] [--arch x64|arm64]');
 const destination = path.resolve(output);
 if (fs.existsSync(destination)) throw new Error(`output_already_exists:${destination}`);
 if (!hostProvided) for (const [label, file] of [['node executable', nodeExe], ['Node license', nodeLicense]]) if (!fs.statSync(path.resolve(file)).isFile()) throw new Error(`${label}_missing:${file}`);
@@ -32,13 +40,15 @@ const buildInputs = verifyCoreBundleFreshness(ROOT);
 const copyFile = (from, to) => { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(from, to); };
 const copyTree = (from, to) => fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: true });
 fs.mkdirSync(destination, { recursive: false });
-// The Windows handoff executable is a member of the signed candidate Core.
-// Never fetch an external helper or reuse one from an unverified location.
-const handoff = path.join(destination, 'host', 'core-handoff.exe');
+// The handoff helper is a member of the signed candidate Core and is built
+// for the archive's target platform. Never fetch an external helper or reuse
+// one from an unverified location.
+const handoffName = platform === 'win32' ? 'core-handoff.exe' : 'core-handoff';
+const handoff = path.join(destination, 'host', handoffName);
 fs.mkdirSync(path.dirname(handoff), { recursive: true });
 execFileSync('go', ['-C', path.join(ROOT, 'packages', 'desktop-launcher'), 'build', '-trimpath', '-ldflags=-s -w', '-o', handoff, './cmd/core-handoff'], {
   cwd: ROOT, windowsHide: true, timeout: 120_000, stdio: 'pipe',
-  env: { ...process.env, GOOS: 'windows', GOARCH: 'amd64', CGO_ENABLED: '0' },
+  env: { ...process.env, GOOS: goosMap[platform], GOARCH: goarchMap[arch], CGO_ENABLED: '0' },
 });
 if (!hostProvided) {
   copyFile(path.resolve(nodeExe), path.join(destination, 'node', 'node.exe'));
@@ -62,6 +72,6 @@ visit(destination);
 const leaked = files.filter((file) => forbidden.test(file)); if (leaked.length) throw new Error(`mutable_data_in_core:${leaked.join(',')}`);
 // Establish the same CommonJS package boundary as the VSIX extension root.
 fs.writeFileSync(path.join(destination, 'package.json'), JSON.stringify({ private: true, type: 'commonjs' }, null, 2) + '\n');
-fs.writeFileSync(path.join(destination, 'layout-build.json'), JSON.stringify({ formatVersion: 1, nodeVersion: process.version.replace(/^v/, ''), runtimeProvider: hostProvided ? 'host-node' : 'bundled-node', platform: 'win32', arch: 'x64', files: files.length + 1, buildInputs }, null, 2) + '\n');
+fs.writeFileSync(path.join(destination, 'layout-build.json'), JSON.stringify({ formatVersion: 1, nodeVersion: process.version.replace(/^v/, ''), runtimeProvider: hostProvided ? 'host-node' : 'bundled-node', platform, arch, files: files.length + 1, buildInputs }, null, 2) + '\n');
 const bytes = files.reduce((sum, file) => sum + fs.statSync(path.join(destination, file)).size, 0);
 console.log(JSON.stringify({ ok: true, output: destination, files: files.length + 1, bytes }));

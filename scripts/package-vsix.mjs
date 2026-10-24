@@ -29,7 +29,12 @@ if (seedArchive) {
   const publicKeyPath = process.env.BH_SEED_CORE_PUBLIC_KEY?.trim();
   const keyId = process.env.BH_SEED_CORE_KEY_ID?.trim();
   if (!publicKeyPath || !keyId) throw new Error('Seed packaging requires BH_SEED_CORE_PUBLIC_KEY and BH_SEED_CORE_KEY_ID.');
-  seedEvidence = await verifyCoreArchive(seedArchive, { publicKeys: { [keyId]: fs.readFileSync(path.resolve(publicKeyPath)) }, platform: 'win32', arch: 'x64', environment: build.environment });
+  // The Core archive is platform-bound (the descriptor signs platform/arch);
+  // cross-platform CI supplies the runner's pair, Windows stays the default.
+  const packagePlatform = process.env.BH_PACKAGE_PLATFORM?.trim() || 'win32';
+  const packageArch = process.env.BH_PACKAGE_ARCH?.trim() || 'x64';
+  seedEvidence = await verifyCoreArchive(seedArchive, { publicKeys: { [keyId]: fs.readFileSync(path.resolve(publicKeyPath)) }, platform: packagePlatform, arch: packageArch, environment: build.environment });
+  process.env.BH_PACKAGE_PLATFORM = packagePlatform; process.env.BH_PACKAGE_ARCH = packageArch;
 }
 // Full offline releases must bundle the exact Core runtime version printed on
 // the VSIX. A host-only patch that carries older Core must use an explicit
@@ -48,7 +53,8 @@ if (priorRootsText) {
 }
 const hostInput = hostProvided ? await hostCoreInputs(seedArchive,
   process.env.BH_SEED_CORE_PUBLIC_KEY?.trim() ? fs.readFileSync(path.resolve(process.env.BH_SEED_CORE_PUBLIC_KEY.trim()),'utf8') : undefined,
-  process.env.BH_SEED_CORE_KEY_ID?.trim(), build, corePackage, coreUrl, priorRoots) : undefined;
+  process.env.BH_SEED_CORE_KEY_ID?.trim(), build, corePackage, coreUrl, priorRoots,
+  process.env.BH_PACKAGE_PLATFORM?.trim() || 'win32', process.env.BH_PACKAGE_ARCH?.trim() || 'x64') : undefined;
 const out = requestedOut ? path.resolve(requestedOut) : path.join(EXT, `blackhole-vscode-${version}${suffix}.vsix`);
 if (path.extname(out).toLowerCase() !== '.vsix') throw new Error('--out must name a .vsix file.');
 // Never rebuild the version VS Code already has installed (2026-10-02 incident): reinstalling the same version over the
