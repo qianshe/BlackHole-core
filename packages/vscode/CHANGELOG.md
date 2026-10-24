@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.4.15 — 2026-10-24 (Desktop 更新通道接线，Windows Test)
+
+- **更新通道**：Desktop 构建内置 GitHub Releases 更新源与 ed25519 公钥 pin，托盘"检查更新…"可下载并安装经签名校验的新版本；测试通道滚动 tag `desktop-test`。
+- **信任根报错可辨识**：宿主信任根缺少 Core 签名钥匙时改报 `core_trust_root_missing`（附钥匙 ID），提示升级插件/Desktop，不再误报为归档损坏。
+
 ## 0.4.14 — 2026-10-24 (Desktop 自动退出修复，Windows Test)
 
 - **心跳容错**：Desktop 租约续期遇到 Manager 锁竞争、daemon 探测超时等瞬时错误时，只要租约仍在有效期内就保留租约并等待下一拍重试，不再单次失败即退出应用；明确的租约失效拒绝（过期、身份冲突等）仍然立即解绑退出。
