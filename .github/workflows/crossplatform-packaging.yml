@@ -8,6 +8,9 @@ name: Cross-platform Core packaging
 # pipeline; this matrix exists to validate linux/darwin packaging end to end.
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/connection-target-routing]
+    paths: ['.github/workflows/crossplatform-packaging.yml', 'scripts/assemble-core-runtime.mjs', 'scripts/package-vsix.mjs', 'scripts/vsix-host-layout.mjs', 'scripts/package-core-runtime.mjs', 'packages/**', 'src/**']
 
 permissions:
   contents: read
