@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.4.16 — 2026-10-25 (跨平台打包链修复，Windows Test)
+
+- **打包脚本平台化**：Core 归档组装、VSIX 打包与审计的平台参数贯通（`--platform/--arch`），非 Windows 归档不再包含 Windows 专属的 handoff 成员。
+- **CI 环境自洽**：打包脚本在无本机 test.json 的环境（CI runner）以显式 cloud 参数完成配置解析，host bundle 重建同样透传。
+- **跨平台 CI 全绿**：linux-x64/arm64、macOS-x64/arm64 四平台 Core+VSIX 打包矩阵通过。
+
 ## 0.4.15 — 2026-10-24 (Desktop 更新通道接线，Windows Test)
 
 - **更新通道**：Desktop 构建内置 GitHub Releases 更新源与 ed25519 公钥 pin，托盘"检查更新…"可下载并安装经签名校验的新版本；测试通道滚动 tag `desktop-test`。
