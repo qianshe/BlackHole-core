@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
+import { resolveDataPaths } from '../../../src/data-paths.ts';
 import path from 'node:path';
 import {
   HOST_PROTOCOL_VERSION,
@@ -57,9 +57,9 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): Args {
   };
 }
 
-/** Same data dir rule as the daemon: next to BLACKHOLE_DB, else ~/.blackhole. */
+/** Canonical mutable-data root shared with the daemon; BLACKHOLE_DB stays DB-only. */
 export function dataDir(env: NodeJS.ProcessEnv): string {
-  return env.BLACKHOLE_DB ? path.dirname(path.resolve(env.BLACKHOLE_DB)) : path.join(os.homedir(), '.blackhole');
+  return resolveDataPaths({ env }).root;
 }
 
 interface Health {
@@ -68,6 +68,16 @@ interface Health {
   daemon_id: string;
   db_path?: string;
   cloud_origin?: string;
+  runtime_id?: string;
+  runtime_version?: string;
+  build_id?: string;
+  descriptor_hash?: string;
+  data_root_id?: string;
+  web_build_id?: string;
+  core_protocol?: { min: number; max: number };
+  core_environment?: 'test' | 'production';
+  core_cloud_origin?: string;
+  lifecycle_state?: 'managed' | 'quiescing' | 'draining' | 'stopping';
 }
 
 type Probe = { state: 'down' } | { state: 'foreign' } | { state: 'ok'; health: Health };
@@ -137,10 +147,20 @@ async function buildReceipt(port: number, health: Health, spawned: boolean): Pro
   const instanceSource = health.db_path ?? `127.0.0.1:${port}`;
   return {
     protocolVersion: HOST_PROTOCOL_VERSION,
+    ...(health.runtime_id ? { runtimeId: health.runtime_id } : {}),
+    ...(health.runtime_version ? { runtimeVersion: health.runtime_version } : {}),
+    ...(health.build_id ? { buildId: health.build_id } : {}),
+    ...(health.descriptor_hash ? { descriptorHash: health.descriptor_hash } : {}),
+    ...(health.data_root_id ? { dataRootId: health.data_root_id } : {}),
+    ...(health.web_build_id ? { webBuildId: health.web_build_id } : {}),
+    ...(health.core_protocol ? { coreProtocol: health.core_protocol } : {}),
+    ...(health.core_environment ? { environment: health.core_environment } : {}),
+    ...(health.core_cloud_origin ? { cloudOrigin: health.core_cloud_origin } : {}),
+    ...(health.lifecycle_state ? { lifecycleState: health.lifecycle_state } : {}),
     instanceKey: createHash('sha256').update(instanceSource).digest('hex').slice(0, 16),
     daemonId: health.daemon_id,
     daemonVersion: health.version,
-    // T1: /api/health does not report the runtime yet; an attached daemon may be VS Code's (T2 handshake).
+    // Legacy daemons require inference for one compatibility window; managed Core reports identity above.
     runtimeKind: spawned ? 'standalone-node' : 'vscode-electron',
     uiVersion: health.version,
     configRevision: Number.isInteger(settings?.body.revision) ? (settings!.body.revision as number) : 0,
