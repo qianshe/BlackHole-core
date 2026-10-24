@@ -76,7 +76,11 @@ if (path.extname(out).toLowerCase() !== '.vsix') throw new Error('--out must nam
 execSync('pnpm build', { cwd: ROOT, stdio: 'inherit' });
 // Local Web page, copied beside the daemon bundle by esbuild.mjs.
 execSync('pnpm --dir packages/web build', { cwd: ROOT, stdio: 'inherit' });
-execFileSync(process.execPath, [path.join(ROOT, 'packages', 'host-runtime', 'build.mjs'), '--environment', build.environment], { cwd: ROOT, stdio: 'inherit' });
+// The host bundle resolves the same environment config as the packager; on a
+// machine without config/environments/test.json the explicit pair is required.
+const hostBuildArgs = ['--environment', build.environment];
+if (build.environment === 'test') hostBuildArgs.push('--cloud-origin', build.origin, '--cloud-public-key', build.entitlementPublicKey);
+execFileSync(process.execPath, [path.join(ROOT, 'packages', 'host-runtime', 'build.mjs'), ...hostBuildArgs], { cwd: ROOT, stdio: 'inherit' });
 const buildArgs = ['esbuild.mjs', '--environment', build.environment];
 if (build.environment === 'test') buildArgs.push('--cloud-origin', build.origin, '--cloud-public-key', build.entitlementPublicKey);
 execFileSync(process.execPath, buildArgs, { cwd: EXT, stdio: 'inherit' });
