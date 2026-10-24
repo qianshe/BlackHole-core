@@ -477,35 +477,6 @@ func openManagedUI(ctx context.Context, client coremanager.Client, attached core
 func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *leaseKeeper, port int) {
 	defer closeManagedWindow()
 	store := peerReleaseStore{dir: managedStateDir}
-	coordinator := newMaintenanceCoordinator(bundle.Client, keeper, nativePromptsImpl{}, maintenanceHooks{
-		PreparePeers: func(ctx context.Context, fingerprint string) error {
-			// Our own window is a separate lease owner. Closing it is local
-			// coordination, not a Manager exemption: if it does not close,
-			// the user closes it manually and the Manager still decides.
-			if !focusExistingWindow() {
-				return nil
-			}
-			closeManagedWindow()
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				if !focusExistingWindow() {
-					return nil
-				}
-				select {
-				case <-ctx.Done():
-					return errors.New("window_still_open")
-				case <-time.After(100 * time.Millisecond):
-				}
-			}
-			return errors.New("window_still_open：桌面窗口未关闭。请先关闭 BlackHole 窗口后重试；未绕过活动检查。")
-		},
-		OnStopped: func() { systray.Quit() },
-		OnRestarted: func(next coremanager.Attachment) {
-			store.publishAttachment(next)
-			go openManagedUI(ctx, bundle.Client, next, port)
-		},
-		OnReleasedForRecovery: func() { systray.Quit() },
-	})
 	// Announce this tray and answer window-initiated lease-release requests.
 	// Releasing here detaches only the tray's own lease and exits the tray;
 	// the initiating window and the Manager keep full authority.
@@ -543,11 +514,9 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 		systray.SetIcon(platformIcon())
 		systray.SetTooltip("BlackHole")
 		open := systray.AddMenuItem("打开 BlackHole", "打开共享 Core 的 Web 窗口")
-		systray.AddSeparator()
-		// Core maintenance (restart/stop/transaction recovery) lives in the
-		// settings page, not the tray: the tray keeps daily-driver actions only.
-		update := systray.AddMenuItem("检查更新…", "安全下载并安装新版 Desktop 与 Core")
-		startAutomaticUpdateChecks(ctx, bundle, update)
+		// Updates and Core maintenance live in the settings page; the tray
+		// keeps daily-driver actions only. The version check runs silently.
+		startBackgroundUpdateChecks(ctx, bundle)
 		var auto *systray.MenuItem
 		var autoCh <-chan struct{}
 		if bundle.Environment == "production" {
@@ -562,9 +531,8 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 			systray.Quit()
 		})
 		go func() { <-ctx.Done(); desktopLog("tray quit: lease context done"); systray.Quit() }()
-		go watchManagedTrayActions(ctx, trayActionChannels{open: open.ClickedCh, update: update.ClickedCh, auto: autoCh, quit: quit.ClickedCh}, trayActionHandlers{
+		go watchManagedTrayActions(ctx, trayActionChannels{open: open.ClickedCh, auto: autoCh, quit: quit.ClickedCh}, trayActionHandlers{
 			onOpen:   func() { go openManagedUI(ctx, bundle.Client, keeper.current(), port) },
-			onUpdate: func() { go checkAndOfferUpdate(ctx, bundle, coordinator.StopForUpdate) },
 			onAuto: func() {
 				if auto == nil {
 					return
@@ -586,11 +554,11 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 }
 
 type trayActionChannels struct {
-	open, update, auto, quit <-chan struct{}
+	open, auto, quit <-chan struct{}
 }
 
 type trayActionHandlers struct {
-	onOpen, onUpdate, onAuto, onQuit func()
+	onOpen, onAuto, onQuit func()
 }
 
 // watchManagedTrayActions dispatches managed-tray clicks. Quit stays local
@@ -608,8 +576,6 @@ func watchManagedTrayActions(ctx context.Context, channels trayActionChannels, h
 			return
 		case <-channels.open:
 			handlers.onOpen()
-		case <-channels.update:
-			handlers.onUpdate()
 		case <-channels.auto:
 			handlers.onAuto()
 		}

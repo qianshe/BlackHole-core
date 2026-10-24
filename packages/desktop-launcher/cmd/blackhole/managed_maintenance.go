@@ -108,16 +108,19 @@ func (c *maintenanceCoordinator) unknownRequest() string {
 // process attached to. It reports whether the operation completed; a false
 // result is never presented as success by callers.
 func (c *maintenanceCoordinator) Run(ctx context.Context, operation string, revision *int) bool {
-	return c.run(ctx, operation, revision, false)
+	return c.run(ctx, operation, revision, false, false)
 }
 
-// StopForUpdate uses the exact same confirmation, keeper, busy/unknown state
-// and Manager guard, but retains the tray until the external installer helper
-// has been launched. It never force-stops other clients or clears journals.
+// StopForUpdate uses the exact same keeper, busy/unknown state and Manager
+// guard but skips the stop confirmation: the update flow was explicitly
+// started by the user's download-and-install click, and the Manager still
+// refuses active clients or work. It retains the client until the external
+// installer helper has been launched. It never force-stops other clients or
+// clears journals.
 func (c *maintenanceCoordinator) StopForUpdate(ctx context.Context) bool {
-	return c.run(ctx, "stop", nil, true)
+	return c.run(ctx, "stop", nil, true, true)
 }
-func (c *maintenanceCoordinator) run(ctx context.Context, operation string, revision *int, forUpdate bool) bool {
+func (c *maintenanceCoordinator) run(ctx context.Context, operation string, revision *int, forUpdate, skipConfirm bool) bool {
 	if operation != "stop" && operation != "restart" {
 		c.prompts.Error("BlackHole", "maintenance_request_invalid：维护操作类型不被识别，未执行。")
 		return false
@@ -152,7 +155,7 @@ func (c *maintenanceCoordinator) run(ctx context.Context, operation string, revi
 	if revision != nil {
 		text = fmt.Sprintf("应用已保存的配置版本 %d 并重启共享 Core 吗？\n\n版本：%s\n端口：%d\n\n本机 Desktop 的窗口将关闭；其他客户端或正在进行的工作会阻止操作。确认期间配置或目标发生变化会拒绝执行。", *revision, target.DaemonVersion, c.keeper.port)
 	}
-	if !c.prompts.Confirm("BlackHole", text) {
+	if !skipConfirm && !c.prompts.Confirm("BlackHole", text) {
 		return false
 	}
 	c.keeper.pause()

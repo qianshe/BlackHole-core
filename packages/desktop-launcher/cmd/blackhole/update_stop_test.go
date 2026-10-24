@@ -20,19 +20,21 @@ func TestUpdateStopRetainsTrayUntilHelperHandoff(t *testing.T) {
 		t.Fatal("consumed lease detached again")
 	}
 }
-func TestUpdateStopCancellationAndActivityNeverAuthorizeInstaller(t *testing.T) {
-	for _, refuse := range []bool{false, true} {
-		f := &fakeMaintenanceManager{start: testStart()}
-		p := &fakePrompts{confirm: refuse}
-		if refuse {
-			f.maintainErr = errors.New("active_work")
-		}
-		c, _ := testCoordinator(f, p, maintenanceHooks{})
-		if c.StopForUpdate(context.Background()) {
-			t.Fatal("unconfirmed/busy stop allowed")
-		}
-		if !refuse && f.maintainCalls != 0 {
-			t.Fatal("cancelled request sent")
-		}
+func TestUpdateStopIsClickAuthorizedAndRefusedOnActivity(t *testing.T) {
+	// The settings-card download click is the authorization: no confirmation
+	// dialog may block the update stop, so even a refusing prompt proceeds.
+	f := &fakeMaintenanceManager{start: testStart()}
+	p := &fakePrompts{confirm: false}
+	c, k := testCoordinator(f, p, maintenanceHooks{})
+	if !c.StopForUpdate(context.Background()) || f.maintainCalls != 1 {
+		t.Fatal("update stop blocked by a confirmation prompt", f.maintainCalls)
+	}
+	k.release()
+	// A Manager refusal (active work/clients) still denies the installer path.
+	f2 := &fakeMaintenanceManager{start: testStart()}
+	f2.maintainErr = errors.New("active_work")
+	c2, _ := testCoordinator(f2, &fakePrompts{confirm: true}, maintenanceHooks{})
+	if c2.StopForUpdate(context.Background()) {
+		t.Fatal("busy stop allowed")
 	}
 }

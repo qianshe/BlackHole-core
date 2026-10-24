@@ -11,7 +11,6 @@ import (
 
 	"blackhole/desktop-launcher/internal/distribution"
 	"blackhole/desktop-launcher/internal/updatefeed"
-	"fyne.io/systray"
 )
 
 var updateChecks struct {
@@ -31,7 +30,7 @@ func nativeChecker(bundle distribution.Bundle) (updatefeed.Feed, *updatefeed.Che
 	if f.Config.Environment != bundle.Environment || f.Config.CurrentVersion != bundle.Version {
 		return f, nil, "", errors.New("update_environment_mismatch")
 	}
-	root, err := updatefeed.DefaultStageRoot(bundle.Environment)
+	root, err := updatefeed.DefaultStageRoot(f.Config.Environment)
 	if err != nil {
 		return f, nil, "", err
 	}
@@ -44,78 +43,30 @@ func nativeChecker(bundle distribution.Bundle) (updatefeed.Feed, *updatefeed.Che
 	}
 	return f, updateChecks.checker, root, nil
 }
-func updateMenuTitle(s updatefeed.CheckStatus) string {
-	switch s.State {
-	case "available":
-		return "有新版本 " + s.AvailableVersion + "…"
-	case "checking":
-		return "正在检查更新…"
-	case "error":
-		return "检查更新失败，点击重试…"
-	default:
-		return "检查更新…"
-	}
-}
-func startAutomaticUpdateChecks(ctx context.Context, bundle distribution.Bundle, item *systray.MenuItem) {
+
+// startBackgroundUpdateChecks runs the metadata-only daily check silently so
+// the settings card can surface a new version without a manual click. It
+// never downloads or installs; the preferences file can disable it.
+func startBackgroundUpdateChecks(ctx context.Context, bundle distribution.Bundle) {
 	_, checker, root, err := nativeChecker(bundle)
 	if err != nil {
-		return
-	} // No configured release source: never make a network request.
-	watchUpdateTransfer(ctx, root, bundle.Version, checker, item)
+		return // No configured release source: never make a network request.
+	}
 	var p struct {
 		Automatic bool `json:"automatic"`
 	}
-	preference := filepath.Join(root, "preferences.json")
 	p.Automatic = true
-	if raw, e := os.ReadFile(preference); e == nil && len(raw) <= 1024 {
+	if raw, e := os.ReadFile(filepath.Join(root, "preferences.json")); e == nil && len(raw) <= 1024 {
 		_ = json.Unmarshal(raw, &p)
 	}
-	automatic := systray.AddMenuItemCheckbox("自动检查更新", "只检查版本，不自动下载或重启", p.Automatic)
-	var cancel context.CancelFunc
-	run := func() {
-		var sub context.Context
-		sub, cancel = context.WithCancel(ctx)
-		go checker.Run(sub, func(s updatefeed.CheckStatus) { item.SetTitle(updateMenuTitle(s)) })
+	if !p.Automatic {
+		return
 	}
-	item.SetTitle(updateMenuTitle(checker.Status()))
-	if p.Automatic {
-		run()
-	}
-	go func() {
-		defer func() {
-			if cancel != nil {
-				cancel()
-			}
-		}()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-automatic.ClickedCh:
-				next := !automatic.Checked()
-				raw, _ := json.Marshal(struct {
-					Automatic bool `json:"automatic"`
-				}{next})
-				if os.MkdirAll(root, 0700) != nil || os.WriteFile(preference, raw, 0600) != nil {
-					showError("BlackHole", "无法保存自动更新检查设置。")
-					continue
-				}
-				if cancel != nil {
-					cancel()
-					cancel = nil
-				}
-				if next {
-					automatic.Check()
-					run()
-				} else {
-					automatic.Uncheck()
-				}
-			}
-		}
-	}()
+	go checker.Run(ctx, func(updatefeed.CheckStatus) {})
 }
 
-// Native bridge exposes status only and an explicitly requested check/offer.
+// Native bridge exposes status, an explicitly requested check, the
+// page-authorized download-and-install flow and download cancellation.
 // It never accepts URL/path/install arguments from a rendered page.
 func desktopUpdateAction(action string) (string, error) {
 	bundle, err := distribution.Locate()
@@ -140,6 +91,18 @@ func desktopUpdateAction(action string) (string, error) {
 		updatefeed.RequestDownloadCancel(root, bundle.Version)
 	case "check":
 		go checker.Check(context.Background(), true)
+		raw, _ := json.Marshal(map[string]any{"state": "checking", "currentVersion": bundle.Version})
+		return string(raw), nil
+	case "download":
+		// The window process owns a maintenance coordinator bound to the exact
+		// Core incarnation; a click in the Desktop's own native-hosted UI is
+		// the authorization the tray click used to provide.
+		stopForUpdate := func(context.Context) bool { return false }
+		if windowCoordinator != nil {
+			stopForUpdate = windowCoordinator.StopForUpdate
+		}
+		finished := func() { closeManagedWindow() }
+		go runDesktopUpdate(stopForUpdate, finished)
 		raw, _ := json.Marshal(map[string]any{"state": "checking", "currentVersion": bundle.Version})
 		return string(raw), nil
 	default:

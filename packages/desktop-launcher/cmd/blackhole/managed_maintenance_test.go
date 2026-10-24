@@ -281,24 +281,23 @@ func TestLeaseKeeperPauseSkipsRenewal(t *testing.T) {
 	}
 }
 
-func TestManagedTrayActionsDispatchUpdateAndTerminalQuit(t *testing.T) {
+func TestManagedTrayActionsDispatchAutostartAndTerminalQuit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	openCh, updateCh, autoCh, quitCh := make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)
-	channels := trayActionChannels{open: openCh, update: updateCh, auto: autoCh, quit: quitCh}
+	openCh, autoCh, quitCh := make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)
+	channels := trayActionChannels{open: openCh, auto: autoCh, quit: quitCh}
 	var order []string
 	openCh <- struct{}{}
 	go watchManagedTrayActions(ctx, channels, trayActionHandlers{
-		onOpen:   func() { order = append(order, "open"); updateCh <- struct{}{} },
-		onUpdate: func() { order = append(order, "update"); autoCh <- struct{}{} },
-		onAuto:   func() { order = append(order, "auto"); quitCh <- struct{}{} },
-		onQuit:   func() { order = append(order, "quit") },
+		onOpen: func() { order = append(order, "open"); autoCh <- struct{}{} },
+		onAuto: func() { order = append(order, "auto"); quitCh <- struct{}{} },
+		onQuit: func() { order = append(order, "quit") },
 	})
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && strings.Join(order, ",") != "open,update,auto,quit" {
+	for time.Now().Before(deadline) && strings.Join(order, ",") != "open,auto,quit" {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := strings.Join(order, ","); got != "open,update,auto,quit" {
+	if got := strings.Join(order, ","); got != "open,auto,quit" {
 		t.Fatal(got)
 	}
 }
@@ -309,14 +308,14 @@ func TestManagedTrayWiringUsesCoordinatorNotLegacyStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(body)
-	for _, want := range []string{"检查更新…", "newMaintenanceCoordinator", "watchManagedTrayActions"} {
+	for _, want := range []string{"打开 BlackHole", "startBackgroundUpdateChecks", "watchManagedTrayActions"} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("managed tray wiring missing %s", want)
 		}
 	}
 	// Core maintenance lives in the settings page; the tray keeps daily
 	// actions only. Keep the menu from regrowing maintenance entries.
-	for _, removed := range []string{"重启共享 Core", "停止共享 Core", "检查/恢复维护事务"} {
+	for _, removed := range []string{"重启共享 Core", "停止共享 Core", "检查/恢复维护事务", "检查更新…", "取消更新下载"} {
 		if strings.Contains(source, removed) {
 			t.Fatalf("managed tray regained the maintenance entry %s", removed)
 		}

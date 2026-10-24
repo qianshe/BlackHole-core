@@ -9,7 +9,8 @@ export type DesktopUpdateStatus = {
   checkedAt?: string;
   download?: DesktopDownloadStatus;
 };
-type UpdateAction = 'status' | 'check' | 'cancel-download';
+// 'download' is the page-authorized download-and-install flow; the click in the Desktop's own native-hosted settings UI is the authorization.
+type UpdateAction = 'status' | 'check' | 'download' | 'cancel-download';
 type UpdateBridge = (action: UpdateAction) => Promise<string>;
 function parseDownload(raw: unknown): DesktopDownloadStatus | undefined {
   if (!raw || typeof raw !== 'object') return;
