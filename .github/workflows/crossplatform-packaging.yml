@@ -65,10 +65,12 @@ jobs:
           mkdir -p staging
           node scripts/assemble-core-runtime.mjs --output staging/layout --without-node --platform "$BH_PACKAGE_PLATFORM" --arch "$BH_PACKAGE_ARCH"
       - name: Sign Core archive with the persistent CI test key
+        env:
+          BH_CROSSPLATFORM_TEST_KEY: ${{ secrets.BH_CROSSPLATFORM_TEST_KEY }}
         run: |
           version=$(node -p "require('./package.json').version")
           build_id="ci-${{ matrix.platform }}-${{ matrix.arch }}-${GITHUB_SHA:0:7}"
-          printf '%s' "$BH_CROSSPLATFORM_TEST_KEY" > staging/ci-key.pem
+          printf '%s\n' "$BH_CROSSPLATFORM_TEST_KEY" > staging/ci-key.pem
           node scripts/package-core-runtime.mjs \
             --input staging/layout \
             --output "staging/core-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}.zip" \
