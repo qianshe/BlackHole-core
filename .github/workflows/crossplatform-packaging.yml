@@ -58,7 +58,8 @@ jobs:
           pnpm build
           pnpm --dir packages/web build
           node packages/host-runtime/build.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY"
-          node packages/vscode/esbuild.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY"
+          # esbuild resolves the freshness root from cwd: it must run from packages/vscode.
+          cd packages/vscode && node esbuild.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY"
       - name: Assemble platform Core layout
         run: |
           mkdir -p staging
