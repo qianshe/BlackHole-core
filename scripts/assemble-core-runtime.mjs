@@ -40,16 +40,18 @@ const buildInputs = verifyCoreBundleFreshness(ROOT);
 const copyFile = (from, to) => { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(from, to); };
 const copyTree = (from, to) => fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: true });
 fs.mkdirSync(destination, { recursive: false });
-// The handoff helper is a member of the signed candidate Core and is built
-// for the archive's target platform. Never fetch an external helper or reuse
-// one from an unverified location.
-const handoffName = platform === 'win32' ? 'core-handoff.exe' : 'core-handoff';
-const handoff = path.join(destination, 'host', handoffName);
-fs.mkdirSync(path.dirname(handoff), { recursive: true });
-execFileSync('go', ['-C', path.join(ROOT, 'packages', 'desktop-launcher'), 'build', '-trimpath', '-ldflags=-s -w', '-o', handoff, './cmd/core-handoff'], {
-  cwd: ROOT, windowsHide: true, timeout: 120_000, stdio: 'pipe',
-  env: { ...process.env, GOOS: goosMap[platform], GOARCH: goarchMap[arch], CGO_ENABLED: '0' },
-});
+// The Windows handoff executable is a member of the signed candidate Core.
+// It is only meaningful on Windows: the legacy handoff path refuses other
+// platforms before touching the helper, so non-Windows archives omit it.
+// Never fetch an external helper or reuse one from an unverified location.
+if (platform === 'win32') {
+  const handoff = path.join(destination, 'host', 'core-handoff.exe');
+  fs.mkdirSync(path.dirname(handoff), { recursive: true });
+  execFileSync('go', ['-C', path.join(ROOT, 'packages', 'desktop-launcher'), 'build', '-trimpath', '-ldflags=-s -w', '-o', handoff, './cmd/core-handoff'], {
+    cwd: ROOT, windowsHide: true, timeout: 120_000, stdio: 'pipe',
+    env: { ...process.env, GOOS: goosMap[platform], GOARCH: goarchMap[arch], CGO_ENABLED: '0' },
+  });
+}
 if (!hostProvided) {
   copyFile(path.resolve(nodeExe), path.join(destination, 'node', 'node.exe'));
   copyFile(path.resolve(nodeLicense), path.join(destination, 'licenses', 'node-LICENSE'));
