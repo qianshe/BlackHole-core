@@ -304,7 +304,7 @@ export function sendRemotePage(req: Request, res: Response): boolean {
 }
 
 export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: LocalWebState = createLocalWebState(deps.machineState), control?: Router): LocalWebState {
-  const accountUser = () => deps.account?.currentUserId() ?? null;
+  const accountUser = () => deps.account?.currentVerifiedUserId() ?? null;
   const accountGate = () => deps.account?.storage === 'available';
   deps.account?.onSignOut(() => state.sessions.revokeAll());
   // ─── phone access (plan 6.13 R) ───────────────────────────
@@ -370,6 +370,10 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(503).json({ error: 'web_assets_missing' });
       return;
     }
+    if (!accountUser()) {
+      res.status(401).json({ error: 'account_required' });
+      return;
+    }
     const { secret, expiresAt } = state.tickets.issue(TICKET_TTL_MS);
     res.json({ ticket: secret, path: '/ui/', expires_at: iso(expiresAt) });
   });
@@ -399,10 +403,30 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   });
   app.use('/ui', ui);
 
+  // The native host loads its own welcome document, not the browser entry.
+  // COOP creates a new browsing-context group in this WebView2 runtime and
+  // drops its host bindings. It is a browser opener-isolation policy, not an
+  // account gate: keep it on / and all Web APIs, but do not apply it to this
+  // native document. CSP, loopback/proxy checks, frame denial and all account
+  // and cookie/CSRF checks remain identical. This route grants no privileges.
+  app.get('/desktop/', loopbackOnly, securityHeaders, (_req, res) => {
+    const dir = resolveWebDir();
+    if (!dir) { res.status(503).type('text/plain').send('Desktop UI assets are missing.'); return; }
+    res.removeHeader('Cross-Origin-Opener-Policy');
+    res.sendFile('index.html', { root: dir, dotfiles: 'deny', etag: false, lastModified: false });
+  });
+
   // ─── read-only API ─────────────────────────────────────────
   const api = Router();
   api.use(loopbackOnly, securityHeaders);
   api.use(express.json({ limit: 64 * 1024 }));
+
+  // Only status is readable without a Web session. No account identifiers,
+  // secrets, installer choices, or sign-in actions are exposed here.
+  api.get('/auth/status', (req, res) => {
+    if (!sameOriginClient(req)) { res.status(403).json({ error: 'origin_rejected' }); return; }
+    res.json({ state: deps.account?.webAuthStatus() ?? 'unavailable' });
+  });
 
   api.post('/auth/exchange', (req, res) => {
     const origin = req.headers.origin;
@@ -410,12 +434,14 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       res.status(403).json({ error: 'origin_rejected' });
       return;
     }
+    const user = accountUser();
+    if (!user) { res.status(401).json({ error: 'account_required' }); return; }
     const ticket = (req.body as { ticket?: unknown } | undefined)?.ticket;
     if (state.tickets.consume(ticket) === null) {
       res.status(401).json({ error: 'ticket_invalid' });
       return;
     }
-    const { secret, expiresAt } = state.sessions.issue(accountUser());
+    const { secret, expiresAt } = state.sessions.issue(user);
     res.setHeader(
       'Set-Cookie',
       `${WEB_COOKIE}=${secret}; Path=/web-api; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(WEB_SESSION_TTL_MS / 1000)}`,
@@ -435,7 +461,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return;
     }
     const user = accountUser();
-    if (!accountGate() || !user) {
+    if (!user) {
       res.status(401).json({ error: 'account_required' });
       return;
     }
@@ -445,78 +471,22 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     res.json({ ok: true, expires_at: iso(expiresAt), csrf: csrfFor(state, secret) });
   });
 
-  // ── browser login (no session yet): the machine's cloud account is the key ──
-  // Starting one opens the cloud sign-in in the system browser; only the account
-  // this machine already holds is accepted (any account when it holds none).
-  const attempts = new Map<string, { job: number; exp: number }>();
-  let loginHits: number[] = [];
-  api.post('/auth/login', (req, res) => {
-    if (req.headers[CLIENT_HEADER] !== '1' || req.headers.origin !== `http://${hostOf(req)}`) {
-      res.status(403).json({ error: 'origin_rejected' });
-      return;
-    }
-    const now = Date.now();
-    loginHits = loginHits.filter((t) => now - t < 60_000);
-    if (loginHits.length >= 5) {
-      res.status(429).json({ error: 'rate_limited' });
-      return;
-    }
-    loginHits.push(now);
-    if (!accountGate()) {
-      res.status(503).json({ error: 'account_unavailable' });
-      return;
-    }
-    try {
-      const job = deps.account!.beginSignIn({ sameAccount: true });
-      for (const [k, a] of attempts) if (a.exp <= now) attempts.delete(k);
-      const attempt = randomBytes(32).toString('base64url');
-      attempts.set(attempt, { job: job.id, exp: now + 11 * 60_000 });
-      res.status(202).json({ attempt });
-    } catch (e) {
-      res.status(e instanceof AccountError ? e.status : 500).json({ error: accountErrorCode(e) });
-    }
-  });
-  api.get('/auth/login/:attempt', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    if (!sameOriginClient(req)) {
-      res.status(403).json({ error: 'origin_rejected' });
-      return;
-    }
-    const a = attempts.get(req.params.attempt);
-    if (!a || a.exp <= Date.now() || !deps.account) {
-      res.status(404).json({ error: 'attempt_unknown' });
-      return;
-    }
-    const job = deps.account.signInState();
-    if (job.state === 'idle' || job.id !== a.job) {
-      attempts.delete(req.params.attempt);
-      res.json({ state: 'failed', error: 'superseded' });
-      return;
-    }
-    if (job.state === 'running') {
-      res.json({ state: 'running' });
-      return;
-    }
-    attempts.delete(req.params.attempt);
-    const user = accountUser();
-    if (job.state === 'failed' || !user) {
-      res.json({ state: 'failed', error: job.state === 'failed' ? job.error : 'account_required' });
-      return;
-    }
-    const { secret, expiresAt } = state.sessions.issue(user);
-    res.setHeader('Set-Cookie', `${WEB_COOKIE}=${secret}; Path=/web-api; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(WEB_SESSION_TTL_MS / 1000)}`);
-    deps.events.append(null, 'local_web_login', { via: 'account' });
-    res.json({ state: 'done', expires_at: iso(expiresAt), csrf: csrfFor(state, secret) });
+  // Local Web never initiates cloud login. A browser may only wait for the
+  // Shared Core account; Desktop/VS Code invoke native host login actions.
+  // Fail explicitly instead of allowing the cookie middleware to disguise
+  // this removed capability as an ordinary login failure.
+  api.all(/^\/auth\/login(?:\/.*)?$/, (_req, res) => {
+    res.status(410).json({ error: 'native_login_required' });
   });
 
-  // Login-page setup summary: same-origin loopback only, no addresses, paths or credentials.
-  // Runtime online/offline does not affect this result; a saved intent suppresses first-install UI.
+  // Connection setup is available to an authenticated Desktop welcome only.
   api.get('/auth/setup', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!sameOriginClient(req)) {
       res.status(403).json({ error: 'origin_rejected' });
       return;
     }
+    if (!accountUser()) { res.status(401).json({ error: 'account_required' }); return; }
     try {
       const values = deps.settings?.get().values;
       if (!values) {
@@ -585,11 +555,13 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     next();
   });
 
-  // No business data until this machine's cloud account is signed in. Skipped only
-  // where the daemon cannot hold an account at all (no OS credential store).
-  const GATE_FREE = new Set(['/auth/session', '/auth/logout', '/account', '/account/sign-in', '/account/sign-in/cancel']);
+  // Business routes require a Core-confirmed cloud account, without any
+  // no-secret-storage bypass. Expired or unverified identities fail closed.
+  const GATE_FREE = new Set(['/auth/session', '/auth/logout', '/account']);
   api.use((req, res, next) => {
-    if (accountGate() && accountUser() === null && !GATE_FREE.has(req.path)) {
+    // The absence of a secure credential store is not an authentication
+    // bypass: only explicit welcome/account routes may be used before login.
+    if (accountUser() === null && !GATE_FREE.has(req.path)) {
       res.status(401).json({ error: 'account_required' });
       return;
     }
@@ -600,6 +572,9 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   // the channel watchdog (the page elects one tab per browser). Local Web only; the
   // phone surface has no such route. The session is re-checked on every ping.
   api.get('/presence', (req, res) => {
+    // This route has already passed account/cookie checks. Presence is a
+    // reconnectable stream, not a long-running write or Agent handler.
+    deps.maintenanceGate?.markReconnectableResponse(res);
     const cookie = res.locals.webCookie as string;
     const present = (deps.webPresence ??= new Set());
     const entry = {};
@@ -630,7 +605,7 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   api.get('/auth/session', (_req, res) => {
     res.json({
       authenticated: true,
-      account_required: accountGate() && accountUser() === null,
+      account_required: accountUser() === null,
       expires_at: iso(res.locals.webExpiresAt as number),
       version: VERSION,
       csrf: csrfFor(state, res.locals.webCookie as string),
@@ -675,9 +650,16 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     const session = deps.sessions.get(id);
     if (!session) { res.status(404).json({ error: 'session_not_found' }); return; }
     res.setHeader('Cache-Control', 'no-store');
-    const turnAt = deps.courier?.messageStore?.latestUserAt(id) ?? null;
+    const userAt = deps.courier?.messageStore?.latestUserAt(id) ?? null;
+    const guide = deps.toolCalls.latestGuideCall(id);
+    // Paired web agents still use the latest user send. A direct/unpaired session has no
+    // ongoing send markers, so a newer guide invocation starts its next local work round.
+    const useGuide = guide !== null && (userAt === null || (deps.courier?.link(id) !== 'paired' && guide.at >= userAt));
+    const turnAt = useGuide ? guide.at : userAt;
     if (turnAt === null) { res.json({ files: [], pending: 0, uncertain: 0, incomplete: false, turnAt: null }); return; }
-    const rows = deps.toolCalls.listEditorCallsAfter(id, turnAt, 501);
+    const rows = useGuide
+      ? deps.toolCalls.listEditorCallsAfterGuide(id, guide!.seq, 501)
+      : deps.toolCalls.listEditorCallsAfter(id, turnAt, 501);
     if (rows.length > 500) { res.json({ files: [], pending: 0, uncertain: 0, incomplete: true, turnAt }); return; }
     try { res.json({ ...buildTurnDiff(session, rows), incomplete: false, turnAt }); }
     catch { res.status(500).json({ error: 'turn_diff_failed' }); }
@@ -857,10 +839,10 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     if (!deps.account) { res.status(503).json({ error: 'account_unavailable' }); return; }
     void deps.account.view().then((v) => res.json(v), (e) => accountFail(res, e));
   });
-  api.post('/account/sign-in', (_req, res) => {
-    try { res.json(deps.account ? deps.account.beginSignIn({ sameAccount: true }) : { state: 'idle' }); } catch (e) { accountFail(res, e); }
-  });
-  api.post('/account/sign-in/cancel', (_req, res) => { res.json(deps.account?.cancelSignIn() ?? { state: 'idle' }); });
+  // Web Console has no authority to start/cancel OAuth. Desktop and VS Code
+  // use the native control API; preserve an explicit compatibility error.
+  api.post('/account/sign-in', (_req, res) => res.status(410).json({ error: 'native_login_required' }));
+  api.post('/account/sign-in/cancel', (_req, res) => res.status(410).json({ error: 'native_login_required' }));
   api.post('/account/sign-out', (_req, res) => {
     if (!deps.account) { res.status(503).json({ error: 'account_unavailable' }); return; }
     void deps.account.call('signOut', []).then(() => deps.account!.view()).then((v) => res.json(v), (e) => accountFail(res, e));
@@ -883,6 +865,16 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   };
   api.post('/account/refresh', (_req, res) => billing(res, async (_uid, a) => { await a.call('check', []); return a.view(); }));
   api.get('/account/plans', (_req, res) => billing(res, (uid, a) => a.call('billingPlans', [uid])));
+  api.get('/account/membership', (_req, res) => billing(res, (uid, a) => a.call('membershipCatalogue', [uid])));
+  api.get('/account/membership/status', (_req, res) => billing(res, (uid, a) => a.call('membershipStatus', [uid])));
+  api.post('/account/membership/checkout', (req, res) => {
+    const sku = req.body?.sku;
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).join(',') !== 'sku' || typeof sku !== 'string' || !sku || sku.length > 32 || /[\u0000-\u0020\u007f]/.test(sku)) { res.status(400).json({ error: 'invalid_input' }); return; }
+    billing(res, async (uid, a) => {
+      const result = await a.call('membershipCheckout', [uid, sku]) as { checkoutUrl: string; expiresAt: number };
+      return { opened: await a.openCheckout(result.checkoutUrl), expiresAt: result.expiresAt };
+    });
+  });
   api.get('/account/orders', (_req, res) => billing(res, (uid, a) => a.call('billingOrders', [uid])));
   api.get('/account/refundable', (req, res) => {
     const cursor = req.query.cursor === undefined ? undefined : str(req.query.cursor);
@@ -924,6 +916,9 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
   // ─── stop the background service (plan 6.11 B1) ───────────────────────
   // Same graceful path as VS Code "Stop Daemon": respond, then close channel, sessions and DB.
   api.post('/daemon/stop', (req, res) => {
+    // A browser confirmation is not a Manager lease/activity decision. Managed
+    // Core must use the same protected maintenance path as native clients.
+    if (deps.runtimeIdentity) { res.status(409).json({ error: 'managed_stop_requires_manager' }); return; }
     if ((req.body as { confirm?: unknown } | undefined)?.confirm !== true) {
       res.status(400).json({ error: 'invalid_input', message: 'confirm must be true' });
       return;

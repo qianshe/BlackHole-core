@@ -13,6 +13,7 @@ export const ACCOUNT_API_VERSION = 1;
 const CALLS = {
   view: 0, check: 0, restore: 0, signOut: 0,
   redeemCard: 2,
+  membershipCatalogue: 1, membershipStatus: 1, membershipCheckout: 2,
   billingPlans: 1, billingOrders: 1, billingRefundableOrders: 2, createBillingOrder: 3,
   billingOrder: 2, reconcileBillingOrder: 2, billingCheckoutLink: 2, billingRefundQuote: 2, refundBillingOrder: 4,
 } as const;
@@ -50,8 +51,19 @@ export class AccountService {
   private chain: Promise<unknown> = Promise.resolve();
   /** Last login seen by syncGate(); lets the Local Web check its sessions without touching storage. */
   private signedIn: { userId: string; expiresAt: number } | null = null;
+  // Web is granted only after this Core has actually verified the cloud account.
+  // A saved credential is not proof; never persist this grant across process boots.
+  private webVerified: { userId: string; expiresAt: number } | null = null;
+  private webPhase: 'checking' | 'verified' | 'saved' | 'logged_out' | 'unavailable' = 'checking';
   private jobSeq = 0;
   private readonly signOutListeners: (() => void)[] = [];
+  private observationTimer?: ReturnType<typeof setInterval>;
+  private observationPending?: Promise<unknown>;
+  private stopped = false;
+  private readonly lifetime = new AbortController();
+  private starting?: Promise<void>;
+  private stopping?: Promise<void>;
+  private readonly views = new Set<Promise<unknown>>();
 
   constructor(private readonly deps: AccountDeps) {
     deps.gate?.setProver(async (challenge, sessionId) => {
@@ -116,30 +128,80 @@ export class AccountService {
 
   /** Record the signed-in account and feed the entitlement gate from it. Never throws. */
   async syncGate(): Promise<void> {
+    if (this.stopped) return;
     const c = this.maybeClient();
-    if (!c) return;
+    if (!c) { this.webVerified = null; this.webPhase = 'unavailable'; return; }
     try {
       const id = await c.gateIdentity();
+      const view = await c.view(); // cached status; never starts another network check
+      if (this.stopped) return;
       this.signedIn = id?.kind === 'login' ? { userId: id.userId, expiresAt: id.expiresAt } : null;
+      this.webVerified = view.state === 'verified' && id?.kind === 'login' && view.userId === id.userId
+        ? { userId: id.userId, expiresAt: id.expiresAt } : null;
+      this.webPhase = view.state;
       this.deps.gate?.setIdentity(id);
     } catch {
-      /* storage hiccup: keep the previous identity */
+      // Fail closed for browser sessions even if entitlement recovery preserves
+      // its previous identity through an intermittent secret-storage failure.
+      this.webVerified = null;
+      this.webPhase = 'unavailable';
     }
   }
 
   /** Startup: bounded read-only recovery, then publish identity to the gate. */
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return this.starting ??= this.startOnce();
+  }
+
+  private async startOnce(): Promise<void> {
+    // Authentication belongs to Core. A waiting/minimized Desktop or a closed
+    // VS Code view must not stop read-only renewal and recovery after backoff.
+    // CloudAuthClient.observe owns single-flight and request backoff; this timer
+    // also renews before the 60-second snapshot deadline when no UI polls.
+    this.observationTimer ??= setInterval(() => {
+      if (this.stopped || this.observationPending) return;
+      const pending = this.view().catch(() => undefined).finally(() => {
+        if (this.observationPending === pending) this.observationPending = undefined;
+      });
+      this.observationPending = pending;
+    }, 15_000);
+    this.observationTimer.unref();
     const c = this.maybeClient();
     if (!c) {
+      this.webPhase = 'unavailable';
       this.deps.log(`account: cannot keep credentials (${this.deps.secrets.kind === 'unavailable' ? this.deps.secrets.reason : ''}); signing in is unavailable`);
       return;
     }
-    await c.restore().catch(() => undefined);
+    await c.restore(this.lifetime.signal).catch(() => undefined);
     await this.syncGate();
   }
 
-  async view(): Promise<AuthView & { storage: 'available' | 'unavailable'; signIn: SignInState }> {
-    const base: AuthView = this.maybeClient() ? await this.need().view().catch(() => ({ state: 'unavailable' as const })) : { state: 'unavailable' };
+  /** Cancel and drain account IO before daemon storage is closed. */
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.stopped = true;
+    if (this.observationTimer) clearInterval(this.observationTimer);
+    this.observationTimer = undefined;
+    this.lifetime.abort();
+    this.abort?.abort();
+    this.stopping = Promise.allSettled([
+      this.starting, this.observationPending, this.chain, ...this.views,
+    ]).then(() => undefined);
+    return this.stopping;
+  }
+
+  view(): Promise<AuthView & { storage: 'available' | 'unavailable'; signIn: SignInState }> {
+    if (this.stopped) return Promise.resolve({ state: 'unavailable', storage: this.storage, signIn: this.job });
+    const pending = this.observedView().finally(() => this.views.delete(pending));
+    this.views.add(pending);
+    return pending;
+  }
+
+  private async observedView(): Promise<AuthView & { storage: 'available' | 'unavailable'; signIn: SignInState }> {
+    // All native windows and the Core timer share one observer and its backoff.
+    const base: AuthView = this.maybeClient() ? await this.need().observe(this.lifetime.signal).catch(() => ({ state: 'unavailable' as const })) : { state: 'unavailable' };
+    await this.syncGate();
     return { ...base, storage: this.storage, signIn: this.job };
   }
 
@@ -147,6 +209,17 @@ export class AccountService {
   currentUserId(now = Date.now()): string | null {
     const s = this.signedIn;
     return s && s.expiresAt * 1000 > now ? s.userId : null;
+  }
+
+  /** Browser-only status: no cloud requests, identity, ticket or credentials. */
+  webAuthStatus(): 'checking' | 'verified' | 'saved' | 'logged_out' | 'unavailable' {
+    return this.currentVerifiedUserId() ? 'verified' : this.webPhase === 'verified' ? 'logged_out' : this.webPhase;
+  }
+
+  /** A Web cookie requires a verified Core identity, not a saved token. */
+  currentVerifiedUserId(now = Date.now()): string | null {
+    const value = this.webVerified;
+    return value && value.expiresAt * 1000 > now ? value.userId : null;
   }
 
   /** Called after an explicit sign-out (never for a lapsed login). */
@@ -169,6 +242,7 @@ export class AccountService {
    * account is accepted, so a Web login can never swap the machine's account.
    */
   beginSignIn(opts: { sameAccount?: boolean } = {}): SignInState & { state: 'running' } {
+    if (this.stopped) throw new AccountError('account_unavailable', 503);
     const c = this.need();
     if (this.job.state === 'running') throw new AccountError('busy', 409);
     const abort = new AbortController();
@@ -177,9 +251,12 @@ export class AccountService {
     const expect = opts.sameAccount ? this.lastUserId() ?? undefined : undefined;
     const job = { state: 'running' as const, id, startedAt: Date.now() };
     this.job = job;
+    // The daemon exclusively opens the system browser and retains PKCE state;
+    // neither browser Web nor Desktop supplies or receives an OAuth URL.
     void this.exclusive(() => c.signIn(abort.signal, expect))
       .then(async () => {
         await this.syncGate();
+        if (!this.currentVerifiedUserId()) throw new AccountError('verification_required', 503);
         if (this.abort === abort) this.job = { state: 'done', id, finishedAt: Date.now() };
       })
       .catch((e) => {
@@ -202,15 +279,21 @@ export class AccountService {
   }
 
   async call(method: string, args: unknown): Promise<unknown> {
+    if (this.stopped) throw new AccountError('account_unavailable', 503);
     if (!Object.hasOwn(CALLS, method)) throw new AccountError('unknown_method', 400);
     const list = args === undefined ? [] : args;
     if (!Array.isArray(list) || list.length > CALLS[method as AccountCall]
       || list.some((v) => v !== null && v !== undefined && (typeof v !== 'string' || v.length > 1024))) {
       throw new AccountError('invalid_input', 400);
     }
+    // The VS Code adapter uses the native call surface for view(). Route it
+    // through the same Core observer as GET /account, not the expiring raw cache.
     const c = this.need();
+    if (method === 'view') return this.view();
     const fn = (c as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[method]!;
-    const run = () => fn.apply(c, list.map((v) => (v === null ? undefined : v)));
+    const run = () => method === 'check' || method === 'restore'
+      ? c[method](this.lifetime.signal)
+      : fn.apply(c, list.map((v) => (v === null ? undefined : v)));
     const result = method === 'signOut' ? await this.exclusive(run) : await run();
     if (CHANGES_GATE.has(method)) await this.syncGate();
     if (method === 'signOut') for (const fn of this.signOutListeners) fn();

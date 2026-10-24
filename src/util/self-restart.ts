@@ -53,6 +53,7 @@ export async function waitForPredecessor(timeoutMs = 15_000): Promise<void> {
 }
 
 interface RestartDeps {
+  runtimeIdentity?: { lifecycleState: string };
   shutdown?: () => Promise<void>;
   events: { append(sessionId: string | null, type: string, data: Record<string, unknown>): unknown };
   log: (line: string) => void;
@@ -64,6 +65,7 @@ interface RestartDeps {
  * started first; if that fails this daemon keeps running.
  */
 export async function restartSelf(deps: RestartDeps, source: string, spawnFn?: SpawnFn): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (deps.runtimeIdentity) return { ok: false, error: 'managed_restart_requires_manager' };
   try {
     await spawnReplacement(spawnFn);
   } catch (e) {

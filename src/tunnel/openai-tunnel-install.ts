@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { resolveDataPaths } from '../data-paths.js';
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
@@ -288,7 +289,7 @@ export async function initializeOpenAITunnelClient(
     platform: process.platform,
     arch: process.arch,
     pathValue: process.env.PATH ?? process.env.Path ?? '',
-    root: path.join(homedir(), '.blackhole', 'bin', 'tunnel-client-runtime'),
+    root: path.join(resolveDataPaths().bin, 'tunnel-client-runtime'),
     run: runFile,
     fetch: globalThis.fetch,
     ...overrides,

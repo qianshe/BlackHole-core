@@ -88,6 +88,7 @@ export function mountMcp(app: Express, deps: DaemonDeps): ProtocolCleaner {
       const runtime = rt;
       rt.beforeExecute = async () => {
         await deps.entitlement?.ensure();
+        if (deps.maintenanceGate?.accepting === false) throw new Error('managed_core_stopping');
         // Admission happens after queue/approval waits. Old runtime references
         // must never respawn a shell after revoke or a permission-mode change.
         const current = deps.sessions.get(row.id);

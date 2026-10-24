@@ -21,8 +21,29 @@ import type { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import type { ProxyRuntime } from './proxy/tool.js';
 import { resolveConnectionRoutes } from './connection/resolve.js';
 
+
+export interface RuntimeIdentity {
+  runtimeId: string;
+  runtimeVersion: string;
+  buildId: string;
+  descriptorHash: string;
+  dataRootId: string;
+  webBuildId: string;
+  coreProtocol: { min: number; max: number };
+  environment: 'test' | 'production';
+  cloudOrigin: string;
+  lifecycleState: 'managed' | 'quiescing' | 'draining' | 'stopping';
+}
 export interface DaemonDeps {
   daemonId?: string;
+  maintenanceGate?: import('./lifecycle/managed-control.js').MaintenanceGate;
+  managedControl?: import('./lifecycle/managed-control.js').ManagedControl;
+  /** Shared guarded idle predicate for health reporting and signed maintenance. */
+  maintenanceIdle?: () => boolean;
+  /** Software-update readiness excludes passive page presence, not real work. */
+  upgradeReadiness?: () => { idle: boolean; blockers: string[] };
+  /** Manager-supplied identity from an already verified Core descriptor. */
+  runtimeIdentity?: RuntimeIdentity;
   /** Browser Courier extension connection (sends text into bound web chats). */
   courier?: import('./courier/hub.js').CourierHub;
   /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
@@ -55,6 +76,7 @@ export interface DaemonDeps {
   settings?: SettingsStore;
   /** Settings values this daemon started with (restart-only keys are compared against them). */
   startedSettings?: Settings;
+  startedSettingsRevision?: number;
   /**
    * Semantic-search probe, resolved once at startup. `available` decides
    * whether the context_search tool is registered at all; the MCP server is
@@ -78,10 +100,10 @@ export interface DaemonDeps {
   livePipes?: () => number;
   log: (line: string) => void;
   /**
-   * Last time an extension host POSTed /api/heartbeat. The channel watchdog
-   * stops the public tunnel when this goes stale — the channel is meant to
-   * close when every VS Code window running this extension is gone. Daemon
-   * boot sets it to now (a fresh daemon assumes an operator is present).
+   * Last heartbeat from a local client. Legacy daemons use it to close idle
+   * public channels; managed Core instead uses Manager leases and guarded
+   * process idle shutdown. A suspended VS Code host must not, by itself,
+   * turn off an explicitly enabled managed channel.
    */
   lastHeartbeatAt: number;
   /** Last heartbeat per client kind ('tray', or 'other' for VS Code and unmarked callers). */

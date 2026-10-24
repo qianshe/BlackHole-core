@@ -143,6 +143,7 @@ function cleanTargets(raw: unknown): CourierTarget[] {
 
 export class CourierHub {
   private conn: WsConnection | null = null;
+  private readonly attached = new Set<WsConnection>();
   private version: string | null = null;
   private since: number | null = null;
   private targets: CourierTarget[] = [];
@@ -197,6 +198,7 @@ export class CourierHub {
     onStateChange?: (sessionId: string) => void;
     /** busy 兔底循环的间隔（默认 7500ms）。 */
     busyRefreshMs?: number;
+    canAccept?: () => boolean;
   } = {}) {}
 
   /** UI state of one session (see SessionLink). */
@@ -371,11 +373,13 @@ export class CourierHub {
     // Courier reconnects within a second of close(); on a daemon that is shutting down that socket
     // would pin Courier to it (and keep server.close() from finishing: upgraded sockets are not
     // dropped by closeAllConnections). Refuse it so Courier reaches the replacement daemon.
-    if (this.closed) { conn.close(1001); return; }
+    if (this.closed || this.opts.canAccept?.() === false) { conn.close(1001); return; }
+    this.attached.add(conn);
     let hello = false;
     const helloTimer = setTimeout(() => { if (!hello) conn.close(1008); }, HELLO_MS);
     helloTimer.unref();
     conn.on('message', (text: string) => {
+      if (this.opts.canAccept?.() === false) { conn.close(1001); return; }
       let m: Record<string, unknown>;
       try { m = JSON.parse(text) as Record<string, unknown>; } catch { return; }
       if (!m || typeof m !== 'object') return;
@@ -407,6 +411,7 @@ export class CourierHub {
       void this.sendUntil();
     });
     conn.on('close', () => {
+      this.attached.delete(conn);
       clearTimeout(helloTimer);
       if (this.conn !== conn) return;
       this.conn = null;
@@ -509,6 +514,8 @@ export class CourierHub {
       if (!this.conn?.send(JSON.stringify({ ...msg, id }))) this.settle(id, { __local: 'courier_offline' });
     });
   }
+
+  maintenanceBusy(): boolean { return this.attached.size > 0 || this.conn !== null || this.waiters.size > 0; }
 
   get connected(): boolean {
     return this.conn !== null;

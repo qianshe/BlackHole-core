@@ -1,7 +1,7 @@
-import os from 'node:os';
-import path from 'node:path';
+import { resolveDataPaths } from './data-paths.js';
 
-export type TunnelMode = 'auto' | 'off';
+/** manual permits only explicit channel starts; 'off' forbids even manual starts. */
+export type TunnelMode = 'auto' | 'manual' | 'off';
 /**
  * Session permission modes:
  * - `read-only`: reads/tests only; mutations are denied.
@@ -70,7 +70,7 @@ export interface Config {
 /** Defaults are exported so user-facing copy (CLI help) derives from them
  *  instead of restating the numbers and drifting. */
 export const DEFAULT_PORT = 7306;
-export const DEFAULT_DB_PATH = path.join(os.homedir(), '.blackhole', 'blackhole.db');
+export const DEFAULT_DB_PATH = resolveDataPaths().db;
 
 function positiveInt(value: string | undefined, fallback: number): number {
   const n = value === undefined ? NaN : Number(value);
@@ -78,14 +78,14 @@ function positiveInt(value: string | undefined, fallback: number): number {
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
-  const dir = path.join(os.homedir(), '.blackhole');
+  const dataPaths = resolveDataPaths();
   const publicUrl = process.env.BLACKHOLE_PUBLIC_URL?.replace(/\/+$/, '');
   const defaults: Config = {
     port: positiveInt(process.env.BLACKHOLE_PORT, DEFAULT_PORT),
     host: '127.0.0.1',
-    dbPath: process.env.BLACKHOLE_DB ?? DEFAULT_DB_PATH,
+    dbPath: dataPaths.db,
     // a fixed public URL makes the Quick Tunnel redundant unless explicitly asked for
-    tunnel: process.env.BLACKHOLE_TUNNEL ? (process.env.BLACKHOLE_TUNNEL === 'off' ? 'off' : 'auto') : publicUrl ? 'off' : 'auto',
+    tunnel: process.env.BLACKHOLE_TUNNEL === 'manual' ? 'manual' : process.env.BLACKHOLE_TUNNEL ? (process.env.BLACKHOLE_TUNNEL === 'off' ? 'off' : 'auto') : publicUrl ? 'off' : 'auto',
     cloudflaredBin: process.env.BLACKHOLE_CLOUDFLARED,
     publicBaseUrl: publicUrl,
     tunnelName: process.env.BLACKHOLE_TUNNEL_NAME ?? 'blackhole',
@@ -100,7 +100,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     semantic: SEMANTIC_MODES.includes(process.env.BLACKHOLE_SEMANTIC as SemanticMode)
       ? (process.env.BLACKHOLE_SEMANTIC as SemanticMode)
       : 'explicit',
-    semanticKeyPath: process.env.BLACKHOLE_SEMANTIC_KEY_FILE?.trim() || path.join(dir, 'semantic-key'),
+    semanticKeyPath: process.env.BLACKHOLE_SEMANTIC_KEY_FILE?.trim() || dataPaths.semanticKey,
     semanticTimeoutMs: positiveInt(process.env.BLACKHOLE_SEMANTIC_TIMEOUT_MS, 120_000),
   };
   // proxy 配置路径与其它路径字段同构：env 覆盖 > 显式 override；缺省由

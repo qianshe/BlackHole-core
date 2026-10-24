@@ -50,10 +50,32 @@ export function integrityFailures(): string[] {
   const self = typeof __filename === 'string' ? __filename : '';
   if (!self) return (cached = ['cli.js']);
   const dir = path.dirname(self);
+  // The VS Code build is staged under dist/daemon/{cli.js,web/...}, but a
+  // signed shared Core has {daemon/cli.js,web/...} as siblings. The Manager
+  // validates the signed descriptor and every member before it starts Core.
+  // Choose exactly ONE layout from the managed launch identity. Never try an
+  // alternate path on a missing/hash-mismatched member: that could allow a
+  // good shadow copy to conceal a damaged served Web asset.
+  const managed = !!process.env.BLACKHOLE_MANAGED_RUNTIME_IDENTITY;
+  const sharedRoot = path.resolve(dir, '..');
+  if (managed && !fs.existsSync(path.join(sharedRoot, 'core-descriptor.json')))
+    return (cached = ['core-descriptor.json']);
   for (const [rel, want] of Object.entries(manifest)) {
+    // The seal is embedded in cli.js, but treat its contents as untrusted
+    // until checked. No absolute paths, traversal, reparse points or arbitrary
+    // file reads should be possible through the manifest.
+    if (!rel || rel.includes('\\') || rel.includes(':') ||
+      rel.split('/').some(part => part === '' || part === '.' || part === '..') ||
+      typeof want !== 'string' || !/^[a-f0-9]{64}$/.test(want)) {
+      cached.push('manifest');
+      break;
+    }
     try {
-      const file = path.join(dir, rel);
-      const got = rel === 'cli.js' ? sha256(stripIntegritySlot(fs.readFileSync(file, 'latin1'))) : sha256(fs.readFileSync(file));
+      const base = managed && rel.startsWith('web/') ? sharedRoot : dir;
+      const file = path.join(base, rel);
+      const got = rel === 'cli.js'
+        ? sha256(stripIntegritySlot(fs.readFileSync(file, 'latin1')))
+        : sha256(fs.readFileSync(file));
       if (got !== want) cached.push(rel);
     } catch {
       cached.push(rel);

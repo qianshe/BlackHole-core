@@ -90,7 +90,7 @@ export type SettingKey = (typeof SETTING_KEYS)[number];
  * read at the next explicit OpenAI start, never through a daemon restart.
  */
 export const RESTART_SETTING_KEYS: readonly SettingKey[] = [
-  'publicBaseUrl', 'cloudflaredPath', 'skillsDir', 'semanticMode',
+  'publicBaseUrl', 'skillsDir', 'semanticMode',
   'gitUsrBinPath', 'namedTunnelName', 'tunnelProbeProxy',
 ];
 
@@ -376,6 +376,13 @@ export function applySettingsToConfig(cfg: Config, record: SettingsRecord, expli
     if (v.gitUsrBinPath) env.BLACKHOLE_GIT_USR_BIN = v.gitUsrBinPath;
     else delete env.BLACKHOLE_GIT_USR_BIN;
   }
+}
+
+/** One daemon-owned executable selection shared by status checks and the actual
+ * tunnel spawn. A seeded empty value explicitly clears the old binary; it
+ * cannot resurrect a stale path captured at daemon startup. */
+export function savedCloudflaredBinary(record: Pick<SettingsRecord, 'seeded' | 'values'> | undefined, fallback?: string): string | undefined {
+  return record?.seeded.includes('cloudflaredPath') ? record.values.cloudflaredPath || undefined : fallback;
 }
 
 /** Which restart-only keys differ from what this daemon started with. */

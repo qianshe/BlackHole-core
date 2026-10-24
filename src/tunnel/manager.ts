@@ -167,7 +167,9 @@ async function checkReady(readyUrl: string): Promise<ConnectorReady> {
 
 export interface TunnelOptions {
   enabled: boolean;
-  bin?: string;
+  /** Resolve the daemon-owned saved executable at the instant a channel starts.
+   * No channel is started merely because this setting changes. */
+  bin?: string | (() => string | undefined);
   /** Public URL served by the named tunnel (BLACKHOLE_PUBLIC_URL). */
   namedUrl?: string;
   /** cloudflared named tunnel name for the persistent channel. */
@@ -268,7 +270,8 @@ export class TunnelManager {
       this.setStatus('unavailable', { reason: '启动持久渠道前，请先在 BlackHole 设置的「公网渠道 → 公网地址」填写已绑定到 Cloudflare Tunnel 的固定 HTTPS 地址。' });
       return;
     }
-    const bin = this.opts.bin ?? 'cloudflared';
+    const configuredBin = typeof this.opts.bin === 'function' ? this.opts.bin() : this.opts.bin;
+    const bin = configuredBin || 'cloudflared';
     // Production validates the configured binary before changing state. Tests
     // that inject spawnProcess already own process creation and must not escape
     // the seam through a real spawnSync preflight.

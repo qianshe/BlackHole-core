@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { resolveDataPaths } from '../data-paths.js';
 import path from 'node:path';
 
 // Pinned official artifacts. The SHA-256 is of the executable that gets
@@ -139,7 +140,7 @@ export async function initializeCloudflared(
     platform: process.platform,
     arch: process.arch,
     pathValue: process.env.PATH ?? process.env.Path ?? '',
-    root: path.join(homedir(), '.blackhole', 'bin', 'cloudflared'),
+    root: path.join(resolveDataPaths().bin, 'cloudflared'),
     run: runFile,
     fetch: globalThis.fetch,
     ...overrides,

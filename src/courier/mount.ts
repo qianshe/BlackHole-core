@@ -22,7 +22,7 @@ export type CourierAudit = (data: Record<string, unknown>) => void;
  * Ping + WebSocket for the extension, and the native-loopback send API for the
  * VS Code extension. Register before the `/api` control router.
  */
-export function mountCourier(app: Express, server: Server, hub: CourierHub, audit: CourierAudit): void {
+export function mountCourier(app: Express, server: Server, hub: CourierHub, audit: CourierAudit, accepting: () => boolean = () => true): void {
   // Courier asks here over plain HTTP before opening the socket (a failed handshake is logged as an extension error).
   app.get(`${COURIER_PATH}/ping`, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -31,6 +31,7 @@ export function mountCourier(app: Express, server: Server, hub: CourierHub, audi
   });
 
   server.on('upgrade', (req, socket, head: Buffer) => {
+    if (!accepting()) { rejectUpgrade(socket, 503, 'Service Unavailable'); return; }
     const path = (req.url ?? '').split('?')[0];
     if (path !== COURIER_PATH) { rejectUpgrade(socket, 404, 'Not Found'); return; }
     if (!localHop(req.headers, req.socket.remoteAddress) || req.headers.origin !== COURIER_EXTENSION_ORIGIN) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { DEFAULT_DB_PATH, DEFAULT_PORT, PERMISSION_MODES, type PermissionMode } from './config.js';
+import { resolveDataPaths } from './data-paths.js';
 import { EntitlementGate } from './cloud/entitlement-gate.js';
 import { ENTITLEMENT_SPKI, ENTITLEMENT_ORIGIN } from './cloud/entitlement-public-key.js';
 import { startDaemon } from './daemon.js';
@@ -149,7 +150,7 @@ async function main(): Promise<void> {
         {
           port,
           tunnel: flags.tunnel === 'off' ? 'off' : flags.tunnel === 'auto' ? 'auto' : undefined,
-          dbPath: str(flags, 'db'),
+          dbPath: resolveDataPaths({ env: { ...process.env, BLACKHOLE_DB: str(flags, 'db') ?? process.env.BLACKHOLE_DB } }).db,
         },
         (line) => process.stderr.write(`${line}\n`),
         new EntitlementGate(ENTITLEMENT_SPKI, ENTITLEMENT_ORIGIN),

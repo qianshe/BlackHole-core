@@ -7,13 +7,14 @@ import { directAccessConfig } from '../direct-access/listener.js';
 export function settingsView(deps: DaemonDeps, record: SettingsRecord = deps.settings!.get()) {
   return {
     revision: record.revision,
+    ...(deps.runtimeIdentity ? { managed: true, application: { started_revision: deps.startedSettingsRevision ?? null, restart: 'manager-confirmation', port: 'manager-cold-change' } } : {}),
     migrated: record.migrated,
     values: record.values,
     updated_at: record.updated_at,
     // keys the extension may still hand over once (added after this install first migrated)
     unseeded: unseededKeys(record),
     // restart-only keys that differ from what this daemon is running with
-    pending_restart: deps.startedSettings && record.migrated ? pendingRestartKeys(deps.startedSettings, record.values) : [],
+    pending_restart: deps.startedSettings && record.migrated ? pendingRestartKeys(deps.startedSettings, record.values).filter(k => record.seeded.includes(k)) : [],
   };
 }
 

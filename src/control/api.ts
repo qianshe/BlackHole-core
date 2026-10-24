@@ -23,6 +23,7 @@ import { VERSION } from '../version.js';
 import { processManagementCapability } from '../execution.js';
 import { createWorkspaceSession, normalizeWritableDirs, type CreateSessionInput } from '../services/sessions.js';
 import { migrateSettings, patchSettings, probePublicUrl, settingsView } from '../settings/service.js';
+import { savedCloudflaredBinary } from '../settings/store.js';
 import { skillDirectoryStatus } from '../settings/skills-status.js';
 import { ACCOUNT_API_VERSION, AccountError, accountErrorCode } from '../account/service.js';
 import { loopbackPeer, mountOpenAITunnel } from './openai-tunnel-routes.js';
@@ -84,21 +85,38 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     res.status(e instanceof AccountError ? e.status : 502).json({ error: code });
   };
   app.use('/account', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Native Desktop/VS Code callers do not send browser provenance headers.
+  // Browser Web and cross-site form submissions must not start or cancel Core
+  // login, migrate an account, or invoke the native account call surface.
+  const nativeAccountAction = (req: Request, res: Response, next: () => void) => {
+    if (req.headers.origin || req.headers.referer || req.headers.cookie || req.headers.authorization ||
+        req.headers['sec-fetch-site']) {
+      res.status(403).json({ error: 'native_loopback_required' });
+      return;
+    }
+    next();
+  };
   app.get('/account', (_req, res) => {
     if (!deps.account) { res.status(503).json({ error: 'account_unavailable' }); return; }
     void deps.account.view().then((v) => res.json(v), (e) => accountFail(res, e));
   });
-  app.post('/account/sign-in', (_req, res) => {
+  // Narrow read-only native welcome interface. No token, account ID, profile,
+  // verifier or authorization URL crosses this interface.
+  app.get('/account/welcome', (_req, res) => {
+    res.json({ state: deps.account?.webAuthStatus() ?? 'unavailable',
+      signIn: deps.account?.signInState() ?? { state: 'idle' } });
+  });
+  app.post('/account/sign-in', nativeAccountAction, (_req, res) => {
     try { res.json(deps.account ? deps.account.beginSignIn() : { state: 'idle' }); } catch (e) { accountFail(res, e); }
   });
   app.get('/account/sign-in', (_req, res) => { res.json(deps.account?.signInState() ?? { state: 'idle' }); });
-  app.post('/account/sign-in/cancel', (_req, res) => { res.json(deps.account?.cancelSignIn() ?? { state: 'idle' }); });
-  app.post('/account/call', (req, res) => {
+  app.post('/account/sign-in/cancel', nativeAccountAction, (_req, res) => { res.json(deps.account?.cancelSignIn() ?? { state: 'idle' }); });
+  app.post('/account/call', nativeAccountAction, (req, res) => {
     if (!deps.account) { res.status(503).json({ error: 'account_unavailable' }); return; }
     const b = (req.body ?? {}) as { method?: unknown; args?: unknown };
     void deps.account.call(String(b.method ?? ''), b.args).then((result) => res.json({ result: result ?? null }), (e) => accountFail(res, e));
   });
-  app.post('/account/migrate', (req, res) => {
+  app.post('/account/migrate', nativeAccountAction, (req, res) => {
     if (!deps.account) { res.status(503).json({ error: 'account_unavailable' }); return; }
     void deps.account.migrate((req.body as { credential?: unknown } | undefined)?.credential).then((r) => res.json(r), (e) => accountFail(res, e));
   });
@@ -140,9 +158,12 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     });
     const activityDays = deps.toolCalls.activityDays(activityStarts);
     const todayActivity = activityDays.find(day => day.start === dayStart.getTime());
+    const upgrade = deps.upgradeReadiness?.();
     res.json({
       ok: true,
       version: VERSION,
+      ...(deps.managedControl ? { lifecycle_control_version: 1, lifecycle_settings_version: 1, started_settings_revision: deps.startedSettingsRevision, lifecycle_manager_key_hash: deps.managedControl.publicKeyHash, maintenance_idle: deps.maintenanceIdle?.() === true } : {}),
+      ...(deps.managedControl && upgrade ? { lifecycle_upgrade_version:1, upgrade_idle:upgrade.idle, upgrade_blockers:upgrade.blockers } : {}),
       ...(deps.startFingerprint ? { start_fingerprint: deps.startFingerprint } : {}),
       ...(deps.openaiTunnel ? { openai_tunnel_api_version: 1, openai_tunnel: deps.openaiTunnel.view() } : {}),
       // Clients re-read settings when this moves (an edit made in another client).
@@ -156,6 +177,18 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
       proxy_surface_gen: deps.proxy?.surfaceGen() ?? null,
       mcp_conn_gen: deps.mcpConnGen ?? 0,
       db_path: deps.cfg.dbPath,
+      ...(deps.runtimeIdentity ? {
+        runtime_id: deps.runtimeIdentity.runtimeId,
+        runtime_version: deps.runtimeIdentity.runtimeVersion,
+        build_id: deps.runtimeIdentity.buildId,
+        descriptor_hash: deps.runtimeIdentity.descriptorHash,
+        data_root_id: deps.runtimeIdentity.dataRootId,
+        web_build_id: deps.runtimeIdentity.webBuildId,
+        core_protocol: deps.runtimeIdentity.coreProtocol,
+        core_environment: deps.runtimeIdentity.environment,
+        core_cloud_origin: deps.runtimeIdentity.cloudOrigin,
+        lifecycle_state: deps.runtimeIdentity.lifecycleState,
+      } : {}),
       public_base_url: deps.cfg.publicBaseUrl ?? null,
       tunnel: deps.tunnel.status,
       tunnel_mode: deps.tunnel.mode ?? null,
@@ -328,7 +361,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     ...(deps.openaiTunnel ? { openai: deps.openaiTunnel } : {}),
     ...(deps.settings ? { settings: deps.settings } : {}),
     namedUrl: () => deps.cfg.publicBaseUrl || undefined,
-    cloudflaredReady: () => cloudflaredOnDisk(deps.cfg.cloudflaredBin ?? 'cloudflared'),
+    cloudflaredReady: () => cloudflaredOnDisk(savedCloudflaredBinary(deps.settings?.get(), deps.cfg.cloudflaredBin) ?? 'cloudflared'),
     last: deps.lastChannel ?? new LastChannel(deps.machineState),
     ...(deps.channelIntent ? { intent: deps.channelIntent } : {}),
     heartbeat: () => { deps.lastHeartbeatAt = Date.now(); },
@@ -389,6 +422,7 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
   // bring back its older build after an upgrade. This is a consistency check,
   // not an authentication secret: /health exposes the values on loopback.
   app.post('/shutdown', (req, res) => {
+    if (deps.runtimeIdentity) { res.status(409).json({ error: 'managed_stop_requires_manager' }); return; }
     const body = (req.body ?? {}) as { daemon_id?: unknown; start_fingerprint?: unknown };
     if (typeof body.daemon_id !== 'string' || !body.daemon_id
       || !Object.hasOwn(body, 'start_fingerprint')
@@ -406,8 +440,29 @@ export function mountControl(app: Router, deps: DaemonDeps): Router {
     }, 50).unref();
   });
 
+  // Only a Manager grant bound to this incarnation may seal managed ingress.
+  app.post('/core/stop', (req, res) => {
+    if (!deps.runtimeIdentity || !deps.managedControl || !deps.shutdown) { res.status(409).json({ error: 'managed_control_unavailable' }); return; }
+    if (req.headers.origin || req.headers.cookie || req.headers.authorization || req.headers['sec-fetch-site']
+      || !/^(127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?$/i.test(req.headers.host ?? '')) { res.status(403).json({ error: 'native_loopback_required' }); return; }
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.token !== 'string') throw new Error('lifecycle_token_invalid');
+      const accepted = deps.managedControl.acceptStop(body.token);
+      deps.log('managed lifecycle: signed stop accepted');
+      res.json({ ok: true, ...accepted });
+      setTimeout(() => {
+        void deps.shutdown!().then(() => process.exit(0), () => deps.log('managed shutdown failed; maintenance remains sealed for recovery'));
+      }, 50).unref();
+    } catch (e) {
+      const code = e instanceof Error && /^[a-z][a-z0-9_]{0,100}$/.test(e.message) ? e.message : 'lifecycle_request_invalid';
+      res.status(409).json({ error: code });
+    }
+  });
+
   // Restart in place (plan 6.12 S3b): same command line and port, new process.
   app.post('/restart', (req, res) => {
+    if (deps.runtimeIdentity) { res.status(409).json({ error: 'managed_restart_requires_manager' }); return; }
     if ((req.body as { confirm?: unknown } | undefined)?.confirm !== true) {
       res.status(400).json({ error: 'invalid_input', message: 'confirm must be true' });
       return;

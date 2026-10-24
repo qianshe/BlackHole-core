@@ -1,3 +1,4 @@
+import { MaintenanceGate, ManagedControl } from './lifecycle/managed-control.js';
 import { randomUUID } from 'node:crypto';
 import { ProcessManager, ownerFingerprint } from './process/manager.js';
 import { loadProcessBackend, processRuntimeCapability } from './process/backend.js';
@@ -21,7 +22,7 @@ import { CourierPairs } from './courier/pairs.js';
 import { mountCourier } from './courier/mount.js';
 import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
 import { renderSandboxManual } from './courier/manual.js';
-import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
+import { mcpPath, mcpUrl, type DaemonDeps, type RuntimeIdentity } from './deps.js';
 import { resolveConnectionRoutes } from './connection/resolve.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
 import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
@@ -29,14 +30,14 @@ import { mountMcp } from './mcp/router.js';
 import { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import { mountPanel } from './panel/index.js';
 import { mountLocalWeb, sendRemotePage, sendRootPage } from './web/local-web.js';
-import { ChannelIntent, migrateDecoupledTabs } from './tunnel/resume.js';
+import { ChannelIntent, migrateDecoupledTabs, resumeChannel } from './tunnel/resume.js';
 import { LastChannel } from './tunnel/switch.js';
 import { resolveConfirmation } from './control/api.js';
 import { ConfirmationsRepo } from './storage/confirmations.js';
 import { maintainDb, openDb, type Storage } from './storage/db.js';
 import { EventsRepo } from './storage/events.js';
 import { MachineStateRepo } from './storage/machineState.js';
-import { applySettingsToConfig, SettingsStore } from './settings/store.js';
+import { applySettingsToConfig, savedCloudflaredBinary, SettingsStore } from './settings/store.js';
 import { putCourierSite, removeCourierSite } from './settings/service.js';
 import { SessionsRepo } from './storage/sessions.js';
 import { ChangeTracker } from './storage/changes.js';
@@ -47,6 +48,9 @@ import { ToolCallsRepo } from './storage/toolCalls.js';
 import { FeedLog } from './storage/feedLog.js';
 import { TunnelManager } from './tunnel/manager.js';
 import { startChannelWatchdog } from './tunnel/watchdog.js';
+import { startManagedIdleSupervisor } from './lifecycle/idle-supervisor.js';
+import { startRunHeartbeat } from './lifecycle/run-heartbeat.js';
+import { assertManagedCoreUpgradeable, managedCoreUpgradeBlockers } from './lifecycle/idle-work.js';
 import { detectExecutionEnvironment } from './execution.js';
 import { probeSemantic } from './semantic/index.js';
 import { setAccessTokenOverride } from './util/token.js';
@@ -60,6 +64,17 @@ export interface Daemon {
   stop(): Promise<void>;
 }
 
+function managedRuntimeIdentity(): RuntimeIdentity | undefined {
+  const encoded = process.env.BLACKHOLE_MANAGED_RUNTIME_IDENTITY?.trim();
+  if (!encoded) return undefined;
+  let value: Record<string, unknown>; try { value = JSON.parse(encoded) as Record<string, unknown>; } catch { throw new Error('managed_runtime_identity_invalid'); }
+  for (const field of ['runtimeId', 'runtimeVersion', 'buildId', 'descriptorHash', 'dataRootId', 'webBuildId', 'cloudOrigin']) if (typeof value[field] !== 'string' || !value[field]) throw new Error(`managed_runtime_identity_invalid:${field}`);
+  if (value.environment !== 'test' && value.environment !== 'production') throw new Error('managed_runtime_identity_invalid:environment');
+  if (value.lifecycleState !== 'managed' && value.lifecycleState !== 'quiescing' && value.lifecycleState !== 'draining' && value.lifecycleState !== 'stopping') throw new Error('managed_runtime_identity_invalid:lifecycleState');
+  const protocol = value.coreProtocol as { min?: unknown; max?: unknown } | undefined; if (!protocol || !Number.isInteger(protocol.min) || !Number.isInteger(protocol.max)) throw new Error('managed_runtime_identity_invalid:coreProtocol');
+  return value as unknown as RuntimeIdentity;
+}
+
 export async function startDaemon(overrides: Partial<Config> = {}, log: (line: string) => void = console.error, entitlement?: EntitlementGate): Promise<Daemon> {
   const cfg = loadConfig(overrides);
   // Claim the loopback port before opening or migrating SQLite. The listening
@@ -67,11 +82,15 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // enter recovery/retention writes and corrupt each other's startup state.
   const app = express();
   app.disable('x-powered-by');
+  const maintenanceGate = new MaintenanceGate();
+  maintenanceGate.install(app);
+  app.use(maintenanceGate.middleware);
   const server = await new Promise<Server>((resolve, reject) => {
     const s = app.listen(cfg.port, cfg.host, () => resolve(s));
     s.once('error', (err) => reject(err));
   });
   let startupStorage: Storage | undefined;
+  let startupAccount: AccountService | undefined;
   try {
   const storage = openDb(cfg.dbPath);
   startupStorage = storage;
@@ -110,7 +129,14 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // Daemon-owned settings win over the launcher's environment once migrated.
   const settings = new SettingsStore(machineState);
   applySettingsToConfig(cfg, settings.get(), new Set(Object.keys(overrides).filter((k) => (overrides as Record<string, unknown>)[k] !== undefined)));
-  const startedSettings = settings.get().values;
+  const startedRecord = settings.get();
+  // Managed settings own an explicitly cleared executable path too; a stale
+  // launcher environment must not silently reintroduce the old binary.
+  if (process.env.BLACKHOLE_MANAGED_RUNTIME_IDENTITY && startedRecord.seeded.includes('cloudflaredPath')) cfg.cloudflaredBin = startedRecord.values.cloudflaredPath || undefined;
+  const startedSettings = { ...startedRecord.values, publicBaseUrl: cfg.publicBaseUrl ?? '',
+    cloudflaredPath: cfg.cloudflaredBin ?? '', skillsDir: cfg.skillsDir ?? '', semanticMode: cfg.semantic,
+    gitUsrBinPath: process.env.BLACKHOLE_GIT_USR_BIN ?? '', namedTunnelName: cfg.tunnelName,
+    tunnelProbeProxy: cfg.tunnelProbeProxy ?? '' };
 
   const stale = toolCalls.markStaleStartedAsUnknown();
   if (stale > 0) log(`recovery: marked ${stale} in-flight tool call(s) as unknown`);
@@ -230,12 +256,14 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     execution.process.reason = processRuntime.reason ?? 'runtime_asset_missing';
     log(`warning: process tool unavailable — ${execution.process.reason}`);
   }
-  const processes = new ProcessManager({ daemonId, supported: execution.process.available, backend: await loadProcessBackend(execution.process.shell),
+  const processes = new ProcessManager({ daemonId, canStart: () => maintenanceGate.accepting, supported: execution.process.available, backend: await loadProcessBackend(execution.process.shell),
     event: (id, type, data) => { const row = sessions.get(id); if (row && row.status !== 'revoked' && row.status !== 'archived') events.append(id, type, data); } });
   const deps: DaemonDeps = {
     execution,
     daemonId,
+    maintenanceGate,
     startFingerprint: process.env.BLACKHOLE_START_FINGERPRINT?.trim() || undefined,
+    runtimeIdentity: managedRuntimeIdentity(),
     processes,
     entitlement,
     cfg,
@@ -250,6 +278,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     machineState,
     settings,
     startedSettings,
+    startedSettingsRevision: startedRecord.revision,
     semantic,
     // MCP-Apps panel cards: memory-only registries — a daemon restart kills
     // every card (the agent's next show re-attaches a fresh one)
@@ -267,7 +296,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   deps.tunnel = new TunnelManager(cfg.port, {
     enabled: cfg.tunnel !== 'off',
-    bin: cfg.cloudflaredBin,
+    // The saved executable is used only when the user explicitly starts a
+    // channel. Changing the path does not require restarting active work.
+    bin: () => savedCloudflaredBinary(settings.get(), cfg.cloudflaredBin),
     namedUrl: cfg.publicBaseUrl,
     tunnelName: cfg.tunnelName,
     probeProxy: () => settings.get().values.channelProxyUrl || cfg.tunnelProbeProxy,
@@ -361,6 +392,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     ...(process.env.BLACKHOLE_ACCOUNT_OFFLINE === '1' ? { fetch: (async () => { throw new TypeError('offline'); }) as typeof fetch } : {}),
     log,
   });
+  startupAccount = deps.account;
   void deps.account.start();
 
   // OpenAI Secure MCP Tunnel (plan §5): parallel to the Cloudflare channel, started only on request.
@@ -382,6 +414,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // Courier: ping/WebSocket for the browser extension, plus its native send API.
   const courier = new CourierHub({
     log,
+    canAccept: () => maintenanceGate.accepting,
     messages: new CourierMessages(storage.db, feed),
     pairs: new CourierPairs(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-pairs.json'), log),
     onStarted: (id, text) => { deps.sessions.commitDraft(id, text); },
@@ -450,7 +483,21 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     // 状态变化由 SessionsRepo.onStateChange 下发（session-feed 计划 §4.3）。
     if (reason === 'discarded') feed.close(id);
   };
-  mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data));
+  mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data), () => maintenanceGate.accepting);
+  if (deps.runtimeIdentity && process.env.BLACKHOLE_MANAGER_PUBLIC_KEY) {
+    const requireIdle = (): void => {
+      if (!deps.shutdown || !deps.livePipes) throw new Error('activity_unknown');
+    };
+    deps.maintenanceIdle = (): boolean => { try { requireIdle(); return true; } catch { return false; } };
+    deps.upgradeReadiness = () => {
+      try { const blockers=managedCoreUpgradeBlockers(deps); return {idle:blockers.length===0,blockers}; }
+      catch { return {idle:false,blockers:['activity_unknown']}; }
+    };
+    deps.managedControl = new ManagedControl({ publicKeyPem: process.env.BLACKHOLE_MANAGER_PUBLIC_KEY,
+      identity: deps.runtimeIdentity, daemonId, startFingerprint: deps.startFingerprint ?? '', gate: maintenanceGate,
+      settingsRevision: () => settings.get().revision, assertIdle: requireIdle,
+      assertUpgradeable: () => assertManagedCoreUpgradeable(deps) });
+  }
   const control = mountControl(express.Router(), deps);
   mountLocalWeb(app, deps, undefined, control);
   app.use('/api', control);
@@ -493,6 +540,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // The watchdog closes the public channel once every heartbeat sender is gone;
   // the detached daemon keeps serving locally until an explicit Stop.
   const watchdog = startChannelWatchdog(deps);
+  if (deps.runtimeIdentity?.lifecycleState === 'managed') resumeChannel(deps);
   // Lifetime sweep is independent of MCP requests, VS Code polling and channel heartbeats.
   const processSweep = setInterval(() => processes.reconcile(owner => {
     const row = sessions.get(owner.sessionId);
@@ -513,7 +561,15 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // so settings can observe `starting` immediately instead of daemon startup hanging.
   void proxy.startEnabled().catch((error) => log(`proxy: startup sweep failed: ${error instanceof Error ? error.message : String(error)}`));
 
+  const idleSupervisor = startManagedIdleSupervisor(deps);
+  // Independent of the idle supervisor: the lease must stay fresh whenever
+  // this managed Core is alive, including while the idle stop is pending.
+  const runHeartbeat = startRunHeartbeat(deps);
   const stop = async (): Promise<void> => {
+    log('daemon shutdown: begin');
+    await deps.account?.stop();
+    idleSupervisor.stop();
+    runHeartbeat.stop();
     clearInterval(processSweep);
     courier.close();
     feed.shutdown(); // 放走所有挂起的长轮询请求，server.close() 才能完成
@@ -527,6 +583,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     await deps.proxy?.manager.closeAll(); // upstream child 在进程退出前关闭（plan §8.1）
     deps.proxy?.attachments.clear(); // attachment 可见引用随 stop 全清（plan §9）
     await mcp.closeAll();
+    log('daemon shutdown: channels and MCP closed');
     for (const rt of deps.runtimes.values()) rt.pwsh?.dispose();
     deps.runtimes.clear();
     // close() only stops accepting; kept-alive clients could still reach this
@@ -535,6 +592,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     server.closeAllConnections();
     courier.close(); // a Courier socket still open would hold server.close() forever (upgraded sockets are not HTTP connections)
     await closed;
+    log('daemon shutdown: HTTP listener closed');
     events.append(null, 'daemon_stopped', {});
     deps.sessionActivity?.dispose();
     storage.close();
@@ -543,6 +601,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   return { cfg, deps, stop };
   } catch (error) {
+    await startupAccount?.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     try { startupStorage?.close(); } catch { /* preserve the startup error */ }
     throw error;

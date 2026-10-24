@@ -1,32 +1,56 @@
 import type { DaemonDeps } from '../deps.js';
+import { managedCoreHasActiveWork } from '../lifecycle/idle-work.js';
 
 /**
- * Channel watchdog: the public tunnel is an extension-driven affordance —
- * when every VS Code window running this extension is gone (or a CLI-spawned
- * channel stops sending heartbeats), the channel closes itself. The daemon
- * itself keeps serving locally.
- *
- * Contract: heartbeat senders (extension poller, CLI `tunnel` commands)
- * POST /api/heartbeat at least every ~15s. A channel whose heartbeats went
- * stale for STALE_MS is stopped once. A channel the operator started stays
- * remembered (tunnel/resume.ts): the next heartbeat brings it back.
+ * Legacy, non-managed daemons use extension/CLI heartbeats to decide whether
+ * an otherwise idle public tunnel should close. For a managed Core, client
+ * presence is tracked by the Manager's renewable leases and the signed idle
+ * shutdown gate instead: a delayed Extension Host heartbeat is NOT evidence
+ * that the operator turned off a channel. Managed channels therefore remain
+ * under explicit user control for as long as the managed Core is alive.
  */
 const TICK_MS = 15_000;
 /** Exported so user-facing copy (CLI note) derives the number instead of
  *  restating it and drifting. */
 export const STALE_MS = 45_000;
 
+/** Only stop a public channel after lost host heartbeat if no ACTIVE work is
+ * known. A lost VS Code lease cannot cut off a still-running remote Agent,
+ * pending approval, background process or active Courier exchange.
+ * Unknown activity state is NOT authorization to keep a public listener open:
+ * unlike a Manager's local process stop, public exposure fails closed.
+ */
+export function channelWatchdogMayStop(
+  deps: Pick<DaemonDeps, 'lastHeartbeatAt' | 'runtimeIdentity' | 'webPresence' | 'sessionActivity' |
+    'sessions' | 'processes' | 'courier' | 'confirmations'>,
+  now = Date.now(),
+): boolean {
+  // Managed Core idle shutdown already checks leases, running Agents and open
+  // Web pages. A separate 45s channel watchdog would erroneously disconnect
+  // a healthy, explicitly started named/quick/OpenAI channel during a sleeping
+  // or temporarily blocked VS Code Extension Host. The Manager remains the
+  // sole authority to stop an unused managed process.
+  if (deps.runtimeIdentity?.lifecycleState === 'managed') return false;
+  if (deps.webPresence?.size || now - deps.lastHeartbeatAt <= STALE_MS) return false;
+  try { return !managedCoreHasActiveWork(deps); }
+  catch { return true; }
+}
+
 export function startChannelWatchdog(deps: DaemonDeps): { stop(): void } {
+  // Managed Core owns the channel; its signed Manager handles idle exit.
+  // Do not keep a redundant tunnel-shutdown timer alive in that mode.
+  if (deps.runtimeIdentity?.lifecycleState === 'managed') return { stop() {} };
   let stopping = false;
   const timer = setInterval(() => {
     // An open Local Web page (a live /web-api/v1/presence response) counts as a window.
     const staleFor = deps.webPresence?.size ? 0 : Date.now() - deps.lastHeartbeatAt;
     const live = deps.tunnel.status === 'starting' || deps.tunnel.status === 'online' || deps.tunnel.status === 'unverified';
-    if (staleFor > STALE_MS && live) {
+    const canStop = channelWatchdogMayStop(deps);
+    if (canStop && live) {
       deps.log(`watchdog: no extension heartbeat for ${Math.round(staleFor / 1000)}s — stopping the public channel (daemon stays local-only)`);
       void deps.tunnel.stop().catch(() => undefined);
     }
-    if (staleFor > STALE_MS && deps.openaiTunnel?.live) {
+    if (canStop && deps.openaiTunnel?.live) {
       deps.log(`watchdog: no extension heartbeat for ${Math.round(staleFor / 1000)}s — stopping the OpenAI tunnel`);
       void deps.openaiTunnel.stop(null).catch(() => undefined);
     }

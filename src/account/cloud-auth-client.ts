@@ -1,3 +1,5 @@
+import { parseMembershipCatalogue, parseMembershipStatus } from '../../packages/contracts/dist/membership.js';
+import { parseMembershipCheckout } from './membership-checkout.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { PRODUCTION_CLOUD_ORIGIN, cloudAuthPrefix, validateCloudOrigin } from './cloud-origin.js';
 export const CLOUD_AUTH_ORIGIN=PRODUCTION_CLOUD_ORIGIN;
@@ -143,6 +145,10 @@ export class CloudAuthClient {
  private running=false;private checked?:{sessionId:string;at:number;state:'verified'|'unavailable';account?:AccountSnapshot;failure?:AuthErrorCode};
  private readonly checks=new Map<string,Promise<AuthView>>();
  private restoration?:Promise<AuthView>;
+ // Core-owned read-through observations. UI polling stays cheap; only one
+ // read-only /session check per credential is allowed before freshness expires.
+ private observation?:{sessionId:string;at:number;retryAt:number;failures:number};
+ private observing?:{sessionId:string;promise:Promise<AuthView>};
  constructor(ports:Ports){this.ports=ports;this.origin=validateCloudOrigin(ports.origin??CLOUD_AUTH_ORIGIN,{allowProduction:true});this.now=ports.now??Date.now;this.sleep=ports.sleep??authSleep;}
  private async receipts() {
   try {return (await this.ports.receipts.list()).filter(value=>validReceipt(value,this.origin)).sort((a,b)=>b.loginOrder-a.loginOrder||(a.kind===b.kind?0:a.kind==='logout'?-1:1));}
@@ -178,7 +184,7 @@ export class CloudAuthClient {
  }
  /** Native buyer-only billing calls; never exports a bearer or changes subscription facts locally. */
  private async billingRequest(path:string,method:'GET'|'POST',expectedUserId:string,data?:Record<string,string>,idempotencyKey?:string,signal?:AbortSignal,kind:'general'|'reconcile'|'refundQuote'|'refund'='general'):Promise<unknown> {
-  if(!/^\/api\/billing\/(?:plans|refundable-orders(?:\?cursor=\d{1,16}\.[0-9a-f-]{36})?|orders(?:\/[0-9a-f-]{36}(?:\/(?:reconcile|checkout-link|refund-quote|refund))?)?)$/.test(path))throw new CloudAuthError('invalid_response');
+  if(!/^\/api\/billing\/(?:membership\/(?:catalogue|status|checkout)|plans|refundable-orders(?:\?cursor=\d{1,16}\.[0-9a-f-]{36})?|orders(?:\/[0-9a-f-]{36}(?:\/(?:reconcile|checkout-link|refund-quote|refund))?)?)$/.test(path))throw new CloudAuthError('invalid_response');
   const value=await this.current();if(!value||value.userId!==expectedUserId||value.expiresAt<=Math.floor(this.now()/1000))throw new CloudAuthError('rejected');
   let result:Awaited<ReturnType<CloudAuthClient['request']>>;
   try {result=await this.request(path,method,data,value.token,signal,idempotencyKey);}
@@ -191,6 +197,9 @@ export class CloudAuthClient {
    throw error;
   }
   if(result.status===401){await this.forget(value);throw new CloudAuthError('rejected');}
+  // A forbidden checkout does not prove the login expired (401 handles that).
+  // Error bodies are intentionally discarded by request(); preserve that boundary.
+  if(path==='/api/billing/membership/checkout'&&result.status===403)throw new CloudAuthError('payment_not_available');
   if(result.status===403)throw new CloudAuthError('rejected');
   if(result.status===429)throw new CloudAuthError('rate_limited');
   // A refund POST is always preceded by a server-signed quote. Any 409 means that confirmation is no longer current;
@@ -210,6 +219,19 @@ export class CloudAuthClient {
   }
   const current=await this.current();if(!current||current.userId!==expectedUserId||current.sessionId!==value.sessionId)throw new CloudAuthError('rejected');
   return result.value;
+ }
+ async membershipCatalogue(expectedUserId:string) {
+  const value=await this.billingRequest('/api/billing/membership/catalogue','GET',expectedUserId);
+  try{return parseMembershipCatalogue(value);}catch{throw new CloudAuthError('invalid_response');}
+ }
+ async membershipStatus(expectedUserId:string) {
+  const value=await this.billingRequest('/api/billing/membership/status','GET',expectedUserId);
+  try{return parseMembershipStatus(value);}catch{throw new CloudAuthError('invalid_response');}
+ }
+ async membershipCheckout(expectedUserId:string,sku:string) {
+  if(typeof sku!=='string'||!sku||sku.length>32||/[\u0000-\u0020\u007f]/.test(sku))throw new CloudAuthError('invalid_response');
+  const value=await this.billingRequest('/api/billing/membership/checkout','POST',expectedUserId,{sku});
+  try{return parseMembershipCheckout(value,this.origin,Math.floor(this.now()/1000));}catch{throw new CloudAuthError('invalid_response');}
  }
  async billingPlans(expectedUserId:string):Promise<{enabled:boolean;environment?:'sandbox'|'production';plans:BillingPlan[]}> {
   const row=exactObject(await this.billingRequest('/api/billing/plans','GET',expectedUserId),['enabled','plans'],['environment']);
@@ -264,6 +286,41 @@ export class CloudAuthClient {
   const elapsed=snapshot?Math.max(0,Math.floor((this.now()-snapshot.at)/1000)):0;
   return {state:checked,userId:value.userId,expiresAt:value.expiresAt,...(snapshot?{checkedAt:snapshot.at}:{}),
    ...(account?{account:{...account,plans:[]},remainingSeconds:account.status==='active'?Math.max(0,account.serviceExpiresAt-account.serverNow-elapsed):0}:{})};
+ }
+ /** Core-only observed status: renew a read-only session snapshot before its
+  * 60-second freshness window expires. Never replay sign-in/exchange, billing
+  * or migration, never turn a saved credential into verified without a 200
+  * identity-matching response. view() itself remains cache-only for gate use. */
+ async observe(signal?:AbortSignal):Promise<AuthView> {
+  cancelled(signal);
+  const credential=await this.current(),view=await this.view(),now=this.now();
+  if(!credential||credential.expiresAt<=Math.floor(now/1000)||view.state==='logged_out')return view;
+  if(this.observing?.sessionId===credential.sessionId)return this.observing.promise;
+  if(view.state==='verified'&&view.checkedAt!==undefined&&now>=view.checkedAt&&now-view.checkedAt<45_000){
+   this.observation={sessionId:credential.sessionId,at:now,retryAt:view.checkedAt+45_000,failures:0};
+   return view;
+  }
+  const previous=this.observation?.sessionId===credential.sessionId?this.observation:undefined;
+  if(previous&&now>=previous.at&&now<previous.retryAt)return view;
+  const attempt={sessionId:credential.sessionId,at:now,retryAt:now+30_000,failures:previous?.failures??0};
+  this.observation=attempt;
+  const failed=()=>{
+   if(this.observation!==attempt)return;
+   attempt.failures=Math.min(attempt.failures+1,5);
+   attempt.at=this.now();attempt.retryAt=attempt.at+Math.min(30_000*2**(attempt.failures-1),300_000);
+  };
+  // Set the single-flight slot before beginning asynchronous IO. Multiple
+  // VS Code windows share this Core/client, not separate browser login loops.
+  const pending=Promise.resolve().then(()=>this.check(signal)).then(result=>{
+   if(result.state==='verified'){
+    if(this.observation===attempt){attempt.failures=0;attempt.at=this.now();attempt.retryAt=attempt.at+45_000;}
+   }else failed();
+   return result;
+  },error=>{failed();throw error;}).finally(()=>{
+   if(this.observing?.promise===pending)this.observing=undefined;
+  });
+  this.observing={sessionId:credential.sessionId,promise:pending};
+  return pending;
  }
  private async json(response:Response):Promise<unknown> {
   if(!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json'))throw new CloudAuthError('invalid_response');

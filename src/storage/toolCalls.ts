@@ -140,6 +140,23 @@ export class ToolCallsRepo {
       .all(sessionId, WORKSPACE_FILE_TOOL_HISTORY[0], WORKSPACE_FILE_TOOL_HISTORY[1], afterAt, limit) as unknown as (ToolCallRow & { seq: number })[];
   }
 
+  /** For sessions without a web-chat send, the most recent completed guide call starts a work round. */
+  latestGuideCall(sessionId: string): { at: number; seq: number } | null {
+    const row = this.db
+      .prepare("SELECT created_at AS at, rowid AS seq FROM tool_calls WHERE session_id = ? AND tool = 'guide' AND status = 'completed' ORDER BY rowid DESC LIMIT 1")
+      .get(sessionId) as { at: number; seq: number } | undefined;
+    return row ?? null;
+  }
+
+  /** Guide boundaries use rowid, not timestamps: guide and the first edit can share one millisecond. */
+  listEditorCallsAfterGuide(sessionId: string, guideSeq: number, limit = 501): (ToolCallRow & { seq: number })[] {
+    return this.db
+      .prepare(
+        'SELECT rowid AS seq, * FROM tool_calls WHERE session_id = ? AND tool IN (?, ?) AND rowid > ? ORDER BY rowid ASC LIMIT ?',
+      )
+      .all(sessionId, WORKSPACE_FILE_TOOL_HISTORY[0], WORKSPACE_FILE_TOOL_HISTORY[1], guideSeq, limit) as unknown as (ToolCallRow & { seq: number })[];
+  }
+
   /** feed 增量：该会话 `rev > after` 的行，按 rev 升序，最多 `limit` 条（走 idx_tool_calls_session_rev）。 */
   changedSince(sessionId: string, after: number, limit: number): (ToolCallRow & { seq: number })[] {
     return this.db
