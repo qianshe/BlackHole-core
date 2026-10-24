@@ -544,10 +544,8 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 		systray.SetTooltip("BlackHole")
 		open := systray.AddMenuItem("打开 BlackHole", "打开共享 Core 的 Web 窗口")
 		systray.AddSeparator()
-		restart := systray.AddMenuItem("重启共享 Core…", "原生确认后由 Manager 重启当前 Core")
-		stop := systray.AddMenuItem("停止共享 Core…", "原生确认后由 Manager 停止当前 Core；托盘随之退出")
-		inspect := systray.AddMenuItem("检查/恢复维护事务…", "查看未解决的维护事务并按原生确认恢复")
-		systray.AddSeparator()
+		// Core maintenance (restart/stop/transaction recovery) lives in the
+		// settings page, not the tray: the tray keeps daily-driver actions only.
 		update := systray.AddMenuItem("检查更新…", "安全下载并安装新版 Desktop 与 Core")
 		startAutomaticUpdateChecks(ctx, bundle, update)
 		var auto *systray.MenuItem
@@ -564,12 +562,9 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 			systray.Quit()
 		})
 		go func() { <-ctx.Done(); desktopLog("tray quit: lease context done"); systray.Quit() }()
-		go watchManagedTrayActions(ctx, trayActionChannels{open: open.ClickedCh, restart: restart.ClickedCh, stop: stop.ClickedCh, inspect: inspect.ClickedCh, update: update.ClickedCh, auto: autoCh, quit: quit.ClickedCh}, trayActionHandlers{
-			onOpen:    func() { go openManagedUI(ctx, bundle.Client, keeper.current(), port) },
-			onRestart: func() { go coordinator.Run(ctx, "restart", nil) },
-			onStop:    func() { go coordinator.Run(ctx, "stop", nil) },
-			onInspect: func() { go coordinator.RunInspect(ctx) },
-			onUpdate:  func() { go checkAndOfferUpdate(ctx, bundle, coordinator.StopForUpdate) },
+		go watchManagedTrayActions(ctx, trayActionChannels{open: open.ClickedCh, update: update.ClickedCh, auto: autoCh, quit: quit.ClickedCh}, trayActionHandlers{
+			onOpen:   func() { go openManagedUI(ctx, bundle.Client, keeper.current(), port) },
+			onUpdate: func() { go checkAndOfferUpdate(ctx, bundle, coordinator.StopForUpdate) },
 			onAuto: func() {
 				if auto == nil {
 					return
@@ -591,16 +586,15 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 }
 
 type trayActionChannels struct {
-	open, restart, stop, inspect, update, auto, quit <-chan struct{}
+	open, update, auto, quit <-chan struct{}
 }
 
 type trayActionHandlers struct {
-	onOpen, onRestart, onStop, onInspect, onUpdate, onAuto, onQuit func()
+	onOpen, onUpdate, onAuto, onQuit func()
 }
 
-// watchManagedTrayActions dispatches managed-tray clicks. Maintenance runs in
-// its own goroutine (the coordinator serializes it); Quit stays local and
-// terminal, exactly like the legacy tray.
+// watchManagedTrayActions dispatches managed-tray clicks. Quit stays local
+// and terminal, exactly like the legacy tray.
 func watchManagedTrayActions(ctx context.Context, channels trayActionChannels, handlers trayActionHandlers) {
 	for {
 		if ctx.Err() != nil {
@@ -614,12 +608,6 @@ func watchManagedTrayActions(ctx context.Context, channels trayActionChannels, h
 			return
 		case <-channels.open:
 			handlers.onOpen()
-		case <-channels.restart:
-			handlers.onRestart()
-		case <-channels.stop:
-			handlers.onStop()
-		case <-channels.inspect:
-			handlers.onInspect()
 		case <-channels.update:
 			handlers.onUpdate()
 		case <-channels.auto:

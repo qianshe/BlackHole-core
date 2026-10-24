@@ -39,7 +39,7 @@ export function ManagedCoreSection({ settings, refresh }: { settings: SettingsVi
         <button type="button" className="secondary" disabled={busy} onClick={() => void action('configure-port')}>配置共享端口（停止后）</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => void action('inspect-maintenance')}>检查／恢复维护事务</button>
       </div> : <div className="hint warn" role="note">
-        当前页面没有原生维护通道，不会直接发送停止或重启请求。请在同机已更新的 VS Code 命令面板运行 <code>BlackHole: Apply Shared Core Settings</code> 或 <code>BlackHole: Inspect and Recover Shared Core Maintenance</code>，或使用 Desktop 托盘的维护菜单。先结束或取消在途工作、关闭不需要的客户端；不得为维护忽略其他租约或活动。
+        当前页面没有原生维护通道，不会直接发送停止或重启请求。请在同机已更新的 VS Code 命令面板运行 <code>BlackHole: Apply Shared Core Settings</code> 或 <code>BlackHole: Inspect and Recover Shared Core Maintenance</code>，或在 BlackHole Desktop 设置-高级页操作。先结束或取消在途工作、关闭不需要的客户端；不得为维护忽略其他租约或活动。
       </div>}
       <div className="hint" role="status" aria-live="polite">{message}</div>
     </div>
