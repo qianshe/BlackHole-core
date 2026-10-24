@@ -1,3 +1,5 @@
+import type { MembershipCatalogue, MembershipStatus } from '../../contracts/src/membership';
+export type { MembershipCatalogue, MembershipStatus } from '../../contracts/src/membership';
 import { settingsHost } from './settings/host';
 import type { ConnectionRoutesView, DirectAccessView, PhoneEndpoint, SetupSummary } from '../../contracts/src/connections';
 export type { DirectAccessView } from '../../contracts/src/connections';
@@ -141,6 +143,8 @@ export interface SettingsView {
   values: SettingsValues;
   updated_at: string | null;
   pending_restart: string[];
+  managed?: boolean;
+  application?: { started_revision: number | null; restart: 'manager-confirmation'; port: 'manager-cold-change' };
 }
 
 export interface NewSessionInput {
@@ -186,7 +190,11 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
       ...(write && csrf ? { 'x-blackhole-csrf': csrf } : {}),
     },
   });
-  const body = (await res.json().catch(() => ({}))) as { error?: unknown; message?: unknown; csrf?: unknown };
+  const body = (await res.json().catch(error => {
+    // A 200 header followed by a timed-out body is not an authenticated reply.
+    if (init.signal?.aborted) throw error;
+    return {};
+  })) as { error?: unknown; message?: unknown; csrf?: unknown };
   if (!res.ok) throw new ApiError(res.status, typeof body.error === 'string' ? body.error : `http_${res.status}`, typeof body.message === 'string' ? body.message : undefined);
   if (typeof body.csrf === 'string') csrf = body.csrf;
   return body as T;
@@ -196,12 +204,20 @@ const json = (method: string, data: unknown): RequestInit => ({ method, body: JS
 
 export const api = {
   exchange: (ticket: string) => request<{ ok: true; expires_at: string }>('/auth/exchange', { method: 'POST', body: JSON.stringify({ ticket }) }),
-  session: (signal?: AbortSignal) => request<{ authenticated: true; account_required?: boolean; expires_at: string; version: string }>('/auth/session', { signal }),
+  session: async (signal: AbortSignal = AbortSignal.timeout(5000)) => {
+    const result = await request<{ authenticated: true; account_required?: boolean; expires_at: string; version: string }>('/auth/session', { signal });
+    if (result.authenticated !== true || typeof result.version !== 'string' || !result.version
+      || (result.account_required !== undefined && typeof result.account_required !== 'boolean')) throw new ApiError(502, 'invalid_auth_response');
+    return result;
+  },
   /** Local browser: enter with this machine's signed-in account. */
-  localLogin: () => request<{ ok: true; expires_at: string }>('/auth/local', json('POST', {})),
-  /** Browser login with the machine's cloud account (no session needed). */
-  login: () => request<{ attempt: string }>('/auth/login', json('POST', {})),
-  loginPoll: (attempt: string) => request<{ state: 'running' | 'done' | 'failed'; error?: string }>('/auth/login/' + encodeURIComponent(attempt)),
+  localLogin: () => request<{ ok: true; expires_at: string }>('/auth/local', { ...json('POST', {}), signal: AbortSignal.timeout(5000) }),
+  /** Passive, no-session account readiness only; does not initiate login. */
+  authStatus: async () => {
+    const result = await request<{ state: 'checking' | 'logged_out' | 'saved' | 'verified' | 'unavailable' }>('/auth/status', { signal: AbortSignal.timeout(5000) });
+    if (!['checking', 'logged_out', 'saved', 'verified', 'unavailable'].includes(result.state)) throw new ApiError(502, 'invalid_auth_response');
+    return result;
+  },
   setupSummary: () => request<SetupSummary>('/auth/setup'),
   logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
   sessions: (signal?: AbortSignal) => request<{ sessions: SessionView[]; version: string }>('/sessions', { signal }),
@@ -222,8 +238,6 @@ export const api = {
   saveSettings: (revision: number, values: Partial<SettingsValues>) => request<SettingsView>('/settings', json('PATCH', { revision, values })),
   probePublicUrl: (url: string) => request<{ ok: boolean; detail: string }>('/settings/probe', json('POST', { url })),
   account: () => request<AccountView>('/account'),
-  accountSignIn: () => request<AccountView['signIn']>('/account/sign-in', json('POST', {})),
-  accountCancelSignIn: () => request<AccountView['signIn']>('/account/sign-in/cancel', json('POST', {})),
   accountSignOut: () => request<AccountView>('/account/sign-out', json('POST', {})),
   stopDaemon: () => request<{ ok: true }>('/daemon/stop', json('POST', { confirm: true })),
   // approvals and session header controls (plan 6.15)
@@ -367,6 +381,9 @@ export const panel = {
   restart: () => request<{ ok: boolean }>('/daemon/restart', json('POST', { confirm: true })),
   skills: (dir: string) => request<{ cls: '' | 'ok' | 'bad'; hint: string }>(`/settings/skills?dir=${enc(dir)}`),
   accountRefresh: () => request<AccountView>('/account/refresh', json('POST', {})),
+  membership: () => request<MembershipCatalogue>('/account/membership'),
+  membershipStatus: () => request<MembershipStatus>('/account/membership/status'),
+  membershipCheckout: (sku: string) => request<{ opened: boolean; expiresAt: number }>('/account/membership/checkout', json('POST', { sku })),
   plans: () => request<{ enabled: boolean; environment?: 'sandbox' | 'production'; plans: BillingPlan[] }>('/account/plans'),
   orders: () => request<BillingOrder[]>('/account/orders'),
   createOrder: (sku: BillingSku) => request<{ order: BillingOrder; opened: boolean }>('/account/orders', json('POST', { sku })),

@@ -1,13 +1,17 @@
 // Authoritative settings page tree for Web and the VS Code webview.
 // Hosts supply transport and native-only capabilities, not a second page renderer.
-import { settingsHost } from '../settings/host';
+import { hasNativeMaintenance, settingsHost } from '../settings/host';
 import { HostRuntimeSection } from '../settings/HostRuntimeSection';
+import { ManagedCoreSection } from '../settings/ManagedCoreSection';
+import { DesktopUpdates } from '../settings/DesktopUpdates';
+import { runManagedCoreAction } from '../settings/managedCoreActions';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
+import { membershipPlanLabel, type MembershipCatalogue, type MembershipStatus } from '../../../contracts/src/membership';
 import { VERSION } from '../../../../src/version';
 import {
   api, ApiError, panel, request,
-  type AccountView, type BillingOrder, type BillingPlan, type BillingSku, type CourierSiteView, type GrantsInfo, type Health, type DirectAccessView,
+  type AccountView, type BillingOrder, type CourierSiteView, type GrantsInfo, type Health, type DirectAccessView,
   type ProxiesInfo, type ProxyConfigRow, type ProxyToolsResult, type RevalidateReport, type SemanticInfo, type SettingsValues, type SettingsView,
 } from '../api';
 import { ServiceCard } from '../AccountCard';
@@ -58,9 +62,9 @@ const BILLING_ERRORS: Record<string, string> = {
 const days = (s: number) => Math.max(1, Math.round(s / 86400));
 const price = (m: number) => '¥' + (m / 100).toFixed(2);
 const durationLabel = (s: number) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.ceil((s % 3600) / 60); return [d ? d + ' 天' : '', h ? h + ' 小时' : '', m ? m + ' 分钟' : ''].filter(Boolean).join(' ') || '不足 1 分钟'; };
-const planLabel = (p: BillingPlan) => `${p.amountMinor === 1 ? '支付验收 · ' : ''}${days(p.durationSeconds)} 天 · ${price(p.amountMinor)}`;
+// Historical order duration remains fixed seconds; new membership labels use calendar periods.
 const orderLabel = (o: BillingOrder) => `${days(o.durationSeconds)} 天 · ${price(o.amountMinor)} · ${STATUS_NAMES[o.status]}`;
-const DEFAULT_PLANS: { sku: BillingSku; label: string }[] = [{ sku: 'pro_day', label: '1 天 · ¥1.00' }, { sku: 'pro_week', label: '7 天 · ¥5.00' }, { sku: 'pro_month', label: '30 天 · ¥15.00' }];
+// New-sale plans are loaded from Cloud; no baked-in prices or fixed-day fallback.
 const errText = (e: unknown) => (e instanceof ApiError ? e.detail || e.message || e.code : e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const copy = copyText;
@@ -207,6 +211,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   const [grants, setGrants] = useState<GrantsInfo | null>(null);
   const [fstate, setFstateView] = useState<Partial<Record<SaveKey, FieldState>>>({});
   const [restarting, setRestarting] = useState(false);
+  const [hostEpoch, setHostEpoch] = useState(0);
   const modeRef = useRef(channelMode);
   modeRef.current = channelMode;
   useEffect(() => {
@@ -465,6 +470,17 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   };
   /** Restart in place and wait until a new daemon answers. */
   const restartAndWait = async (): Promise<boolean> => {
+    const snapshot = serverRef.current;
+    if (snapshot?.managed) {
+      if (!hasNativeMaintenance()) return false;
+      try {
+        // Native commands return only after the Manager has validated the result.
+        // Applying pending settings binds the visible saved revision, not just a PID change.
+        if (snapshot.pending_restart.length) return (await runManagedCoreAction('apply-settings', snapshot.revision)).completed;
+        if (settingsHost().kind === 'desktop') return (await runManagedCoreAction('restart')).completed;
+        return (await panel.restart()).ok === true;
+      } catch { return false; }
+    }
     const before = (await panel.health().catch(() => null))?.daemon_id;
     try { await panel.restart(); } catch { return false; }
     for (let i = 0; i < 60; i++) {
@@ -477,7 +493,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   const cfInstall = async () => {
     if (channelMode !== 'cloudflare' || cf.busy || !server) return;
     const initialPath = server.values.cloudflaredPath, initialMode = server.values.channelMode, previous = draft?.cloudflaredPath ?? '';
-    setCf({ busy: true, label: '初始化中…', cls: 'hint', text: '正在准备 cloudflared；验证后可选择保存并重启，不会自动启动渠道。' });
+    setCf({ busy: true, label: '初始化中…', cls: 'hint', text: '正在准备 cloudflared；验证后保存路径，渠道仍需手动启动。' });
     const done = (cls: string, text: string) => setCf({ busy: false, label: '一键初始化安装', cls, text });
     try {
       let job = await panel.cloudflaredStart();
@@ -485,8 +501,14 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
       if (job.state === 'error') { done('hint bad', job.error); return; }
       if (job.state !== 'done') { done('hint bad', '初始化未完成'); return; }
       setCf({ busy: true, label: '等待确认…', cls: 'hint', text: 'cloudflared 验证通过，等待确认；尚未保存或启动渠道。' });
-      const choice = await ui.confirm('BlackHole：cloudflared 验证通过。保存该路径，并重启 daemon 使其生效？', ['仅保存路径', '保存并重启'],
-        <div className="buy-dialog-note" style={{ marginTop: 0 }}>{job.path}<br />重启会短暂中断本地服务；不会自动启动公网渠道。</div>);
+      const managedCore = serverRef.current?.managed === true;
+      const choice = await ui.confirm(managedCore
+        ? 'BlackHole：cloudflared 已验证。保存后下次显式启动渠道即可生效，无需重启共享 Core。'
+        : 'BlackHole：cloudflared 验证通过。保存该路径，并重启 daemon 使其生效？',
+        managedCore ? ['保存路径'] : ['仅保存路径', '保存并重启'],
+        <div className="buy-dialog-note" style={{ marginTop: 0 }}>{job.path}<br />{managedCore
+          ? '保存不会停止现有任务，也不会自动启动公网渠道。'
+          : '重启会短暂中断本地服务；不会自动启动公网渠道。'}</div>);
       if (!choice) { done('hint', 'cloudflared 已就绪：' + job.path + '。未保存路径。'); return; }
       const latest = await api.settings();
       if (latest.values.channelMode !== initialMode || latest.values.cloudflaredPath !== initialPath || (draftRef.current?.cloudflaredPath ?? '') !== previous) {
@@ -496,7 +518,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
       setCf({ busy: true, label: '正在保存…', cls: 'hint', text: '正在保存路径；不会自动启动渠道。' });
       set('cloudflaredPath', job.path);
       if (!(await commit({ cloudflaredPath: job.path }, ['cloudflaredPath'], { cloudflaredPath: job.path }))) { done('hint bad', '路径保存失败；请查看上面的输入框提示。'); return; }
-      if (choice !== '保存并重启') { done('hint ok', (job.installed ? '安装完成。' : '已有可用的 cloudflared，未下载。') + '路径已保存，重启 daemon 后生效；尚未启动渠道。'); return; }
+      if (managedCore || choice !== '保存并重启') { done('hint ok', (job.installed ? '安装完成。' : '已有可用的 cloudflared，未下载。') + (managedCore ? '路径已保存，下次启动公网渠道时直接使用，无需重启 Core。' : '路径已保存，重启 daemon 后生效；') + '尚未启动渠道。'); return; }
       setCf({ busy: true, label: '正在重启…', cls: 'hint', text: '路径已保存，正在重启 daemon；不会自动启动渠道。' });
       const restarted = await restartAndWait();
       if (restarted) await loadSettings().catch(() => undefined);
@@ -504,14 +526,16 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
     } catch (e) { done('hint bad', errText(e)); }
   };
   const restart = async () => {
-    if (restarting) return;
-    if ((await ui.confirm('BlackHole：重启 daemon 会短暂中断本地服务，已连接的网页 AI 需要等它恢复。', ['重启'])) !== '重启') return;
+    if (restarting || !serverRef.current) return;
+    const managed = serverRef.current?.managed === true;
+    if (managed && !hasNativeMaintenance()) { ui.toast('请在 VS Code 或 BlackHole Desktop 中重启后台服务；浏览器中无法执行此操作。', 'warn'); return; }
+    if (!managed && (await ui.confirm('BlackHole：重启 daemon 会短暂中断本地服务，已连接的网页 AI 需要等它恢复。', ['重启'])) !== '重启') return;
     setRestarting(true);
     await Promise.allSettled([...inflight.current]);
     const ok = await restartAndWait();
     setRestarting(false);
-    if (ok) { ui.toast('BlackHole：daemon 已重启。'); await loadSettings().catch(() => undefined); loadSemantic(); }
-    else ui.toast('BlackHole：重启 daemon 失败', 'bad');
+    if (ok) { ui.toast('BlackHole：后台服务已重启，正在重新读取设置。'); await loadSettings().catch(() => undefined); loadSemantic(); }
+    else ui.toast(managed ? 'BlackHole：重启未完成，请查看 VS Code 或 BlackHole Desktop 中的确认窗口或错误提示，核对后台服务状态。' : 'BlackHole：重启后台服务失败', 'bad');
   };
   const rotateToken = async () => {
     if ((await ui.confirm('BlackHole: 重置后旧 MCP 链接立即失效，连接器/沙箱脚本里配置的旧地址全部要换成新链接（会话 ID 不受影响）。确认重置？', ['重置'])) !== '重置') return;
@@ -683,6 +707,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   const homeIdentity = homeAccount.authState === 'logged_out' ? '未登录' : homeAccount.displayName;
   const homeRemaining = homeAccount.accountStatus === 'suspended' ? '账号已停用' : homeAccount.accountStatus === 'pending' ? '订阅准备中' : formatRemaining(homeAccount.remainingSeconds);
   const nativeHost = settingsHost().kind === 'vscode';
+  const nativeMaintenanceHost = hasNativeMaintenance();
   const manualPageKeys = nativeHost ? TEXT_KEYS.filter(k => NATIVE_MANUAL[k] === page) : [];
   const manualDirty = manualPageKeys.filter(k => draft && server && draft[k].trim() !== serverText(server.values, k));
   const semanticDirty = nativeHost && page === 'agents' && server && semMode !== server.values.semanticMode;
@@ -720,6 +745,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
             <Activity health={reachable ? health : null} />
           </div>
           <div className="card pair-card"><RemoteSection part="pair" toast={ui.toast} confirm={ui.confirm} onConfigure={onNavigate ? () => onNavigate('network') : undefined} /></div>
+          <DesktopUpdates coreVersion={health?.version ?? VERSION} />
           <footer className="settings-home-version" aria-label={`BlackHole 版本 ${VERSION}`} title={`BlackHole v${VERSION}`}>v{VERSION}</footer>
         </>
       )}
@@ -872,20 +898,21 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
 
       {page === 'advanced' && (
         <>
-      <HostRuntimeSection />
+      <HostRuntimeSection key={hostEpoch} />
+      {server?.managed && <ManagedCoreSection settings={server} refresh={async () => { setHostEpoch(value => value + 1); await loadSettings(); }} />}
       <div className="sec" id="set-advanced">高级</div>
       <div className="card">
         <div className="fgrid">
           {field('gitUsrBinPath')}
-          {!nativeHost && <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。</div></div>}
+          {!nativeHost && <div className="f"><label>daemon 端口</label><div className="bhp-readonly">{port}</div><div className="d">{server?.managed ? '共享端口由 Manager 管理；请在原生宿主中执行停止后的端口冷变更。' : '本地 daemon 监听端口（仅 127.0.0.1）。在 VS Code 设置中修改。'}</div></div>}
           {field('namedTunnelName')}
         </div>
         <div className="bhp-danger">
           <div className="bhp-danger-row">
-            <div><b>重启 daemon</b><small>让需要重启的设置生效；会短暂中断本地服务和已连接的网页 AI。</small></div>
-            <button className="secondary" type="button" disabled={restarting} onClick={() => void restart()}>{restarting ? '重启中…' : '重启 daemon'}</button>
+            <div><b>重启后台服务</b><small>{server?.managed && !nativeMaintenanceHost ? '请在 VS Code 或 BlackHole Desktop 中重启后台服务，浏览器中无法执行此操作。' : '点击后会弹出确认窗口，确认后重启后台服务，让已保存的设置生效。服务会短暂断开。'}{server?.managed && nativeMaintenanceHost && '若其他窗口或 AI 仍在使用，请先结束任务并断开连接。'}</small></div>
+            <button className="secondary" type="button" disabled={restarting || (server?.managed === true && !nativeMaintenanceHost)} onClick={() => void restart()}>{restarting ? (server?.managed ? '等待确认或重启完成…' : '正在重启…') : server?.managed && !nativeMaintenanceHost ? '请在应用中重启' : '重启 BlackHole'}</button>
           </div>
-          <div className="bhp-service"><ServiceCard /></div>
+          <div className="bhp-service">{server && <ServiceCard managed={server.managed === true} nativeMaintenance={nativeMaintenanceHost} />}</div>
         </div>
       </div>
         </>
@@ -894,8 +921,8 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
       {nativeHost && (manualDirty.length > 0 || semanticDirty) && <div className="settings-page-save"><span className="hint">仅保存本页标有「需重启」的设置；其他页面的草稿不会提交。</span><button type="button" disabled={!server || manualPageKeys.some(k => fstate[k]?.state === 'saving')} onClick={() => void saveNativePage()}>保存本页</button></div>}
       {pending.length > 0 && (
         <div className="bhp-restartbar" role="status">
-          <span>需重启 daemon 生效：{[...new Set(pending.map(restartLabel))].join('、')}</span>
-          <button type="button" disabled={restarting} onClick={() => void restart()}>{restarting ? '重启中…' : '立即重启'}</button>
+          <span>{server?.managed ? `已保存配置版本 ${server.revision}，需原生确认应用：` : '需重启 daemon 生效：'}{[...new Set(pending.map(restartLabel))].join('、')}{server?.managed && !nativeMaintenanceHost ? '。请使用已更新的 VS Code「Apply Shared Core Settings」命令或 Desktop 托盘维护菜单。' : ''}</span>
+          <button type="button" disabled={restarting || (server?.managed === true && !nativeMaintenanceHost)} onClick={() => void restart()}>{restarting ? '等待维护结果…' : server?.managed ? (nativeMaintenanceHost ? '应用保存配置并重启' : '需要原生宿主') : '立即重启'}</button>
         </div>
       )}
       {ui.node}
@@ -1008,20 +1035,24 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     catch (e) { ui.toast('登录未完成：' + errText(e), 'warn'); }
     finally { setSigningIn(false); }
   };
-  const [plans, setPlans] = useState(DEFAULT_PLANS);
-  const [sku, setSku] = useState<BillingSku>('pro_day');
+  const [catalogue, setCatalogue] = useState<MembershipCatalogue | null>(null);
+  const [membership, setMembership] = useState<MembershipStatus | null>(null);
+  const [membershipBusy, setMembershipBusy] = useState(false);
+  const memberAbort = useRef<{ stopped: boolean } | null>(null);
+  const liveUser = useRef(view?.userId); liveUser.current = view?.userId;
   const [buyOpen, setBuyOpen] = useState(false);
+  const [selectedMembershipSku, setSelectedMembershipSku] = useState('');
   const [wait, setWait] = useState<BillingOrder | null>(null);
   const waitAbort = useRef<{ stopped: boolean } | null>(null);
   const loggedIn = !!view?.userId;
   useEffect(() => {
-    if (!loggedIn) return;
-    panel.plans().then((c) => {
-      if (!c.enabled || !c.plans.length) return;
-      setPlans(c.plans.map((p) => ({ sku: p.sku, label: planLabel(p) })));
-      setSku((s) => (c.plans.some((p) => p.sku === s) ? s : c.plans[0]!.sku));
-    }, () => undefined);
-  }, [loggedIn]);
+    let stopped = false; setCatalogue(null); setMembership(null); setSelectedMembershipSku(''); setBuyOpen(false);
+    if (view?.userId) void panel.membership().then(async c => {
+      if (stopped) return; setCatalogue(c);
+      if (c.enabled) { const status = await panel.membershipStatus(); if (!stopped) setMembership(status); }
+    }).catch(() => { if (!stopped) setMembership(null); });
+    return () => { stopped = true; if (memberAbort.current) memberAbort.current.stopped = true; if (waitAbort.current) waitAbort.current.stopped = true; };
+  }, [view?.userId]);
   const refreshView = () => panel.accountRefresh().then((next) => { onView(next); return next; }, () => undefined);
   const report = (e: unknown) => {
     const code = e instanceof ApiError ? e.code : '';
@@ -1038,7 +1069,13 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
           : formatRemaining(summary.remainingSeconds).replace(/^剩余 /, '剩余订阅：');
 
   const refresh = async () => {
-    try { const next = await panel.accountRefresh(); onView(next); ui.toast('BlackHole：订阅状态已刷新。'); } catch (e) { ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); }
+    const uid = liveUser.current;
+    try {
+      const next = await panel.accountRefresh(); if (liveUser.current !== uid) return; onView(next);
+      const c = await panel.membership(); if (liveUser.current !== uid) return; setCatalogue(c); setMembership(null);
+      if (c.enabled) { const state = await panel.membershipStatus(); if (liveUser.current !== uid) return; setMembership(state); }
+      ui.toast('BlackHole：订阅和商品状态已刷新。');
+    } catch (e) { if (liveUser.current === uid) { setMembership(null); ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); } }
   };
   const fulfilled = async (order: BillingOrder) => {
     await refreshView();
@@ -1067,17 +1104,36 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     finally { if (waitAbort.current === token) { waitAbort.current = null; setWait(null); } }
   };
   const buy = async () => {
-    setBuyOpen(false);
+    const chosen = catalogue?.plans.find(p => p.sku === selectedMembershipSku);
+    if (memberAbort.current || !chosen) return;
+    setBuyOpen(false); setMembershipBusy(true);
+    const token = { stopped: false }, userId = view?.userId; memberAbort.current = token;
+    const current = () => !token.stopped && liveUser.current === userId;
     try {
-      const catalogue = await panel.plans();
-      if (!catalogue.enabled) { ui.toast('支付宝时长购买尚未开放；现有订阅卡兑换不受影响。'); return; }
-      const plan = catalogue.plans.find((p) => p.sku === sku);
-      if (!plan) return;
-      const created = await panel.createOrder(plan.sku);
-      if (created.order.sku !== plan.sku || created.order.amountMinor !== plan.amountMinor || created.order.durationSeconds !== plan.durationSeconds) { ui.toast('BlackHole：订单价格或时长已变化，未打开付款页。请重新查看方案，并在购买记录核对该待支付订单。', 'warn'); return; }
-      if (!created.opened) { ui.toast('未能打开系统浏览器。订单已经保留，请从购买记录继续付款。', 'warn'); return; }
-      await waitForPayment(created.order);
-    } catch (e) { report(e); }
+      const latest = await panel.membership(); if (!current()) return; setCatalogue(latest);
+      if (!latest.salesEnabled) { ui.toast('即刻收暂未开放新购，请稍后刷新。'); return; }
+      const state = await panel.membershipStatus(); if (!current()) return; setMembership(state);
+      if (!state.canPurchase) { ui.toast(state.decision === 'ALLOW' || state.legacyExpiresAt > state.checkedAt ? '现有会员或试用权益尚未到期，不重复购买。' : '当前暂不可购买，请稍后刷新权益。'); return; }
+      const currentPlan = latest.plans.find(p => p.sku === chosen.sku);
+      if (!currentPlan || currentPlan.amountMinor !== chosen.amountMinor || currentPlan.durationPeriod !== chosen.durationPeriod) {
+        setBuyOpen(true); ui.toast('所选套餐已变更或下架，请核对最新套餐后重新确认。', 'warn'); return;
+      }
+      const entrance = await panel.membershipCheckout(chosen.sku); if (!current()) return;
+      if (!entrance.opened) { ui.toast('未能打开系统浏览器；可重新打开同一套餐入口。未在本地确认支付。', 'warn'); return; }
+      ui.toast('已打开所选套餐的二维码页面。请在有效期内扫码，支付宝中核对金额后操作；完成后返回刷新权益。');
+      for (let i = 0; i < 12 && current(); i++) {
+        await sleep(5000); if (!current()) return;
+        let next: MembershipStatus;
+        try { next = await panel.membershipStatus(); } catch { continue; }
+        if (!current()) return; setMembership(next);
+        if (next.decision === 'ALLOW') {
+          const account = await panel.accountRefresh(); if (!current()) return; onView(account);
+          ui.toast('会员权益已确认生效，有效期以服务端查询为准。'); return;
+        }
+      }
+      if (current()) ui.toast('权益暂未确认。请稍后点击“刷新订阅”，不要据此重复付款。', 'warn');
+    } catch (e) { if (current()) report(e); }
+    finally { if (memberAbort.current === token) { memberAbort.current = null; setMembershipBusy(false); } }
   };
   const refund = async (selected?: BillingOrder) => {
     try {
@@ -1141,17 +1197,19 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
       await refreshView();
     } catch (e) { ui.toast('BlackHole：兑换失败 — ' + errText(e), 'bad'); }
   };
-  const planText = plans.find((p) => p.sku === sku)?.label ?? '所选方案';
+  const selectedPlan = catalogue?.plans.find(p => p.sku === selectedMembershipSku);
+  const planText = selectedPlan ? membershipPlanLabel(selectedPlan) : '请选择一个时长套餐';
   return (
     <section className="card account-card" aria-label="账号与订阅">
       <div className="account-head"><div><div className="account-eyebrow">BLACKHOLE ACCOUNT</div><div className="account-identity">{identity}</div></div></div>
       <div className="account-grid">
         <div><span className="account-label">服务权益</span><div id="cloudSubscription">{subscription}</div></div>
-        <div><label className="account-label" htmlFor="cloudPlan">订阅方案</label>
-          <div className="plan-line">
-            <select id="cloudPlan" disabled={!loggedIn} value={sku} onChange={(e) => setSku(e.target.value as BillingSku)}>{plans.map((p) => <option key={p.sku} value={p.sku}>{p.label}</option>)}</select>
-            <button id="cloudBuyCard" className="secondary" type="button" disabled={!loggedIn || !!wait} onClick={() => setBuyOpen(true)}>购买所选方案</button>
-          </div>
+        <div><span className="account-label">即刻收时长会员</span>
+          <div id="cloudPlan" aria-live="polite">{catalogue?.plans.length ? catalogue.plans.map(p => <div key={p.sku}>{membershipPlanLabel(p)}</div>) : <div>{loggedIn ? '暂无法获取商品与价格，请刷新后重试。' : '登录后查看当前商品与价格。'}</div>}</div>
+          <p className="account-note">在 BlackHole 选择套餐，扫码后在支付宝确认付款。周期按日历计算，不自动续费。</p>
+          <button id="cloudBuyCard" className="secondary" type="button" disabled={!loggedIn || !!wait || membershipBusy || !catalogue?.salesEnabled || !membership?.canPurchase} onClick={() => setBuyOpen(true)}>{membershipBusy ? '正在确认权益…' : '选择套餐并购买'}</button>
+          {membership && !membership.canPurchase && <p className="account-note">{membership.decision === 'ALLOW' || membership.legacyExpiresAt > membership.checkedAt ? '现有权益尚未到期，无需重复购买。' : '当前暂不可购买，请稍后刷新。'}</p>}
+          {membership?.validUntil && <p className="account-note">即刻收有效期至 {new Date(membership.validUntil * 1000).toLocaleString()}</p>}
         </div>
       </div>
       <div className="btnrow">
@@ -1159,8 +1217,8 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
         {summary.canSignOut && <button className="secondary" type="button" onClick={onSignOut}>退出登录</button>}
         {view?.userId && <button className="secondary" type="button" onClick={() => void copy(view.userId!).then(ok => ui.toast(ok ? 'BlackHole：用户 ID 已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn'))}>复制用户 ID</button>}
         <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refresh()}>刷新订阅</button>
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>购买记录</button>
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>申请退款</button>
+        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>历史订单记录</button>
+        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>历史订单退款</button>
         <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void redeem()}>兑换订阅卡</button>
       </div>
       {wait && <div className="bhp-wait" role="status"><span>正在确认支付宝付款… 订单 {wait.id}</span><button className="secondary" type="button" onClick={() => { if (waitAbort.current) waitAbort.current.stopped = true; }}>停止等待</button></div>}
@@ -1169,8 +1227,12 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
         <div className="buy-modal" role="dialog" aria-modal="true" aria-labelledby="cloudBuyTitle" onClick={(e) => { if (e.target === e.currentTarget) setBuyOpen(false); }} onKeyDown={(e) => { if (e.key === 'Escape') setBuyOpen(false); }}>
           <div className="buy-dialog">
             <div className="buy-dialog-head"><div className="buy-dialog-eyebrow">BLACKHOLE · 单次订阅购买</div><div className="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
-            <div className="buy-dialog-body"><div className="buy-summary"><span className="k">订阅方案</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{view?.userId ? view.userId.slice(0, 8) + '…' + view.userId.slice(-4) : '—'}</span><span className="k">到账方式</span><span className="v">支付确认后自动叠加</span></div><div className="buy-dialog-note">下一步将在系统浏览器打开 BlackHole 支付确认页，再进入支付宝收银台。每次购买均为单次付款，不会自动续费；无需领取卡密或联系管理员开通。</div></div>
-            <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" autoFocus onClick={() => void buy()}>前往付款</button></div>
+            <div className="buy-dialog-body">
+              <fieldset><legend>选择时长套餐</legend>{catalogue?.plans.map(p => <label key={p.sku} className="account-note" style={{ display: 'block', padding: '8px 0' }}><input type="radio" name="membership-sku" value={p.sku} checked={selectedMembershipSku === p.sku} onChange={() => setSelectedMembershipSku(p.sku)} /> {membershipPlanLabel(p)}</label>)}</fieldset>
+              <div className="buy-summary"><span className="k">已选方案</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{view?.userId ? view.userId.slice(0, 8) + '…' + view.userId.slice(-4) : '—'}</span><span className="k">到账方式</span><span className="v">服务端确认会员有效期后生效，不叠加旧时长</span></div>
+              <div className="buy-dialog-note">下一步打开此套餐的安全二维码页面，并显示到期倒计时。请及时扫码，在支付宝核对最终金额。月、季、年按日历计算，不自动续费。页面返回不代表支付成功。即刻收时长包目前不支持退款，也不支持按剩余时长退费。请确认套餐和金额后再付款；重复扣款、未交付等异常请保留凭证联系支持核查。</div>
+            </div>
+            <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" disabled={!selectedPlan || membershipBusy} onClick={() => void buy()}>生成所选套餐二维码</button></div>
           </div>
         </div>
       )}

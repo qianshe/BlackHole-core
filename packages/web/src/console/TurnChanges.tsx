@@ -20,7 +20,7 @@ interface Loaded {
 
 export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [selected, setSelected] = useState<{ sessionId: string; path: string } | null>(null);
+  const [selected, setSelected] = useState<{ sessionId: string; path: string | null } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ sessionId: string; text: string } | null>(null);
   const [unmatchedFocus, setUnmatchedFocus] = useState<{ sessionId: string; sequence: number } | null>(null);
@@ -30,8 +30,11 @@ export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) 
   const focusBaseline = useRef<{ sequence: number; afterRequest: number } | null>(null);
   const feedTurnIsNewer = turnAt !== null && (loaded?.data.turnAt === null || (loaded?.data.turnAt !== undefined && turnAt > loaded.data.turnAt));
   const data = loaded?.sessionId === sessionId && !feedTurnIsNewer ? loaded.data : null;
+  const collapsed = selected?.sessionId === sessionId && selected.path === null;
   const selectedPath = selected?.sessionId === sessionId ? selected.path : null;
-  const selectedFile = data?.files.find((file) => file.path === selectedPath) ?? data?.files[0] ?? null;
+  const selectedFile = collapsed
+    ? null
+    : data?.files.find((file) => file.path === selectedPath) ?? data?.files[0] ?? null;
 
   useEffect(() => {
     if (!active || !focusRequest || focusRequest.sequence <= appliedFocus.current || focusRequest.sequence <= dismissedFocus.current) return;
@@ -56,6 +59,9 @@ export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) 
           if (current.signal.aborted) return;
           setLoaded({ sessionId, data: result, requestId });
           setSelected((value) => {
+            // An explicit collapse is the user's choice: keep it across polling refreshes,
+            // an empty intermediate poll and a new turn instead of re-opening the first file.
+            if (value?.sessionId === sessionId && value.path === null) return value;
             const currentPath = value?.sessionId === sessionId ? value.path : null;
             return currentPath && result.files.some((file) => file.path === currentPath)
               ? { sessionId, path: currentPath }
@@ -103,7 +109,7 @@ export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) 
   if (!data && loading) return <div className={c.turnEmpty}>正在读取本轮修改…</div>;
   if (!data && visibleError) return <div className={c.turnEmpty} role="alert">{visibleError}</div>;
   if (!data) return <div className={c.turnEmpty}>本轮暂无文件修改。</div>;
-  if (data.turnAt === null) return <div className={c.turnEmpty}>当前会话还没有可识别的已发送消息。</div>;
+  if (data.turnAt === null) return <div className={c.turnEmpty}>当前会话还没有可识别的轮次起点（用户消息或 guide 调用）。</div>;
   if (data.incomplete) return <div className={c.turnEmpty}>本轮编辑记录过多，暂不展示，以免遗漏文件。</div>;
 
   const countable = data.files.filter((file) => file.status !== 'unavailable');
@@ -141,7 +147,7 @@ export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) 
                   onClick={() => {
                     if (focusRequest) dismissedFocus.current = Math.max(dismissedFocus.current, focusRequest.sequence);
                     setUnmatchedFocus(null);
-                    setSelected({ sessionId, path: file.path });
+                    setSelected({ sessionId, path: displayedFile?.path === file.path ? null : file.path });
                   }}
                 >
                   <span className={c.turnFilePath} title={file.path}>{file.path}</span>
@@ -154,21 +160,19 @@ export function TurnChanges({ sessionId, active, turnAt, focusRequest }: Props) 
                 </button>
                 {displayedFile?.path === file.path && (
                   <div className={c.turnDiff}>
-                    <div className={c.turnDiffTitle} title={file.path}>{file.path}</div>
                     {file.status === 'ready' ? (
                       <div className={c.turnDiffCode} role="region" aria-label={`${file.path} 的最终差异`}>
                         {file.lines.map((line, index) => line.type === 'hunk' ? (
                           <div key={`${index}-${line.text}`} className={c.turnDiffHunk}>{line.text}</div>
                         ) : (
                           <div key={`${index}-${line.type}`} className={`${c.turnDiffLine} ${line.type === 'add' ? c.turnDiffAdded : line.type === 'remove' ? c.turnDiffRemoved : ''}`}>
-                            <span className={c.turnDiffNo}>{line.oldLine ?? ''}</span>
                             <span className={c.turnDiffNo}>{line.newLine ?? ''}</span>
                             <span className={c.turnDiffSign}>{line.type === 'add' ? '+' : line.type === 'remove' ? '−' : ' '}</span>
                             <span className={c.turnDiffText}>{line.text}</span>
                           </div>
                         ))}
                       </div>
-                    ) : <div className={c.turnUnavailable}>{file.message ?? '此文件暂时无法生成最终差异。'}</div>}
+                    ) : <div className={c.turnDiffMessage}>{file.message ?? '此文件暂时无法生成最终差异。'}</div>}
                   </div>
                 )}
               </Fragment>

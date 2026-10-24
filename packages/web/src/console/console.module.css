@@ -1558,6 +1558,11 @@
   max-height: none;
   border: 0;
 }
+.overlayDrawer {
+  composes: overlay;
+  padding: 0;
+  place-items: stretch end;
+}
 .overlay:not([open]) {
   display: none;
 }
@@ -2181,13 +2186,19 @@
 .turnFileDelta { display: flex; flex: 0 0 auto; gap: 5px; font: 10px var(--mono); }
 .turnFileUnavailable { color: var(--text-3); font: 11px var(--mono); }
 .turnDiff { min-width: 0; margin: 0 10px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
-.turnDiffTitle { overflow-wrap: anywhere; padding: 8px 9px; border-bottom: 1px solid var(--border); color: var(--text-2); font: 10px/1.4 var(--mono); }
+/* The expanded block no longer repeats the file path, so this message must carry the inner
+   padding the removed title used to provide; the stats counter keeps plain turnUnavailable. */
+.turnDiffMessage { composes: turnUnavailable; padding: 10px 12px; line-height: 1.5; }
 .turnDiffCode { max-height: min(52vh, 520px); overflow: auto; color: var(--text-2); font: 10px/1.55 var(--mono); }
 .turnDiffHunk { padding: 5px 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--accent); white-space: pre; }
-.turnDiffLine { display: grid; width: max-content; min-width: 100%; grid-template-columns: 34px 34px 14px minmax(max-content, 1fr); padding: 0 8px; white-space: pre; }
+/* One line-number column: a context or added line shows the new line number and a removed
+   line stays blank, so the gutter counts like the file after the change instead of jumping
+   between an old and a new column. */
+.turnDiffLine { display: grid; width: max-content; min-width: 100%; grid-template-columns: 34px 14px minmax(max-content, 1fr); padding: 0 8px; white-space: pre; }
 .turnDiffAdded { background: color-mix(in srgb, var(--ok) 9%, transparent); }
 .turnDiffRemoved { background: color-mix(in srgb, var(--bad) 9%, transparent); }
 .turnDiffNo { padding-right: 6px; color: var(--text-3); text-align: right; user-select: none; }
-.turnDiffSign { color: var(--text-3); text-align: center; user-select: none; }
+/* The rule between the sign gutter and the code, at the same x on every row. */
+.turnDiffSign { color: var(--text-3); text-align: center; user-select: none; box-shadow: inset -1px 0 0 var(--border-strong); }
 .turnDiffText { white-space: pre; }
 .turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 10px; text-align: right; }

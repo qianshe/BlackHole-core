@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type AccountView } from './api';
 import { errorText } from './format';
+import { settingsHost } from './settings/host';
+import { runManagedCoreAction } from './settings/managedCoreActions';
 import f from './Forms.module.css';
 
 const SIGN_IN_ERROR: Record<string, string> = {
@@ -47,10 +49,10 @@ export function AccountCard() {
   const status = !view ? null
     : view.storage === 'unavailable' ? { tone: f.fieldError, text: '无法使用', hint: '这台电脑无法保存登录信息，请检查用户目录是否可写。' }
     : view.state === 'verified' ? { tone: f.okText, text: '已登录', hint: null }
-    : view.state === 'saved' ? { tone: f.okText, text: '已登录', hint: null }
+    : view.state === 'saved' ? { tone: f.hint, text: '等待验证', hint: '请使用 Desktop 或 VS Code 欢迎页完成账号验证。' }
     : view.state === 'unavailable' ? { tone: f.fieldError, text: '暂时无法确认', hint: '稍后会自动重试。' }
     : { tone: f.hint, text: '未登录', hint: '登录后才能开始新会话。' };
-  const signedIn = view && (view.state === 'verified' || view.state === 'saved');
+  const signedIn = view?.state === 'verified';
   const job = view?.signIn;
 
   return (
@@ -70,12 +72,10 @@ export function AccountCard() {
       {error && <p className={f.fieldError}>{error}</p>}
       {view && view.storage === 'available' && (
         <div className={f.inline}>
-          {running ? (
-            <button type="button" className={f.secondary} disabled={busy} onClick={() => act(api.accountCancelSignIn())}>取消登录</button>
-          ) : signedIn ? (
+          {signedIn ? (
             <button type="button" className={f.secondary} disabled={busy} onClick={() => { if (window.confirm('确定退出登录？')) act(api.accountSignOut()); }}>退出登录</button>
           ) : (
-            <button type="button" className={f.primary} disabled={busy} onClick={() => act(api.accountSignIn())}>登录</button>
+            <p className={f.hint}>请在 BlackHole Desktop 或 VS Code 欢迎页完成账号登录或验证。</p>
           )}
         </div>
       )}
@@ -83,21 +83,36 @@ export function AccountCard() {
   );
 }
 
-export function ServiceCard() {
+export function ServiceCard({ managed = false, nativeMaintenance = false }: { managed?: boolean; nativeMaintenance?: boolean } = {}) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stopped, setStopped] = useState(false);
 
   const stop = (): void => {
+    if (managed && !nativeMaintenance) return;
     setBusy(true);
     setError(null);
-    api.stopDaemon().then(
+    // Desktop-hosted pages hand the stop to the native host, which confirms
+    // and runs the Manager transaction; the daemon's own stop route stays
+    // rejected for managed Core. Other hosts keep their existing route.
+    const request = managed && settingsHost().kind === 'desktop'
+      ? runManagedCoreAction('stop').then(result => { if (!result.completed) throw new ApiError(409, 'native_maintenance_incomplete'); })
+      : api.stopDaemon();
+    request.then(
       () => setStopped(true),
       (e: unknown) => { setError(e instanceof ApiError ? errorText(e.code, e.detail) : errorText('network')); setBusy(false); },
     );
   };
 
+  if (managed && !nativeMaintenance) {
+    return <section className={f.card} aria-labelledby="s-service">
+      <div className="bhp-danger-row">
+        <div><b id="s-service">停止后台服务</b><small>请在 VS Code 或 BlackHole Desktop 中停止后台服务，浏览器中无法执行此操作。关闭此页面不会停止 BlackHole。</small></div>
+        <button type="button" className={f.secondary} disabled>请在应用中停止</button>
+      </div>
+    </section>;
+  }
   if (stopped) {
     return (
       <div className={f.stopped} role="alertdialog" aria-labelledby="s-stopped">
@@ -111,17 +126,19 @@ export function ServiceCard() {
 
   return (
     <section className={f.card} aria-labelledby="s-service">
-      <h2 id="s-service" className={f.cardTitle}>后台服务</h2>
-      <p className={f.hint}>BlackHole 会在后台一直运行。停止后，AI 将无法连接本机，正在进行的会话会中断。</p>
-      {error && <p className={f.fieldError}>{error}</p>}
-      <div className={f.inline}>
+      <div className="bhp-danger-row">
+        <div>
+          <b id="s-service">停止后台服务</b>
+          <small>{managed ? '点击后会弹出确认窗口，确认后停止后台服务，AI 将无法连接本机。若其他窗口或 AI 仍在使用，请先结束任务并断开连接。' : 'BlackHole 会在后台一直运行。停止后，AI 将无法连接本机，正在进行的会话会中断。'}</small>
+          {error && <p className={f.fieldError}>{error}</p>}
+        </div>
         {confirming ? (
           <>
             <button type="button" className={f.danger} disabled={busy} onClick={stop}>{busy ? '正在停止…' : '确认停止'}</button>
             <button type="button" className={f.secondary} disabled={busy} onClick={() => setConfirming(false)}>取消</button>
           </>
         ) : (
-          <button type="button" className={f.secondary} onClick={() => setConfirming(true)}>停止 BlackHole</button>
+          <button type="button" className={f.secondary} disabled={busy} onClick={() => managed ? stop() : setConfirming(true)}>{busy ? '等待确认或停止完成…' : '停止 BlackHole'}</button>
         )}
       </div>
     </section>

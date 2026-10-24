@@ -63,6 +63,7 @@ export function Modal({
   children,
   className,
   top,
+  drawer,
 }: {
   label: string;
   onClose: () => void;
@@ -70,6 +71,8 @@ export function Modal({
   className?: string;
   /** anchor near the top (search palette) instead of centred */
   top?: boolean;
+  /** workspace explorer slides in from the right, retaining native dialog focus trapping */
+  drawer?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const previousFocus = useRef(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
@@ -86,7 +89,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className={top ? c.overlayTop : c.overlay}
+      className={drawer ? c.overlayDrawer : top ? c.overlayTop : c.overlay}
       aria-label={label}
       onCancel={(e) => {
         e.preventDefault();

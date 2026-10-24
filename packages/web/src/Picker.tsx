@@ -6,7 +6,7 @@ import p from './Picker.module.css';
  * a native select is too wide and its OS popup cannot be styled (composer send method).
  * Keyboard: ↑/↓ open and move, Enter/Space picks, Esc closes; an outside click closes.
  */
-export interface PickerItem { id: string; label: string; tag?: string; /** Divider above this item. */ sep?: boolean }
+export interface PickerItem { id: string; label: string; tag?: string; /** Divider above this item. */ sep?: boolean; /** A command, not a selected value: may be activated repeatedly. */ action?: boolean }
 
 export function Picker({ items, value, onChange, label, disabled, placement = 'down', align = 'end', className, menuClassName }: {
   items: readonly PickerItem[];
@@ -45,7 +45,7 @@ export function Picker({ items, value, onChange, label, disabled, placement = 'd
     setOpen(false);
     btn.current?.focus();
     const it = items[i];
-    if (it && it.id !== cur?.id) onChange(it.id);
+    if (it && (it.action || it.id !== cur?.id)) onChange(it.id);
   };
   const key = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && open) { e.preventDefault(); e.stopPropagation(); setOpen(false); return; }

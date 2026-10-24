@@ -9,7 +9,6 @@
 .folderPath { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--fs-xs); }
 .chip { height: 24px; padding: 0 9px; font: inherit; font-size: var(--fs-xs); color: var(--text-2); background: transparent; border: 1px solid var(--border); border-radius: var(--r-full); cursor: pointer; }
 .chip:hover { color: var(--text); background: var(--surface-hover); }
-.picker { border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-2); background: var(--surface-2); }
 .input { min-height: 88px; }
 .method { margin-left: auto; }
 .project { min-width: 0; max-width: 60%; }

@@ -2,8 +2,8 @@
 // platforms). Nothing is added to the session list until the session really starts: the draft is
 // reserved on the first send (or prompt copy) and only listed once it is stored.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { api, type ProjectView, type SessionView } from '../api';
-import { FolderPicker } from '../FolderPicker';
+import { api, ApiError, type ProjectView, type SessionView } from '../api';
+import { ProjectFolderDialog } from './ProjectFolderDialog';
 import { Icon } from '../ui';
 import { draftsInUse, getJson, postJson } from './ChatDock';
 import { subscribeCourier } from './courierFeed';
@@ -12,52 +12,32 @@ import type { SessionActions } from './sessionActions';
 import s from './ChatDock.module.css';
 import n from './NewChat.module.css';
 import { Picker } from '../Picker';
+import { ProjectSwitcher } from './ProjectSwitcher';
 import { loadMethod, saveMethod, sendMethods, siteLabel, startPlan, usableMethod, type SendMethod, type SiteChoice } from '../sendMethod';
 
 const LAST_PATH = 'bh.newSessionPath';
-const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
-const BROWSE = '\u0000browse';
-/** The parent folder, last two parts only: enough to tell same-named projects apart in the menu. */
-const shortDir = (p: string): string => {
-  const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/);
-  parts.pop();
-  return (parts.length > 2 ? '…/' : '') + parts.slice(-2).join('/');
-};
-
-export function NewChatPane({ initialPath, projects, sessions, actions, onOpen }: {
+export function NewChatPane({ initialPath, projects, sessions, actions, onOpen, onProjectsChange }: {
   initialPath: string;
   projects: ProjectView[];
   sessions: SessionView[];
   actions: SessionActions;
+  onProjectsChange: () => void;
   /** The session exists now (first message sent, or the web AI made its first call): show it. */
   onOpen: (id: string) => void;
 }) {
-  const [path, setPath] = useState(() => initialPath || localStorage.getItem(LAST_PATH) || '');
-  const [browsing, setBrowsing] = useState(false);
-  // Project menu: every project (not only the first few), the current folder if it is not one, and
-  // a last entry that opens the computer's folder dialog (the in-page browser is the fallback).
-  const [picking, setPicking] = useState(false);
-  const projectItems = [
-    ...(path && !projects.some((p) => p.path === path) ? [{ id: path, label: baseName(path), tag: shortDir(path) }] : []),
-    ...projects.map((p) => ({ id: p.path, label: p.label, tag: shortDir(p.path) })),
-    { id: BROWSE, sep: projects.length > 0 || !!path, label: projects.length || path ? '选择其他文件夹…' : '选择文件夹…' },
-  ];
-  const browse = async (): Promise<void> => {
-    setPicking(true);
-    try {
-      const r = await api.pickProjectFolder();
-      if (r.path) {
-        setPath(r.path);
-        setBrowsing(false);
-        await api.addProject(r.path).catch(() => null); // kept as a project for next time; an existing one is fine
-      } else if (!r.cancelled) setBrowsing(true);
-    } catch {
-      setBrowsing(true);
-    } finally {
-      setPicking(false);
-    }
+  const [path, setPath] = useState(() => {
+    if (initialPath) return initialPath;
+    try { return localStorage.getItem(LAST_PATH) || ''; } catch { return ''; }
+  });
+  const changePath = (next: string): void => {
+    setPath(next);
+    try { localStorage.setItem(LAST_PATH, next); } catch { /* disabled browser storage */ }
   };
+  const [browsing, setBrowsing] = useState(false);
+  // Existing projects: one searchable popover. New paths: a separate Core
+  // workspace drawer. Neither path uses a Windows/PowerShell dialog.
+  const browse = (): void => setBrowsing(true);
   const [picked, setMethodState] = useState<SendMethod>(loadMethod);
   const setMethod = (m: SendMethod): void => { setMethodState(m); saveMethod(m); };
   // Sites added in Courier (检测此页面) are offered next to ChatGPT / Arena.
@@ -78,7 +58,7 @@ export function NewChatPane({ initialPath, projects, sessions, actions, onOpen }
 
   // No folder yet: the first project.
   useEffect(() => {
-    if (!path && projects[0]) setPath(projects[0].path);
+    if (!path && projects[0]) changePath(projects[0].path);
   }, [path, projects]);
 
   useEffect(() => {
@@ -172,15 +152,27 @@ export function NewChatPane({ initialPath, projects, sessions, actions, onOpen }
       <div className={n.center}>
         <h2 className={n.title}>新会话</h2>
         <div className={n.folderRow}>
-          <Icon name="folder" size={14} />
-          <Picker className={n.project} menuClassName={n.projectMenu} align="start" items={projectItems} value={path || BROWSE} disabled={busy || picking} label="项目"
-            onChange={(v) => { if (v === BROWSE) void browse(); else { setPath(v); setBrowsing(false); } }} />
+          <ProjectSwitcher projects={projects} currentPath={path} disabled={busy}
+            onBrowse={browse}
+            onSelect={(next) => {
+              changePath(next);
+              setBrowsing(false);
+              requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+            }} />
           <Picker className={n.method} items={methods} value={method} disabled={busy} onChange={(v) => setMethod(v as SendMethod)} label="发送方式" />
         </div>
         {browsing && (
-          <div className={n.picker}>
-            <FolderPicker start={path} onPick={(p) => { setPath(p); setBrowsing(false); }} />
-          </div>
+          <ProjectFolderDialog mode="session" start={path}
+            onClose={() => setBrowsing(false)}
+            onSelect={async (selected) => {
+              try { await api.addProject(selected); }
+              catch (e) {
+                if (!(e instanceof ApiError && e.code === 'project_exists')) throw e;
+              }
+              changePath(selected);
+              onProjectsChange();
+            }}
+          />
         )}
         {note && <p className={`${s.note} ${s[note.cls] ?? ''}`} role="status">{note.text}</p>}
         {waiting && !note && <p className={`${s.note}`} role="status">提示词已复制，发给网页 AI；它第一次调用 BlackHole 时这里会自动打开会话。</p>}

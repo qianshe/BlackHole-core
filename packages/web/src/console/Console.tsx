@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView, type SessionView } from '../api';
 import { readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
 import { NewChatPane } from './NewChatPane';
-import { FolderPicker } from '../FolderPicker';
+import { ProjectFolderDialog } from './ProjectFolderDialog';
 import { SubscriptionBanner } from '../SubscriptionBanner';
 import { POLL_MS, usePoll, useNow } from '../usePoll';
 import { startPresence } from '../presence';
@@ -33,37 +33,6 @@ function useViewState(): [ViewState, (patch: Partial<ViewState>) => void] {
 }
 
 const narrow = (): boolean => window.matchMedia('(max-width: 760px)').matches;
-
-function AddProjectDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
-  const toast = useToast();
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <Modal label="添加项目" onClose={onClose}>
-      <DialogHead title="添加项目" onClose={onClose} />
-      <div className={c.dialogBody}>
-        <p>选择一个文件夹，之后可以在它下面新建会话。</p>
-        <FolderPicker
-          start=""
-          onPick={(path) =>
-            void api.addProject(path).then(
-              () => {
-                toast('项目已添加');
-                onAdded();
-                onClose();
-              },
-              (e: unknown) => setError(failText(e)),
-            )
-          }
-        />
-        {error && (
-          <p role="alert" style={{ color: 'var(--bad)', marginTop: 8 }}>
-            {error}
-          </p>
-        )}
-      </div>
-    </Modal>
-  );
-}
 
 function RotatedDialog({ id, onClose }: { id: string; onClose: () => void }) {
   return (
@@ -111,29 +80,8 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
 
   const sessions = usePoll((s) => api.sessions(s), 'sessions', POLL_MS, true);
   const projects = usePoll((s) => api.projects(s), 'projects', POLL_MS * 5, true);
-  // 添加项目 opens the computer's own folder dialog; the in-page folder browser is the fallback
-  // when the system has no dialog to offer (or the daemon is older).
-  const [pickingFolder, setPickingFolder] = useState(false);
-  const addProjectNative = async (): Promise<void> => {
-    if (pickingFolder) return;
-    setPickingFolder(true);
-    toast('已在电脑上打开选择文件夹窗口');
-    try {
-      const r = await api.pickProjectFolder();
-      if (r.path) {
-        await api.addProject(r.path);
-        toast('项目已添加');
-        projects.refresh();
-      } else if (!r.cancelled) setAddingProject(true);
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      if (code === 'picker_busy') toast('电脑上已经打开了一个选择文件夹窗口', 'warn');
-      else if (code === 'project_exists' || code === 'too_many_projects') toast(failText(e), 'bad');
-      else setAddingProject(true);
-    } finally {
-      setPickingFolder(false);
-    }
-  };
+  // One Core-hosted folder dialog is shared by add-project and new session.
+  // Keep the native system picker backend only for an explicit future fallback.
   const confirmations = usePoll((s) => api.confirmations(undefined, s), 'confirmations', POLL_MS, true);
   const health = usePoll(() => panel.health(), 'health', POLL_MS * 2, true);
   const settings = usePoll((s) => api.settings(s), 'settings', POLL_MS * 10, true);
@@ -319,7 +267,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
           setView({ view: 'channels' });
           if (narrow()) setCollapsed(true);
         }}
-        onAddProject={() => void addProjectNative()}
+        onAddProject={() => setAddingProject(true)}
         onRenameProject={setRenaming}
         onPinProject={(p) =>
           void api.updateProject(p.id, { pinned: !p.pinned }).then(
@@ -390,6 +338,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
               projects={projectList}
               sessions={list}
               actions={actions}
+              onProjectsChange={projects.refresh}
               onOpen={(id) => {
                 opening.current = id;
                 refreshAll();
@@ -460,7 +409,22 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
           }}
         />
       )}
-      {addingProject && <AddProjectDialog onClose={() => setAddingProject(false)} onAdded={projects.refresh} />}
+      {addingProject && (
+        <ProjectFolderDialog mode="add" start=""
+          onClose={() => setAddingProject(false)}
+          onSelect={async (path) => {
+            let existing = false;
+            try { await api.addProject(path); }
+            catch (e) {
+              if (!(e instanceof ApiError && e.code === 'project_exists')) throw e;
+              existing = true;
+            }
+            projects.refresh();
+            openNew(path);
+            toast(existing ? '已切换到已有项目' : '项目已添加');
+          }}
+        />
+      )}
       {rotated && <RotatedDialog id={rotated} onClose={() => setRotated(null)} />}
       {view.settings && (
         <SettingsModal

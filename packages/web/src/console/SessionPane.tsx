@@ -238,7 +238,7 @@ function SessionMenu({ session, actions, goal }: { session: SessionView; actions
  */
 function useTimeline(sessionId: string, ended: boolean) {
   const { snap, loadOlder } = useSessionFeed<CallView, Message, FeedState>({ scope: 'web', sessionId, limit: WEB_FEED_LIMIT, once: ended });
-  return { entries: snap.entries, calls: snap.calls, messages: snap.messages, loaded: snap.loaded, error: snap.error, hasOlder: snap.hasOlder, olderBusy: snap.loadingOlder, loadOlder };
+  return { entries: snap.entries, calls: snap.calls, messages: snap.messages, state: snap.state, loaded: snap.loaded, error: snap.error, hasOlder: snap.hasOlder, olderBusy: snap.loadingOlder, loadOlder };
 }
 
 type Entry = { kind: 'call'; x: CallView; at: number } | { kind: 'msg'; m: Message; at: number };
@@ -282,15 +282,23 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
     }
     return out;
   }, [tl.entries, questionsInThread]);
-  // The feed marker is only a refresh hint; the API reads the authoritative latest user send from SQLite.
+  // The feed is only a refresh hint; the API chooses the authoritative turn boundary from SQLite.
+  // Mirror the guide fallback so direct sessions refresh and reset a stale Editor focus on new rounds.
   const turnAt = useMemo(() => {
-    let latest: number | null = null;
+    let userAt: number | null = null;
     for (const message of tl.messages) {
       if (message.kind !== 'user' || (message.status !== 'sent' && message.status !== 'unconfirmed') || !Number.isFinite(message.at)) continue;
-      latest = latest === null ? message.at : Math.max(latest, message.at);
+      userAt = userAt === null ? message.at : Math.max(userAt, message.at);
     }
-    return latest;
-  }, [tl.messages]);
+    let guideAt: number | null = null;
+    for (const call of tl.calls) {
+      if (call.tool !== 'guide' || call.status !== 'completed' || !call.created_at) continue;
+      const at = Date.parse(call.created_at);
+      if (!Number.isFinite(at)) continue;
+      guideAt = guideAt === null ? at : Math.max(guideAt, at);
+    }
+    return guideAt !== null && (userAt === null || (tl.state?.link !== 'paired' && guideAt >= userAt)) ? guideAt : userAt;
+  }, [tl.messages, tl.calls, tl.state?.link]);
   useEffect(() => { setFocusRequest(null); }, [session.id, turnAt]);
   const onInspectorTabKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
