@@ -13,7 +13,7 @@ const plain = (v) => JSON.parse(JSON.stringify(v));
 
 const OFF = { on: false, state: 'off', running: [], next: 'quick', last: null, missing: 'cloudflared', reason: null };
 
-function setup({ channel = OFF, hooks = {}, settingsValues = {} } = {}) {
+function setup({ channel = OFF, hooks = {}, settingsValues = {}, managed = false } = {}) {
   const commandsRun = [], opened = [];
   const vscode = { commands: { executeCommand: async (...a) => { commandsRun.push(a); } }, env: { clipboard: { writeText: async () => {} }, openExternal: async (u) => { opened.push(String(u)); } }, Uri: { parse: (u) => u }, workspace: { workspaceFolders: [] }, window: { showErrorMessage() {}, showInformationMessage() {} } };
   const source = fs.readFileSync(new URL('../src/sidebar.ts', import.meta.url), 'utf8');
@@ -50,7 +50,7 @@ function setup({ channel = OFF, hooks = {}, settingsValues = {} } = {}) {
       return health.openai_tunnel;
     },
   };
-  const daemon = { currentState: 'running', onDidChangeState: () => ({ dispose() {} }), restart: async () => { calls.push(['restart']); return api.restartOk ?? true; } };
+  const daemon = { isManagedCore: managed, currentState: 'running', onDidChangeState: () => ({ dispose() {} }), restart: async () => { calls.push(['restart']); return api.restartOk ?? true; } };
   let dismissed = false;
   const allHooks = {
     setupDismissed: () => dismissed,
@@ -112,6 +112,31 @@ test('一键安装并启动：安装 → 重启 daemon → 启动临时渠道，
   h.provider.dispose();
 });
 
+test('managed sidebar saves verified runtime and starts channel without invoking forbidden legacy restart', async () => {
+  const h = setup({ managed: true });
+  try {
+    await mount(h);
+    h.api.restartOk = false;
+    await h.provider.onMessage({ type: 'setupStart' });
+    assert.deepEqual(h.calls, [['install'], ['tunnelStart', 'quick']]);
+    const steps = h.messages.filter(m => m.type === 'update' && m.setup).map(m => m.setup.step);
+    assert.deepEqual([...new Set(steps)], ['install', 'start']);
+    assert.equal(h.last().managedCore, true);
+    assert.equal(h.last().setup, null);
+  } finally { h.provider.dispose(); }
+});
+
+test('managed sidebar installation failure never restarts Core or starts a public channel', async () => {
+  const h = setup({ managed: true });
+  try {
+    await mount(h);
+    h.api.installError = 'cloudflared_path_changed_during_install';
+    await h.provider.onMessage({ type: 'setupStart' });
+    assert.deepEqual(h.calls, [['install']]);
+    assert.equal(h.last().setup.failedAt, 'install');
+  } finally { h.provider.dispose(); }
+});
+
 test('一键安装失败：停在失败的那一步并给出原因，不重启也不启动；重试从头再来', async () => {
   const h = setup();
   await mount(h);
@@ -171,10 +196,10 @@ test('login welcome spans the session grid and contains optional channel setup w
     const html = h.view.webview.html;
     assert.match(html, /#list\[data-mode="sessions"\] > \.bh-onboard\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s);
     assert.ok(html.includes('登录 BlackHole'));
-    assert.ok(html.includes('配置直连'));
+    assert.ok(html.includes('id="guideDirect"'), 'the direct/self-hosted route remains available');
     assert.ok(html.includes('临时公网渠道'));
     assert.ok(html.includes('OpenAI Tunnel'));
-    assert.ok(html.includes('跳过渠道安装'));
+    assert.ok(html.includes('id="guideLater"'), 'channel setup can still be skipped after verification');
     assert.ok(html.includes('查看错误详情'), 'setup failures still expose diagnostics');
     assert.doesNotMatch(html, /function loginCard\(\)|function setupCard\(d\)/);
   } finally { h.provider.dispose(); }
@@ -187,16 +212,18 @@ test('welcome ownership depends on login, not sessions or channel runtime state'
     const html = h.view.webview.html;
     const source = html.slice(html.indexOf('function onboardingState(d)'), html.indexOf('function onboardProgress('));
     const classify = vm.runInNewContext('(' + source + ')');
-    const d = { daemon: 'running', account: 'verified', sessions: [], channel: OFF };
-    assert.equal(classify(d), null, 'a verified account enters the workspace even with no channel');
+    const d = { daemon: 'running', account: 'verified', sessions: [], channel: OFF, setupConfigured: false, setupDismissed: true };
+    assert.equal(classify(d), null, 'a verified account can skip channels and enter the workspace');
+    assert.equal(classify({ ...d, setupConfigured: null }), 'setup-check', 'unknown setup state is not fabricated');
+    assert.equal(classify({ ...d, setupDismissed: false }), 'choose');
     const out = { ...d, account: 'logged_out' };
     assert.equal(classify(out), 'login');
     assert.equal(classify({ ...out, sessions: [{ draft: false }], channel: { ...OFF, on: true, state: 'on', last: 'quick', missing: null } }), 'login', 'sessions and a running channel do not bypass login');
-    assert.equal(classify({ ...out, setup: { step: 'restart' } }), 'restart', 'explicit setup may keep progress on the login page');
-    assert.equal(classify({ ...out, setup: { step: 'failed', failedAt: 'install', error: 'network' } }), 'failed');
-    assert.equal(classify({ ...out, openaiOnboarding: { step: 'configure', runtimeReady: true } }), 'openai');
+    for (const state of ['restart','failed']) assert.equal(classify({ ...out, setup: { step: state } }), 'login', 'stale progress must not override logout');
+    assert.equal(classify({ ...out, openaiOnboarding: { step: 'configure', runtimeReady: true } }), 'login');
     assert.equal(classify({ ...out, setupDismissed: true }), 'login', 'skip changes the install section, not login ownership');
-    assert.equal(classify({ ...d, account: 'saved' }), null, 'saved credentials do not reopen first-run setup');
+    assert.equal(classify({ ...d, account: 'saved' }), 'account-check', 'saved-only credentials are not authentication: fix Core renewal rather than weaken this guard');
+    assert.equal(classify({ ...d, account: 'unavailable' }), 'account-check');
   } finally { h.provider.dispose(); }
 });
 

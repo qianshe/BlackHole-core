@@ -5,6 +5,7 @@ import type { ControlApi } from './controlApi';
 export interface SettingsHostServices {
   api: ControlApi;
   info(): SettingsHostInfo;
+  coreAction?(action: 'apply-settings' | 'configure-port' | 'inspect-maintenance', revision?: number): Promise<boolean | void>;
   saveLocal(values: Record<string, unknown>, expected: Record<string, unknown>): Promise<void>;
   sync(): Promise<void>;
   restart(): Promise<boolean>;
@@ -25,6 +26,7 @@ const str = (value: unknown, max = 2048): string => {
 /** All native side effects are behind an explicit settings route. No page HTML lives here. */
 export class SettingsHostService {
   private disposed = false;
+  private coreActionPending = false;
   private localWrites: Promise<unknown> = Promise.resolve();
   private readonly jobs: Record<'cloudflared' | 'openai', Job> = { cloudflared: { state: 'idle' }, openai: { state: 'idle' } };
   private readonly duplicate = new Map<string, { signature: string; result: Promise<unknown> }>();
@@ -49,6 +51,21 @@ export class SettingsHostService {
     const h = this.host, b = (r.body ?? {}) as Record<string, unknown>;
     const u = new URL(r.path, 'http://settings.invalid'), p = u.pathname;
     if (p === '/host/info') return h.info();
+    if (p.startsWith('/host/core/')) {
+      const action = p.slice('/host/core/'.length) as 'apply-settings' | 'configure-port' | 'inspect-maintenance';
+      if (!h.info().managedCore || !h.coreAction) throw problem('managed_core_required', 409);
+      const apply = action === 'apply-settings';
+      if (Object.keys(b).some(key => !apply || key !== 'revision') || (apply && (!Number.isSafeInteger(b.revision) || Number(b.revision) < 0))) throw problem('invalid_core_action');
+      if (this.coreActionPending) throw problem('settings_core_action_busy', 409);
+      this.coreActionPending = true;
+      try {
+        // No page-supplied token, command or confirmation is forwarded. Native
+        // commands independently read the target and require operator approval.
+        const result = await h.coreAction(action, apply ? Number(b.revision) : undefined);
+        this.live();
+        return { completed: result === true };
+      } finally { this.coreActionPending = false; }
+    }
     if (p === '/host/settings') {
       if (!b.values || !b.expected || typeof b.values !== 'object' || Array.isArray(b.values) || typeof b.expected !== 'object' || Array.isArray(b.expected) || Object.keys(b).some(k => k !== 'values' && k !== 'expected')) throw problem('invalid_host_setting');
       const save = async () => { this.live(); await h.saveLocal(b.values as Record<string, unknown>, b.expected as Record<string, unknown>); this.live(); return h.info(); };
@@ -112,6 +129,14 @@ export class SettingsHostService {
     };
     if (p === '/account/refresh') { await call('check', []); return h.api.account(); }
     if (p === '/account/plans') return call('billingPlans', [uid]);
+    if (p === '/account/membership') return call('membershipCatalogue', [uid]);
+    if (p === '/account/membership/status') return call('membershipStatus', [uid]);
+    if (p === '/account/membership/checkout') {
+      if (Object.keys(b).join(',') !== 'sku' || typeof b.sku !== 'string' || !b.sku || b.sku.length > 32 || /[\u0000-\u0020\u007f]/.test(b.sku)) throw problem('invalid_input', 400);
+      const result = await call('membershipCheckout', [uid, b.sku]) as { checkoutUrl: string; expiresAt: number };
+      const opened = await checkout(result);
+      return { opened: opened.opened, expiresAt: result.expiresAt };
+    }
     if (p === '/account/orders' && r.method === 'GET') return call('billingOrders', [uid]);
     if (p === '/account/refundable') return call('billingRefundableOrders', u.searchParams.has('cursor') ? [uid, str(u.searchParams.get('cursor'), 200)] : [uid]);
     if (p === '/account/orders' && r.method === 'POST') return checkout(await call('createBillingOrder', [uid, str(b.sku, 64), randomUUID()]));

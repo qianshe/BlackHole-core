@@ -48,6 +48,54 @@ function server(origin=ORIGIN){
 function client(s,store,extra={}){const origin=extra.origin??ORIGIN;store??=storage(origin);return {store,client:new CloudAuthClient({origin,secrets:store.secrets,receipts:store.receipts,clientId:CLIENT,fetch:s.fetch,
  openExternal:s.openExternal,now:()=>s.now,sleep:async(ms,signal)=>{if(signal?.aborted)throw new CloudAuthError('cancelled');s.now+=ms;},...extra})};}
 const errorCode=code=>error=>error instanceof CloudAuthError&&error.code===code;
+
+test('Core observed account stays verified across ten cache-expiry windows without a second login',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();
+ const opened=s.opened.length,exchanges=s.calls.filter(x=>x.path.endsWith('/exchange')).length;
+ const reads=()=>s.calls.filter(x=>x.path.endsWith('/session')).length;
+ let before=reads();
+ for(let n=0;n<10;n++){
+  s.now+=61_000;
+  assert.equal((await f.client.view()).state,'saved','raw cache expiry reproduces the old welcome-loop trigger');
+  assert.equal((await f.client.observe()).state,'verified');
+  assert.equal(reads(),++before);
+  for(let window=0;window<8;window++)assert.equal((await f.client.observe()).state,'verified');
+  assert.equal(reads(),before,'other windows reuse the same Core snapshot');
+ }
+ assert.equal(s.opened.length,opened);assert.equal(s.calls.filter(x=>x.path.endsWith('/exchange')).length,exchanges);
+});
+test('simultaneous Core observers coalesce one read-only renewal before sixty seconds',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();s.now+=46_000;
+ const before=s.calls.filter(x=>x.path.endsWith('/session')).length,gate=deferred();
+ s.delivery=async(p,response)=>{if(p.endsWith('/session'))await gate.promise;return response;};
+ const views=Array.from({length:16},()=>f.client.observe());
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(s.calls.filter(x=>x.path.endsWith('/session')).length,before+1);
+ gate.resolve();for(const result of await Promise.all(views))assert.equal(result.state,'verified');
+});
+test('Core observed renewal failure is unavailable, backs off and recovers without replacing credentials',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();s.now+=61_000;
+ s.override=async p=>p.endsWith('/session')?Response.json({error:'temporary'},{status:503}):undefined;
+ assert.equal((await f.client.observe()).state,'unavailable');
+ const requests=s.calls.length,opened=s.opened.length;
+ for(let n=0;n<12;n++){s.now+=1000;assert.notEqual((await f.client.observe()).state,'verified');}
+ assert.equal(s.calls.length,requests);assert.equal(f.store.vault.size,1);
+ s.now+=30_000;s.override=undefined;
+ assert.equal((await f.client.observe()).state,'verified');assert.equal(s.opened.length,opened);
+});
+test('Core observer rejects revoked and expired sessions instead of keeping an old verified UI',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();s.now+=61_000;s.sessions.clear();
+ assert.equal((await f.client.observe()).state,'logged_out');assert.equal(f.store.vault.size,0);
+ const next=server(),g=client(next);await g.client.signIn();next.now+=605_000_000;
+ const requests=next.calls.length;assert.equal((await g.client.observe()).state,'logged_out');assert.equal(next.calls.length,requests);
+});
+test('a late observed session response cannot undo an explicit logout',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();s.now+=61_000;
+ const gate=deferred();s.delivery=async(p,response)=>{if(p.endsWith('/session'))await gate.promise;return response;};
+ const pending=f.client.observe();await new Promise(resolve=>setImmediate(resolve));
+ await f.client.signOut();gate.resolve();
+ assert.equal((await pending).state,'logged_out');assert.equal((await f.client.view()).state,'logged_out');
+});
 test('runtime endpoint is immutable and ignores obsolete environment-setting arguments',()=>{
  const testOrigin='https://sandbox.blackhole.example.org';
  const expected={environment:'production',origin:ORIGIN,label:'正式环境'};
@@ -290,8 +338,9 @@ function hostMock(){
  const context={globalStorageUri:uri('/SYNTHETIC-EXTENSION-STORAGE'),globalState:{get:key=>globalState.get(key),update:async(key,value)=>{globalState.set(key,value);}},secrets:{get:async key=>vault.get(key),store:async(key,value)=>{vault.set(key,value);secretListener?.({key});},delete:async key=>{vault.delete(key);secretListener?.({key});},onDidChange:fn=>{secretListener=fn;return new Disposable(()=>{secretListener=undefined;});}}};
  return {mock,context,globalState,registrations,files,vault,messages,bars,clipboard,get focus(){return focusListener;}};
 }
-async function withHost(fn,bridge){
+async function withHost(fn,bridge,managedMode){
  const host=hostMock(),originalLoad=Module._load,originalFetch=globalThis.fetch;
+ if(managedMode)host.context.extension={packageJSON:{blackholeSharedCore:{mode:managedMode}}};
  Module._load=function(name,...args){if(name==='vscode')return host.mock;return originalLoad.call(this,name,...args);};
  const module=require.resolve('../../../.cache/vscode-auth-verify/packages/vscode/src/cloudAccount.js'),billingModule=require.resolve('../../../.cache/vscode-auth-verify/packages/vscode/src/cloudBilling.js');delete require.cache[module];delete require.cache[billingModule];
  let registration;
@@ -475,49 +524,72 @@ test('billing client rejects foreign checkout origins and untrusted response fie
  s.override=async path=>path==='/api/billing/plans'?Response.json({enabled:true,environment:'sandbox',plans:[],serverSecret:'never-trust-extra-fields'}):undefined;
  await assert.rejects(f.client.billingPlans(s.user),errorCode('invalid_response'));
 });
-test('price changes after acceptance confirmation never open an unexpected-price checkout',async()=>{
+const membershipCatalogueFixture=(amountMinor=1990)=>({enabled:true,salesEnabled:true,productId:'DIRECT_fixture',productName:'BlackHole',capabilityStatus:'ENABLED',checkedAt:Math.floor(Date.now()/1000),plans:[{sku:'calendar-month',displayName:'日历月会员',amountMinor,currency:'CNY',durationPeriod:'MONTH'}]});
+const membershipStateFixture=(decision='PURCHASE_REQUIRED')=>{const now=Math.floor(Date.now()/1000);return {decision,validFrom:decision==='ALLOW'?now-60:null,validUntil:decision==='ALLOW'?now+86400:null,legacyExpiresAt:0,canPurchase:decision==='PURCHASE_REQUIRED',checkedAt:now};};
+const membershipEntranceFixture=()=>({checkoutUrl:ORIGIN+'/api/billing/membership/checkout#'+new URLSearchParams({flow:randomUUID(),checkout:'S'.repeat(43)}),expiresAt:Math.floor(Date.now()/1000)+300});
+test('invalid provider price never opens checkout or falls back to a cached legacy price',async()=>{
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  let opened=0;const id=randomUUID();host.mock.env.openExternal=async()=>{opened++;return true;};
-  host.mock.window.showInformationMessage=async(_text,options)=>options?.modal?'前往付款':undefined;
-  s.override=async(path,init)=>{
-   if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'production',plans:[{sku:'pro_day',amountMinor:1,currency:'CNY',durationSeconds:86400}]});
-   if(path==='/api/billing/orders'&&init.method==='POST')return Response.json({order:billingOrder(id,'payment_pending',{amountMinor:100}),checkoutUrl:ORIGIN+'/api/billing/checkout#'+new URLSearchParams({order:id,checkout:'S'.repeat(43)})});
-  };
+  let opened=0;host.mock.env.openExternal=async()=>{opened++;return true;};
+  s.override=async path=>path==='/api/billing/membership/catalogue'?Response.json(membershipCatalogueFixture(-1)):undefined;
   await host.registrations.get('blackhole.accountBuyCard')('pro_day',true);assert.equal(opened,0);
+  assert.ok(!s.calls.some(c=>c.path==='/api/billing/orders'));
  });
 });
-test('one-cent acceptance reconfirms actual server price even when launched from settings',async()=>{
+test('membership reconfirms actual provider prices and calendar terms even when launched from legacy settings',async()=>{
  for(const approve of [false,true])await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  let confirmations=0,created=0;const id=randomUUID();host.mock.env.openExternal=async()=>false;
-  host.mock.window.showInformationMessage=async(text,options)=>{
-   if(options?.modal){confirmations++;assert.match(text,/支付验收/);assert.match(text,/¥0\.01/);assert.match(options.detail,/不会自动续费/);return approve?'前往付款':undefined;}
+  let confirmations=0,created=0;host.mock.env.openExternal=async()=>false;
+  host.mock.window.showInformationMessage=async(_text,options)=>{
+   if(options?.modal){confirmations++;assert.match(options.detail,/¥19\.90/);assert.match(options.detail,/按日历/);assert.match(options.detail,/不自动续费/);assert.match(options.detail,/此档位的付款二维码/);return approve?'打开购买页':undefined;}
   };
-  s.override=async(path,init)=>{
-   if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'production',plans:[{sku:'pro_day',amountMinor:1,currency:'CNY',durationSeconds:86400}]});
-   if(path==='/api/billing/orders'&&init.method==='POST'){created++;return Response.json({order:billingOrder(id,'payment_pending',{amountMinor:1,environment:'production'}),checkoutUrl:ORIGIN+'/api/billing/checkout#'+new URLSearchParams({order:id,checkout:'S'.repeat(43)})});}
+  s.override=async(path,init,data)=>{
+   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
+   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());
+   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;assert.deepEqual(data,{sku:'calendar-month'});return Response.json(membershipEntranceFixture());}
   };
   await host.registrations.get('blackhole.accountBuyCard')('pro_day',true);
   assert.equal(confirmations,1);assert.equal(created,approve?1:0);
  });
 });
-test('VS Code purchase opens the system browser, tolerates a transient query failure and refreshes after automatic fulfillment',async()=>{
+
+test('membership multi-plan QuickPick forwards the selected provider SKU, never price or buyer',async()=>{
+ await withHost(async host=>{
+  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
+  host.mock.env.openExternal=async()=>false;let selectedBody=null,picks=0;
+  host.mock.window.showQuickPick=async items=>{picks++;return items[1];};
+  host.mock.window.showInformationMessage=async(_text,options)=>{if(options?.modal){assert.match(options.detail,/一周/);assert.match(options.detail,/¥5\.00/);return '打开购买页';}};
+  s.override=async(path,init,data)=>{
+   if(path==='/api/billing/membership/catalogue'){const c=membershipCatalogueFixture();c.plans.push({sku:'provider-week',displayName:'周会员',amountMinor:500,currency:'CNY',durationPeriod:'WEEK'});return Response.json(c);}
+   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());
+   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){selectedBody=data;return Response.json(membershipEntranceFixture());}
+  };
+  await host.registrations.get('blackhole.accountBuyCard')();assert.equal(picks,1);assert.deepEqual(selectedBody,{sku:'provider-week'});
+ });
+});
+test('cancelling membership SKU selection does not create a purchasing capability',async()=>{
+ await withHost(async host=>{
+  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
+  host.mock.window.showQuickPick=async()=>undefined;let created=0;
+  s.override=async(path)=>{if(path==='/api/billing/membership/catalogue'){const c=membershipCatalogueFixture();c.plans.push({...c.plans[0],sku:'another-month'});return Response.json(c);}if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());if(path==='/api/billing/membership/checkout'){created++;return Response.json(membershipEntranceFixture());}};
+  await host.registrations.get('blackhole.accountBuyCard')();assert.equal(created,0);
+ });
+});
+test('VS Code membership opens the browser, tolerates an unknown query and refreshes only on ALLOW',{timeout:20000},async()=>{
  const actions=[];
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  const orderId=randomUUID(),checkout=ORIGIN+'/api/billing/checkout#'+new URLSearchParams({order:orderId,checkout:'D'.repeat(43)});let opened='',reconcileCalls=0;
+  const entrance=membershipEntranceFixture();let opened='',consults=0;
   host.mock.env.openExternal=async value=>{opened=value.toString();return true;};
-  host.mock.window.showQuickPick=async items=>items[0];
-  host.mock.window.showInformationMessage=async text=>{host.messages.push(text);if(text.startsWith('确认购买'))return '前往付款';};
+  host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
   s.override=async(path,init)=>{
-   if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'sandbox',plans:[{sku:'pro_day',amountMinor:100,currency:'CNY',durationSeconds:86400}]});
-   if(path==='/api/billing/orders'&&init.method==='POST')return Response.json({order:billingOrder(orderId),checkoutUrl:checkout});
-   if(path.endsWith('/reconcile')){reconcileCalls++;if(reconcileCalls===1)return Response.json({error:'alipay_query_unavailable'},{status:503});return Response.json({order:billingOrder(orderId,'fulfilled')});}
+   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
+   if(path==='/api/billing/membership/checkout'&&init.method==='POST')return Response.json(entrance);
+   if(path==='/api/billing/membership/status'){consults++;if(consults===1)return Response.json(membershipStateFixture());if(consults===2)return Response.json({error:'nowpay_unavailable'},{status:503});return Response.json(membershipStateFixture('ALLOW'));}
   };
   await host.registrations.get('blackhole.accountBuyCard')();await new Promise(r=>setImmediate(r));
-  assert.equal(opened,checkout);assert.equal(reconcileCalls,2);assert.ok(actions.includes('refresh'));
-  assert.ok(host.messages.some(message=>message.includes('已自动叠加到当前账号')));assert.ok(!s.calls.some(call=>call.path.includes('claim-card')||call.path.includes('ack-card')||call.path.includes('/cards/redeem')));
+  assert.equal(opened,entrance.checkoutUrl);assert.equal(consults,3);assert.ok(actions.includes('refresh'));
+  assert.ok(host.messages.some(message=>message.includes('会员权益已生效')));assert.ok(!s.calls.some(call=>call.path.includes('/api/billing/orders')||call.path.includes('/cards/redeem')));
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
 test('VS Code settings refund command quotes the selected paid order, explains exclusions and refreshes after success',async()=>{
@@ -538,49 +610,48 @@ test('VS Code settings refund command quotes the selected paid order, explains e
   assert.equal(s.calls.filter(call=>call.path.endsWith('/refund')).length,1);
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
-test('cancelling the local VS Code payment wait never mutates the remote order',{timeout:10000},async()=>{
+test('cancelling the local membership wait never cancels a provider purchase or claims failure',{timeout:10000},async()=>{
  await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();const orderId=randomUUID(),checkout=checkoutUrl(orderId);
-  host.mock.env.openExternal=async()=>true;host.mock.window.showQuickPick=async items=>items[0];host.mock.window.showInformationMessage=async text=>{host.messages.push(text);if(text.startsWith('确认购买'))return '前往付款';};
+  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
+  host.mock.env.openExternal=async()=>true;host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
   host.mock.window.withProgress=async(_opts,fn)=>{let cancel;const running=fn({}, {isCancellationRequested:false,onCancellationRequested:cb=>{cancel=cb;return new host.mock.Disposable();}});await new Promise(r=>setImmediate(r));cancel();return running;};
-  s.override=async(path,init)=>{if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'sandbox',plans:[{sku:'pro_day',amountMinor:100,currency:'CNY',durationSeconds:86400}]});if(path==='/api/billing/orders'&&init.method==='POST')return Response.json({order:billingOrder(orderId),checkoutUrl:checkout});if(path.endsWith('/reconcile'))return Response.json({order:billingOrder(orderId)});};
+  s.override=async(path,init)=>{if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());if(path==='/api/billing/membership/checkout'&&init.method==='POST')return Response.json(membershipEntranceFixture());if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());};
   await host.registrations.get('blackhole.accountBuyCard')();assert.ok(!s.calls.some(call=>call.path.endsWith('/cancel')));assert.ok(host.messages.some(message=>message.includes('停止等待')));
  },{entitlement:async()=>({})});
 });
-test('completed purchase releases the mutex before its passive success toast is dismissed',{timeout:15000},async()=>{
+test('membership completion releases its mutex before toast dismissal and rechecks active rights instead of buying again',{timeout:15000},async()=>{
  const actions=[],toast=deferred(),shown=deferred();
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
   const refreshesBefore=actions.filter(action=>action==='refresh').length;host.mock.env.openExternal=async()=>true;
-  const orderIds=[randomUUID(),randomUUID()];let created=0;
-  host.mock.window.showQuickPick=async items=>items[0];
-  host.mock.window.showInformationMessage=async text=>{
-   host.messages.push(text);if(text.startsWith('确认购买'))return '前往付款';
-   if(text.includes('已自动叠加到当前账号')){shown.resolve();return toast.promise;}
+  let created=0,catalogues=0;
+  host.mock.window.showInformationMessage=async(text,options)=>{
+   host.messages.push(text);if(options?.modal)return '打开购买页';
+   if(text.includes('会员权益已生效')){shown.resolve();return toast.promise;}
   };
   s.override=async(path,init)=>{
-   if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'sandbox',plans:[{sku:'pro_day',amountMinor:100,currency:'CNY',durationSeconds:86400}]});
-   if(path==='/api/billing/orders'&&init.method==='POST'){const id=orderIds[created++];return Response.json({order:billingOrder(id),checkoutUrl:ORIGIN+'/api/billing/checkout#'+new URLSearchParams({order:id,checkout:'E'.repeat(43)})});}
-   if(path.endsWith('/reconcile')){const id=path.split('/')[4];return Response.json({order:billingOrder(id,'fulfilled')});}
+   if(path==='/api/billing/membership/catalogue'){catalogues++;return Response.json(membershipCatalogueFixture());}
+   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;return Response.json(membershipEntranceFixture());}
+   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture(created?'ALLOW':'PURCHASE_REQUIRED'));
   };
   const first=host.registrations.get('blackhole.accountBuyCard')();await shown.promise;await new Promise(r=>setImmediate(r));
-  const second=host.registrations.get('blackhole.accountBuyCard')();await new Promise(r=>setImmediate(r));
-  assert.equal(created,2);assert.ok(!host.messages.some(message=>message.includes('当前购买或订单核对仍在进行')));
-  toast.resolve();await Promise.all([first,second]);
-  assert.equal(actions.filter(action=>action==='refresh').length,refreshesBefore+2);
+  const second=host.registrations.get('blackhole.accountBuyCard')();await second;
+  assert.equal(catalogues,2);assert.equal(created,1);assert.ok(!host.messages.some(message=>message.includes('当前购买、订单核对或退款仍在进行')));
+  toast.resolve();await first;
+  assert.equal(actions.filter(action=>action==='refresh').length,refreshesBefore+1);
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
-test('an in-flight payment still prevents concurrent purchases and releases after confirmation',{timeout:15000},async()=>{
+test('in-flight membership confirmation prevents concurrent purchase entrances and releases after ALLOW',{timeout:15000},async()=>{
  const querying=deferred(),payment=deferred();
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  host.mock.env.openExternal=async()=>true;host.mock.window.showQuickPick=async items=>items[0];
-  host.mock.window.showInformationMessage=async text=>{host.messages.push(text);if(text.startsWith('确认购买'))return '前往付款';};
-  const id=randomUUID();let created=0;
+  host.mock.env.openExternal=async()=>true;
+  host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
+  let created=0;
   s.override=async(path,init)=>{
-   if(path==='/api/billing/plans')return Response.json({enabled:true,environment:'sandbox',plans:[{sku:'pro_day',amountMinor:100,currency:'CNY',durationSeconds:86400}]});
-   if(path==='/api/billing/orders'&&init.method==='POST'){created++;return Response.json({order:billingOrder(id),checkoutUrl:ORIGIN+'/api/billing/checkout#'+new URLSearchParams({order:id,checkout:'F'.repeat(43)})});}
-   if(path.endsWith('/reconcile')){querying.resolve();await payment.promise;return Response.json({order:billingOrder(id,'fulfilled')});}
+   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
+   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;return Response.json(membershipEntranceFixture());}
+   if(path==='/api/billing/membership/status'){if(!created)return Response.json(membershipStateFixture());querying.resolve();await payment.promise;return Response.json(membershipStateFixture('ALLOW'));}
   };
   const first=host.registrations.get('blackhole.accountBuyCard')();
   try{await querying.promise;await host.registrations.get('blackhole.accountBuyCard')();assert.equal(created,1);assert.ok(host.messages.some(text=>text.includes('当前购买、订单核对或退款仍在进行')));}
@@ -719,19 +790,50 @@ function seedLocalLogin(host,over={}){
  return value;
 }
 function daemonBridge(over={}){
- const log={migrate:[],calls:[],entitlement:[],signIn:0,cancel:0};let state='idle';
+ const log={migrate:[],calls:[],entitlement:[],signIn:0,cancel:0};let state='idle',signInTimer;
  const bridge={
   entitlement:async action=>{log.entitlement.push(action);return {daemon_id:'d1',pending:null};},
   health:async()=>({ok:true,daemon_id:'d1',account_api_version:1,account_storage:'available',cloud_origin:cloudEnvironment.PRODUCTION_CLOUD_ORIGIN,...over.health}),
   account:async()=>({state:'saved',userId:'daemon_user'}),
   accountMigrate:async credential=>{log.migrate.push(credential);return {migrated:true};},
   accountCall:async(method)=>{log.calls.push(method);if(over.callError)throw over.callError;return {result:{state:'saved',userId:'daemon_user',expiresAt:Math.floor(Date.now()/1000)+3600}};},
-  accountSignIn:async()=>{log.signIn++;state='running';setTimeout(()=>{if(state==='running')state='done';},over.signInMs??50);return {state};},
+  accountSignIn:async()=>{log.signIn++;state='running';signInTimer=setTimeout(()=>{if(state==='running')state='done';},over.signInMs??50);return {state};},
   accountSignInState:async()=>({state}),
-  accountSignInCancel:async()=>{log.cancel++;state='idle';return {state};},
+  accountSignInCancel:async()=>{log.cancel++;state='idle';clearTimeout(signInTimer);return {state};},
  };
  return {bridge,log};
 }
+
+test('host-node account waits for Core and never creates a second local login during startup',async()=>{
+ const {bridge,log}=daemonBridge({health:{lifecycle_state:'managed'}});let ready=false,localReads=0;
+ const health=bridge.health;bridge.health=async()=>{if(!ready)throw Error('core_starting');return health();};
+ bridge.accountCall=async method=>{log.calls.push(method);return{result:{state:'verified',userId:'daemon_user'}};};
+ await withHost(async host=>{
+  globalThis.fetch=async()=>{throw Error('EXTENSION_CLOUD_IO_FORBIDDEN')};
+  host.context.secrets.get=async()=>{localReads++;throw Error('LOCAL_AUTH_FORBIDDEN')};
+  host.mock.workspace.fs.createDirectory=async()=>{localReads++;throw Error('LOCAL_AUTH_FORBIDDEN')};
+  const waiting=await host.registrations.get('blackhole.accountSnapshot')();
+  assert.equal(waiting,undefined);assert.equal(host.views.at(-1).state,'unavailable');
+  ready=true;
+  const view=await host.registrations.get('blackhole.accountSnapshot')({daemonId:'managed-ready'});
+  assert.equal(view.state,'verified');assert.equal(view.userId,'daemon_user');
+  for(let n=0;n<6;n++)assert.equal((await host.registrations.get('blackhole.accountSnapshot')()).state,'verified');
+  assert.equal(localReads,0);assert.equal(host.files.size,0);assert.equal(host.vault.size,0);
+  assert.deepEqual(log.migrate,[]);assert.deepEqual(log.entitlement,[]);
+ },bridge,'host-node');
+});
+test('host-node refuses legacy, wrong-origin and unavailable-storage account backends without local sign-in',async()=>{
+ for(const health of [{lifecycle_state:undefined},{lifecycle_state:'managed',account_storage:'unavailable'},{lifecycle_state:'managed',cloud_origin:'https://wrong.example.invalid'}]){
+  const {bridge,log}=daemonBridge({health});
+  await withHost(async host=>{
+   globalThis.fetch=async()=>{throw Error('NO_CLOUD_OR_LOCAL_FALLBACK')};
+   await host.registrations.get('blackhole.accountSignIn')();
+   assert.equal(log.signIn,0);assert.equal(log.calls.length,0);assert.equal(log.migrate.length,0);
+   assert.equal(host.files.size,0);assert.equal(host.vault.size,0);
+   assert.equal(host.views.at(-1).state,'unavailable');
+  },bridge,'host-node');
+ }
+});
 
 test('daemon account: an existing VS Code login moves to the daemon once, the UI reads the daemon',async()=>{
  const {bridge,log}=daemonBridge();

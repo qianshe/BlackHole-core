@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
+import { resolveDataPaths } from '../../../src/data-paths.js';
 import path from 'node:path';
 import { env, Uri, window } from 'vscode';
 import type { ControlApi } from './controlApi';
@@ -27,7 +27,7 @@ export function redirectHtml(url: string): string {
 
 /** Writes a user-only redirect file under ~/.blackhole/runtime-state and removes it after the ticket expires. */
 function writeRedirect(url: string): string {
-  const dir = path.join(os.homedir(), '.blackhole', 'runtime-state');
+  const dir = resolveDataPaths().runtimeState;
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Leftovers from a crashed window: their tickets are long expired.
   for (const name of fs.readdirSync(dir)) {

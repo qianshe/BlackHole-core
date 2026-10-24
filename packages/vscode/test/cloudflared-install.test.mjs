@@ -1,3 +1,4 @@
+import { dataPaths } from './source-data-paths.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ const js = ts.transpileModule(source, {
 const module = { exports: {} };
 // Expose internals only in this isolated test VM, without public production hooks.
 vm.runInNewContext(js + '\nmodule.exports.testOnly = { installArtifact, download, ARTIFACTS, VERSION, MAX_BYTES };', {
-  module, exports: module.exports, require, Buffer, process, fetch, AbortSignal,
+  module, exports: module.exports, require: name => name === '../data-paths.js' ? dataPaths : require(name), Buffer, process, fetch, AbortSignal,
 });
 const { initializeCloudflared, testOnly: { installArtifact, download, ARTIFACTS, VERSION, MAX_BYTES } } = module.exports;
 const binary = Buffer.from('fixture binary, never executed');

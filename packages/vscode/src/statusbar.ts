@@ -135,10 +135,18 @@ export class StatusBarController implements Disposable {
     // daemon problems outrank channel state: without the daemon nothing works
     this.channelExtra = null;
     if (this.daemon.currentState !== 'running') {
+      const code = this.daemon.error;
+      const managedHint = code === 'managed_core_not_attached' || code === 'managed_core_lease_expired'
+        ? 'Core 仍可正常运行，但当前 VS Code 没有有效的客户端租约。请在命令面板执行 BlackHole: Retry Shared Core；此操作只检查并附着，不会主动停止 Core。'
+        : code === 'managed_core_identity_or_lease_mismatch'
+          ? '本窗口持有的租约与当前 Core 身份不匹配，已拒绝接管。请检查 BlackHole 输出和 Manager 维护状态，不要强杀进程或手动删除记录。'
+          : code.startsWith('maintenance_outcome_requires_inspection')
+            ? '维护结果未获确认，必须先通过原生 Manager 检查事务；禁止直接重试停止或重启。'
+            : '';
       this.set(
         `${daemonIcons[this.daemon.currentState] ?? '$(question)'} BlackHole`,
         this.daemon.currentState === 'error'
-          ? `BlackHole daemon：${this.daemon.error}`
+          ? `BlackHole daemon：${code}${managedHint ? `\n${managedHint}` : ''}`
           : `BlackHole daemon：${this.daemon.currentState}（点击打开设置）`,
         before,
       );

@@ -11,7 +11,7 @@ test('production ignores stored daemon overrides without reading or deleting the
  const source=read('../src/config.ts'),js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  for(const environment of ['production','test']){
   const reads=[],module={exports:{}};
-  vm.runInNewContext(js,{module,exports:module.exports,require:name=>name==='vscode'?{workspace:{getConfiguration:()=>({get:key=>{reads.push(key);return key==='daemonEntry'?'  custom/cli.js  ':key==='cloudflaredPath'?'tunnel.exe':undefined;}})}}:name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment})}:require(name)});
+  vm.runInNewContext(js,{module,exports:module.exports,require:name=>name==='vscode'?{workspace:{getConfiguration:()=>({get:key=>{reads.push(key);return key==='daemonEntry'?'  custom/cli.js  ':key==='cloudflaredPath'?'tunnel.exe':undefined;}})}}:name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment})}:name==='./managedEndpoint'?{managedPortValue:()=>undefined,useManagedPort(){}}:require(name)});
   const cfg=module.exports.getConfig();assert.equal(cfg.daemonEntry,environment==='test'?'custom/cli.js':'');
   assert.equal(reads.includes('daemonEntry'),environment==='test');assert.equal(cfg.cloudflaredPath,'tunnel.exe');
  }

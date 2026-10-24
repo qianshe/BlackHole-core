@@ -1757,7 +1757,7 @@ export class ConfigPanel {
   <div class="sec" data-page="account">账号与订阅</div>
   <section class="card account-card" aria-label="账号与订阅" data-page="account">
     <div class="account-head"><div><div class="account-eyebrow">BLACKHOLE ACCOUNT</div><div class="account-identity" id="cloudIdentity">读取账号状态…</div></div></div>
-    <div class="account-grid"><div><span class="account-label">服务权益</span><div id="cloudSubscription">订阅状态尚未获取</div></div><div><label class="account-label" for="cloudPlan">订阅方案</label><div class="plan-line"><select id="cloudPlan" disabled><option value="pro_day">1 天 · ¥1.00</option><option value="pro_week">7 天 · ¥5.00</option><option value="pro_month">30 天 · ¥15.00</option></select><button id="cloudBuyCard" class="secondary" disabled>购买所选方案</button></div></div></div>
+    <div class="account-grid"><div><span class="account-label">服务权益</span><div id="cloudSubscription">订阅状态尚未获取</div></div><div><label class="account-label" for="cloudPlan">订阅方案</label><div class="plan-line"><select id="cloudPlan" disabled><option value="">即刻收时长包 · 点击查询最新价格</option></select><button id="cloudBuyCard" class="secondary" disabled>购买所选方案</button></div></div></div>
     <div class="btnrow"><button id="cloudCopyUserId" class="secondary" style="display:none">复制用户 ID</button><button id="cloudSignIn">登录</button><button id="cloudRefresh" class="secondary" disabled>刷新订阅</button><button id="cloudOrders" class="secondary" disabled>购买记录</button><button id="cloudRefund" class="secondary" disabled>申请退款</button><button id="cloudRedeem" class="secondary" disabled>兑换订阅卡</button><button id="cloudSignOut" class="secondary" style="display:none">退出登录</button></div>
     <div class="account-note">服务权益以最近一次服务端校验结果为准。</div>
   </section>
@@ -1946,7 +1946,7 @@ export class ConfigPanel {
       $(id).onclick=()=>vs.postMessage({type:'cloudAccount',action});
     }
     const closeBuyModal=()=>{$('cloudBuyModal').style.display='none';};
-    $('cloudBuyCard').onclick=()=>{const option=$('cloudPlan').selectedOptions[0],userId=$('cloudCopyUserId').dataset.userId;if(!userId)return;$('cloudBuyPlanText').textContent=option?.textContent||'所选方案';$('cloudBuyUserText').textContent=userId.slice(0,8)+'…'+userId.slice(-4);$('cloudBuyModal').style.display='flex';$('cloudBuyConfirm').focus();};
+    $('cloudBuyCard').onclick=()=>{if(!$('cloudCopyUserId').dataset.userId)return;vs.postMessage({type:'cloudAccount',action:'buyCard'});}; // Native command loads and confirms current provider prices.
     $('cloudBuyCancel').onclick=closeBuyModal;
     $('cloudBuyModal').onclick=event=>{if(event.target===$('cloudBuyModal'))closeBuyModal();};
     $('cloudBuyConfirm').onclick=()=>{const sku=$('cloudPlan').value;closeBuyModal();vs.postMessage({type:'cloudAccount',action:'buyCard',sku});};

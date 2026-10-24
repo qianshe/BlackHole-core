@@ -62,20 +62,26 @@ export function registerCloudAccount(context:ExtensionContext,onView:(view:AuthV
  // Plan 6.11: a daemon with its own OS credential store owns the account. The UI below
  // only sees CloudAuthClient-shaped objects, so what the user sees stays the same.
  const accountApi=bridge?.account&&bridge.health?bridge as AccountApi&Pick<ControlApi,'health'>:undefined;
+ // A shared-Core build has one account authority. Startup delays, mismatched
+ // listeners or unavailable OS storage must never silently create a second
+ // login in VS Code SecretStorage/globalStorage.
+ const coreOwnedAccount=['host-node','bridge'].includes(context.extension?.packageJSON?.blackholeSharedCore?.mode);
  const migratedKey='blackhole.account.migrated.'+createHash('sha256').update(origin||'invalid').digest('hex').slice(0,16);
  let backend:{client:CloudAuthClient;daemon:boolean}|undefined,choosing:Promise<CloudAuthClient>|undefined;
  const getClient=(explicitRetry=false):Promise<CloudAuthClient>=>{
-  if(!accountApi)return getLocal(explicitRetry);
+  if(!accountApi)return coreOwnedAccount?Promise.reject(new CloudAuthError('not_available')):getLocal(explicitRetry);
   if(backend)return Promise.resolve(backend.client);
   if(choosing)return choosing;
   const pending=(async()=>{
    let health:Awaited<ReturnType<ControlApi['health']>>|undefined;
    try{health=await accountApi.health(3000);}catch{health=undefined;}
-   if(!health||!(Number(health.account_api_version)>=1)||health.account_storage!=='available'||health.cloud_origin!==origin){
+   if(!health||!(Number(health.account_api_version)>=1)||health.account_storage!=='available'||health.cloud_origin!==origin
+     ||(coreOwnedAccount&&health.lifecycle_state!=='managed')){
+    if(coreOwnedAccount)throw new CloudAuthError(health?.account_storage==='unavailable'?'storage':'not_available');
     const local=await getLocal(explicitRetry);if(health)backend={client:local,daemon:false};return local;
    }
    const daemon=new DaemonAuthClient(accountApi) as unknown as CloudAuthClient;
-   if(!context.globalState.get(migratedKey)){
+   if(!coreOwnedAccount&&!context.globalState.get(migratedKey)){
     // One-time move of this window's existing login; the local copy stays as a backup.
     let credential;
     try{credential=await (await getLocal(explicitRetry)).migrationCredential();}catch{credential=undefined;}
@@ -94,7 +100,7 @@ export function registerCloudAccount(context:ExtensionContext,onView:(view:AuthV
   const now={wall:Date.now(),mono:performance.now()};
   force ||= Math.abs((now.wall-clockSample.wall)-(now.mono-clockSample.mono))>5000;clockSample=now;
   if(force){forceGate=true;forceRevision++;}
-  if(!bridge||disposed||backend?.daemon)return Promise.resolve();
+  if(!bridge||disposed||coreOwnedAccount||backend?.daemon)return Promise.resolve();
   if(bridgePending)return bridgePending;
   const pending=(async()=>{
    for(let pass=0;pass<3&&!disposed;pass++){

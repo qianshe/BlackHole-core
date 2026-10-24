@@ -1,3 +1,4 @@
+import { dataPaths } from './source-data-paths.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ const js = ts.transpileModule(source, {
 const module = { exports: {} };
 // Internals are exposed only inside this isolated VM, never as production hooks.
 vm.runInNewContext(js + '\nmodule.exports.testOnly = { installArtifact, download, readZipEntries, extract, verify, ARTIFACTS, VERSION };', {
-  module, exports: module.exports, require, Buffer, process, fetch, AbortSignal, URL, Response,
+  module, exports: module.exports, require: name => name === '../data-paths.js' ? dataPaths : require(name), Buffer, process, fetch, AbortSignal, URL, Response,
 });
 const { initializeOpenAITunnelClient, testOnly: { installArtifact, readZipEntries, extract, verify, ARTIFACTS, VERSION } } = module.exports;
 const desktopTargets = Object.keys(JSON.parse(fs.readFileSync(new URL('../../../scripts/desktop-toolchain.json', import.meta.url), 'utf8')).targets).sort();

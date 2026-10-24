@@ -36,7 +36,7 @@ test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then
   assert.ok(fs.existsSync(entry), 'build the daemon before running the fixture');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ['PATH','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','LANG'].includes(key.toUpperCase())));
   Object.assign(env, { HOME:dir, USERPROFILE:dir, APPDATA:dir, LOCALAPPDATA:dir, TEMP:dir, TMP:dir, TMPDIR:dir,
-    BLACKHOLE_DB:path.join(dir,'fixture.db'), BLACKHOLE_SEMANTIC:'off', BLACKHOLE_PROXY_CONFIG:path.join(dir,'absent.yaml') });
+    BLACKHOLE_DB:path.join(dir,'.blackhole','blackhole.db'), BLACKHOLE_SEMANTIC:'off', BLACKHOLE_PROXY_CONFIG:path.join(dir,'.blackhole','mcp-proxies.yaml') });
   const children = [], managers = [], notices = [], logs = [];
   let legacy;
   const api = {
@@ -79,6 +79,7 @@ test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then
       require:name=>name==='vscode'?vscode
         :name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment:'test',origin:'https://fixture.example.org'})}
         :name==='./vscodeRipgrep'?{resolveExecutionRg:()=>undefined,pathFromEnvironment:()=>'',prependToolDirectory:value=>value}
+        :name==='./hostCoreUi'?{reportHostCoreFailure:()=>{}}
         :name==='node:os'?{tmpdir:()=>dir}
         :name==='node:child_process'?{spawn:(...args)=>{const child=spawn(...args);const closed=new Promise(resolve=>child.once('close',resolve));children.push({child,closed});return child}}
         :require(name),

@@ -112,7 +112,7 @@ export interface SidebarHooks {
 
 interface ViewMessage {
   type: 'ready' | 'create' | 'refresh' | 'settings' | 'open' | 'back' | 'action' | 'copyTemplate' | 'approve' | 'deny' | 'webAgent' | 'callOlder' | 'mode' | 'cancel' | 'reorder' | 'openCallResource' | 'copyHandoff' | 'previewHandoff' | 'cancelHandoffPreview' | 'chatSend' | 'chatStop' | 'openLink' | 'unpair' | 'rename' | 'chatReload' | 'chatCard' | 'copyText' | 'courierImages'
-    | 'signIn' | 'channelToggle' | 'setupStart' | 'setupDismiss' | 'setupResume' | 'setupChoose'
+    | 'signIn' | 'accountRefresh' | 'channelToggle' | 'setupStart' | 'setupDismiss' | 'setupResume' | 'setupChoose'
     | 'openaiSetupStart' | 'openaiSetupBack' | 'openaiConnect' | 'openOpenaiLink';
   /** channelToggle：打开还是关闭渠道总开关。 */
   on?: boolean;
@@ -630,11 +630,14 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       this.setupConfigured = true;
     } catch (e) { fail('install', e); return; }
     if (this.disposed) return;
-    step('restart');
-    try {
-      // restart() 会合并配置变化触发的那次重启，不会重启两次。
-      if (!(await this.daemon.restart())) throw new Error('本地服务重启失败，请稍后重试。');
-    } catch (e) { fail('restart', e); return; }
+    if (!this.daemon.isManagedCore) {
+      step('restart');
+      try {
+        // Legacy code reads the executable at boot. Managed Core reads the
+        // freshly saved path at explicit channel start and must not restart.
+        if (!(await this.daemon.restart())) throw new Error('本地服务重启失败，请稍后重试。');
+      } catch (e) { fail('restart', e); return; }
+    }
     if (this.disposed) return;
     step('start');
     try {
@@ -795,6 +798,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       mode: this.mode,
       sessions: this.sessions,
       daemon: this.daemon.currentState,
+      managedCore: this.daemon.isManagedCore === true,
       currentRoot: currentWorkspaceRoot(),
       tunnel: this.tunnel,
       openai: this.openai,
@@ -1040,6 +1044,9 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       case 'signIn':
         // 和设置页同一个登录命令：在浏览器里完成，账号状态变化经 updateAccount 推回来。
         await commands.executeCommand('blackhole.accountSignIn');
+        return;
+      case 'accountRefresh':
+        await commands.executeCommand('blackhole.accountRefresh');
         return;
       case 'channelToggle':
         if (typeof m.on === 'boolean') await this.toggleChannel(m.on);
@@ -1875,24 +1882,27 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     let openaiTunnelDraft = '', openaiKeyDraft = '', openaiDraftInitialized = false;
     const SETUP_STEPS = [['install', '安装并验证 cloudflared'], ['restart', '重启本地服务'], ['start', '启动临时公网渠道']];
     function onboardingState(d) {
-      // Welcome is account-driven. Sessions and channel runtime state never bring it back.
-      if (d.account !== 'logged_out') return null;
-      // A setup explicitly started from the login page may keep showing progress.
-      // Once login completes the workspace takes over while setup continues in the host.
+      // Never equate saved/unavailable account state with verified login.
+      // The login step owns no channel installation actions.
+      if (d.account === 'logged_out') return 'login';
+      if (d.account !== 'verified') return 'account-check';
       if (d.setup) return d.setup.step;
       if (d.openaiOnboarding) return 'openai';
-      return 'login';
+      if (d.setupConfigured == null) return 'setup-check';
+      if (d.setupConfigured === false && !d.setupDismissed) return 'choose';
+      return null;
     }
     function onboardProgress(state, account) {
-      const step = state === 'login' ? 0 : state === 'ready' ? 2 : 1;
+      const step = state === 'login' || state === 'account-check' ? 0 : state === 'ready' ? 2 : 1;
       return '<ol class="bh-onboard-progress" aria-label="准备进度">' + ['登录', '连接', '开始'].map((label, i) => {
         const done = i < step && (i !== 0 || account === 'verified');
         return '<li class="' + (done ? 'done' : i === step ? 'current' : '') + '"' + (i === step ? ' aria-current="step"' : '') + '><span class="num">' + (done ? '✓' : '0' + (i + 1)) + '</span>' + label + '</li>';
       }).join('') + '</ol>';
     }
-    function onboardSteps(state, failedAt) {
-      const at = SETUP_STEPS.findIndex(x => x[0] === (state === 'failed' ? failedAt : state));
-      return '<ol class="bh-onboard-steps" aria-label="安装进度">' + SETUP_STEPS.map((x, i) => '<li class="' + (i < at ? 'done' : i === at ? (state === 'failed' ? 'failed' : 'active') : '') + '"' + (i === at ? ' aria-current="step"' : '') + '><span class="mk" aria-hidden="true">' + (i < at ? '✓' : i === at && state === 'failed' ? '!' : '') + '</span>' + x[1] + '</li>').join('') + '</ol>';
+    function onboardSteps(state, failedAt, managedCore = false) {
+      const steps = managedCore ? SETUP_STEPS.filter(x => x[0] !== 'restart') : SETUP_STEPS;
+      const at = steps.findIndex(x => x[0] === (state === 'failed' ? failedAt : state));
+      return '<ol class="bh-onboard-steps" aria-label="安装进度">' + steps.map((x, i) => '<li class="' + (i < at ? 'done' : i === at ? (state === 'failed' ? 'failed' : 'active') : '') + '"' + (i === at ? ' aria-current="step"' : '') + '><span class="mk" aria-hidden="true">' + (i < at ? '✓' : i === at && state === 'failed' ? '!' : '') + '</span>' + x[1] + '</li>').join('') + '</ol>';
     }
     function onboardButton(id, text, disabled = false) {
       return '<button type="button" class="primary" id="' + id + '"' + (disabled ? ' disabled' : '') + '>' + esc(text) + '</button>';
@@ -1987,45 +1997,40 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (state === 'dismissed') {
         body = '<div class="bh-onboard-resume"><span id="guideTitle">连接尚未完成</span><button type="button" class="link" id="guideResume">继续设置 →</button></div>';
       } else if (state === 'login') {
-        const knownUnconfigured = d.setupConfigured === false;
-        const showSetup = knownUnconfigured && !d.setupDismissed;
-        const setup = showSetup
-          ? '<div class="bh-onboard-options">'
-            + '<button type="button" class="bh-onboard-option" id="guideDirect"><strong>配置直连</strong><span>已有局域网、组网或自建 HTTPS 入口时使用；不会安装 Cloudflare。</span></button>'
-            + '<button type="button" class="bh-onboard-option" id="guideQuick"><strong>临时公网渠道</strong><span>最快开始；由 BlackHole 安装 cloudflared 并启动临时连接。</span></button>'
-            + '<button type="button" class="bh-onboard-option" id="guideOpenai"><strong>OpenAI Tunnel</strong><span>私有出站连接；准备官方 tunnel-client，不依赖 cloudflared。</span></button>'
-            + '</div><div class="bh-onboard-actions"><button type="button" class="link" id="guideLater">跳过渠道安装</button></div>'
-          : d.setupConfigured === true
-            ? helper('已检测到保存的连接配置。登录完成后直接进入工作区，不重复安装渠道。')
-            : d.setupDismissed
-              ? helper('你已跳过首次渠道安装。登录完成后可随时从设置 → 连接与渠道继续配置。')
-              : helper('正在确认这台电脑是否已有连接配置；未确认前不会自动安装任何渠道。');
-        body = '<h2 id="guideTitle" tabindex="-1">登录 BlackHole</h2><p>登录后进入工作区。渠道安装是可选步骤，不影响登录。</p>'
-          + '<div class="bh-onboard-actions">' + onboardButton('guideSignIn', signInOpened ? '重新打开登录页' : '在浏览器中登录 ↗') + '</div>'
-          + '<div class="bh-onboard-status" id="guideSignInNote" role="status"' + (signInOpened ? '' : ' hidden') + '>等待登录完成，完成后自动进入工作区</div>'
-          + setup;
+        body = '<h2 id="guideTitle" tabindex="-1">登录 BlackHole</h2><p>请先登录账号。登录成功并由 Core 确认后，才能选择连接渠道并进入工作区。</p>'
+          + '<div class="bh-onboard-actions">' + onboardButton('guideSignIn', signInOpened ? '重新发起登录' : '在浏览器中登录 ↗') + '</div>'
+          + '<div class="bh-onboard-status" id="guideSignInNote" role="status"' + (signInOpened ? '' : ' hidden') + '>等待系统浏览器完成登录，之后继续连接设置</div>';
+      } else if (state === 'account-check') {
+        body = '<h2 id="guideTitle" tabindex="-1">正在确认账号</h2>'
+          + '<p>本机账号尚未验证完成。为避免错误地进入工作区，请先刷新账号状态。</p>'
+          + '<div class="bh-onboard-actions">' + onboardButton('guideCheckAccount', '重新验证账号') + '</div>'
+          + helper('网络暂时不可用时，不会自动重新登录或覆盖已保存的账号。');
+      } else if (state === 'setup-check') {
+        body = '<h2 id="guideTitle" tabindex="-1">正在检查连接配置</h2>'
+          + '<p role="status">账号已验证，正在确认是否已有连接设置。未确认之前不会自动安装任何渠道。</p>';
       } else if (state === 'ready') {
         const names = (c.running || []).map(x => CHANNEL_NAMES[x] || x).join('、');
         body = '<h2 id="guideTitle" tabindex="-1">连接已就绪</h2><p>接下来创建会话，选择 AI 可以使用的工作区和权限。</p><dl class="bh-onboard-facts"><div><dt>登录状态</dt><dd>已登录</dd></div><div><dt>当前渠道</dt><dd>' + esc(names || '已连接') + '</dd></div></dl><div class="bh-onboard-actions">' + onboardButton('guideCreate', '创建会话 →') + '</div>' + helper('会话权限可随时在 BlackHole 中调整。');
       } else if (state === 'install' || state === 'restart' || state === 'start') {
         const label = { install: '安装并验证中…', restart: '重启服务中…', start: '等待渠道启动…' }[state];
-        body = '<h2 id="guideTitle" tabindex="-1">正在准备连接</h2><p>完成准备后，即可接入网页 AI。</p>' + (s ? onboardSteps(state) : '<div class="bh-onboard-status" role="status">正在等待渠道返回连接状态</div>') + '<div class="bh-onboard-actions">' + onboardButton('guideGo', label, true) + '</div>' + helper('无需重复操作。<br>若准备失败，可在这里查看原因并重试。');
+        body = '<h2 id="guideTitle" tabindex="-1">正在准备连接</h2><p>完成准备后，即可接入网页 AI。</p>' + (s ? onboardSteps(state, undefined, d.managedCore) : '<div class="bh-onboard-status" role="status">正在等待渠道返回连接状态</div>') + '<div class="bh-onboard-actions">' + onboardButton('guideGo', label, true) + '</div>' + helper('无需重复操作。<br>若准备失败，可在这里查看原因并重试。');
       } else if (state === 'failed' || state === 'unverified') {
         const at = s?.failedAt || 'start';
         const copy = state === 'unverified' ? '渠道进程已启动，但公网连接尚未验证。暂不视为连接就绪。' : { install: '下载未完成。检查网络后重试，或在设置中指定已安装的程序。', restart: '本地服务未能重启。查看错误详情后重试。', start: '渠道未能启动。查看错误详情，或使用其它连接方式。' }[at];
         const error = s?.error || d.channelNote || c.reason || d.tunnel?.reason || '没有更多诊断信息。请打开设置检查渠道状态。';
-        body = '<div class="bh-onboard-failure" role="status">' + (state === 'failed' ? '准备未完成' : '等待验证') + '</div><h2 id="guideTitle" tabindex="-1">连接还差一步</h2><p>' + copy + '</p>' + (s ? onboardSteps(state, at) : '') + '<div class="bh-onboard-actions">' + onboardButton(state === 'unverified' ? 'guideRefresh' : 'guideGo', state === 'unverified' ? '刷新连接状态' : '重新准备') + '<button type="button" class="link" id="guideChoose">换一种连接方式</button>' + later + '</div><details id="guideDetails"><summary id="guideDetailsToggle">查看错误详情</summary><pre>' + esc(error) + '</pre></details>' + onboardOther();
+        body = '<div class="bh-onboard-failure" role="status">' + (state === 'failed' ? '准备未完成' : '等待验证') + '</div><h2 id="guideTitle" tabindex="-1">连接还差一步</h2><p>' + copy + '</p>' + (s ? onboardSteps(state, at, d.managedCore) : '') + '<div class="bh-onboard-actions">' + onboardButton(state === 'unverified' ? 'guideRefresh' : 'guideGo', state === 'unverified' ? '刷新连接状态' : '重新准备') + '<button type="button" class="link" id="guideChoose">换一种连接方式</button>' + later + '</div><details id="guideDetails"><summary id="guideDetailsToggle">查看错误详情</summary><pre>' + esc(error) + '</pre></details>' + onboardOther();
       } else if (state === 'configure') {
         body = '<h2 id="guideTitle" tabindex="-1">当前连接还需要配置</h2><p>' + esc(CHANNEL_NAMES[c.next] || '当前渠道') + '缺少必要设置。</p><div class="bh-onboard-actions">' + onboardButton('guideSettings', '打开连接设置 →') + '<button type="button" class="link" id="guideChoose">返回选择连接方式</button>' + later + '</div>';
       } else if (state === 'openai') {
         body = openaiBody(d, later, helper);
       } else {
-        body = '<h2 id="guideTitle" tabindex="-1">选择连接方式</h2><p>两种方式都可以直接开始，不需要先完成另一条连接。</p>'
+        body = '<h2 id="guideTitle" tabindex="-1">选择连接方式</h2><p>账号已登录。连接渠道可以选择一种独立准备，也可以稍后再设置。</p>'
           + '<div class="bh-onboard-options">'
-          + '<button type="button" class="bh-onboard-option" id="guideQuick"><strong>临时公网渠道</strong><span>最快开始，无需域名；BlackHole 自动安装并启动临时连接。</span></button>'
-          + '<button type="button" class="bh-onboard-option" id="guideOpenai"><strong>OpenAI Tunnel</strong><span>私有出站连接，不公开 MCP 地址；自动准备官方 tunnel-client。</span></button>'
+          + '<button type="button" class="bh-onboard-option" id="guideQuick"><strong>临时公网渠道</strong><span>准备 cloudflared 并启动临时连接。</span></button>'
+          + '<button type="button" class="bh-onboard-option" id="guideOpenai"><strong>OpenAI Tunnel</strong><span>私有出站连接，不公开 MCP 地址；无需先安装 cloudflared。</span></button>'
+          + '<button type="button" class="bh-onboard-option" id="guideDirect"><strong>直连或自建 HTTPS</strong><span>使用局域网、组网或自建入口；在连接设置中完成。</span></button>'
           + '</div><div class="bh-onboard-actions">' + later + '</div>'
-          + helper('临时渠道与 OpenAI Tunnel 是独立路径；选择 OpenAI 不需要先安装 cloudflared。') + onboardOther();
+          + helper('渠道设置是可选的。选择 OpenAI Tunnel 不需要先安装 Cloudflare。');
       }
       el.innerHTML = state === 'dismissed' ? body : '<div class="bh-onboard-body">' + onboardProgress(state, d.account) + '<span class="bh-onboard-mark" aria-hidden="true"></span>' + body + '</div>';
       for (const id of openDetails) { const node = el.querySelector('#' + id); if (node) node.open = true; }
@@ -2033,7 +2038,10 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         const button = event.target.closest('button');
         if (!button || button.disabled) return;
         const id = button.id;
-        if (id === 'guideSignIn') {
+        if (id === 'guideCheckAccount') {
+          button.disabled = true;
+          vs.postMessage({ type: 'accountRefresh' });
+        } else if (id === 'guideSignIn') {
           signInOpened = true;
           button.textContent = '重新打开登录页';
           el.querySelector('#guideSignInNote').hidden = false;

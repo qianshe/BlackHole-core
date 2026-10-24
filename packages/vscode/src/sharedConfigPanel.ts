@@ -42,11 +42,17 @@ export class SharedConfigPanel {
     this.pane = window.createWebviewPanel('blackholeSettings', 'BlackHole 设置', ViewColumn.One, { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [assets] });
     const info = (): SettingsHostInfo => {
       const c = getConfig(), cloud = resolveCloudEndpoint();
-      return { kind: 'vscode', version: manifest.version, environment: cloud.environment, cloudOrigin: cloud.origin, port: c.port, pollIntervalMs: c.pollIntervalMs, ...(cloud.environment === 'test' ? { daemonEntry: c.daemonEntry ?? '' } : {}) };
+      return { kind: 'vscode', managedCore: daemon.isManagedCore, version: manifest.version, environment: cloud.environment, cloudOrigin: cloud.origin, port: c.port, pollIntervalMs: c.pollIntervalMs, ...(cloud.environment === 'test' ? { daemonEntry: c.daemonEntry ?? '' } : {}) };
     };
     this.service = new SettingsHostService({ api, info,
+      coreAction: async (action, revision) => {
+        if (!daemon.isManagedCore) throw Error('managed_core_required');
+        const command = { 'apply-settings': 'blackhole.applyCoreSettings', 'configure-port': 'blackhole.configureCorePort', 'inspect-maintenance': 'blackhole.inspectCoreMaintenance' }[action];
+        return commands.executeCommand<boolean | void>(command, revision);
+      },
       sync: async () => { if (!this.disposed) { await sync?.sync(); await sync?.flush(); } },
       saveLocal: async (values, expected) => {
+        if (daemon.isManagedCore && ('port' in values || 'daemonEntry' in values)) throw Error('use_manager_configure_core_port');
         const before = info() as unknown as Record<string, unknown>;
         if (Object.keys(values).some(key => !(key in expected) || expected[key] !== before[key]) || Object.keys(expected).some(key => !(key in values))) throw Error('host_settings_changed');
         const allowed = new Set(['port', 'pollIntervalMs', ...(resolveCloudEndpoint().environment === 'test' ? ['daemonEntry'] : [])]);
@@ -57,7 +63,7 @@ export class SharedConfigPanel {
         const config = workspace.getConfiguration('blackhole');
         for (const [key, value] of Object.entries(values)) { if (this.disposed) return; if (config.get(key) !== value) await config.update(key, value, ConfigurationTarget.Global); }
       },
-      restart: () => daemon.restart(), stop: async () => { if (!await daemon.stop()) throw Error('daemon_stop_failed'); },
+      restart: async () => daemon.isManagedCore ? (await commands.executeCommand<boolean>('blackhole.restartDaemon')) === true : daemon.restart(), stop: async () => { const ok = daemon.isManagedCore ? await commands.executeCommand<boolean>('blackhole.stopDaemon') : await daemon.stop(); if (!ok) throw Error('daemon_stop_failed'); },
       copy: async text => { await env.clipboard.writeText(text); }, open: async url => env.openExternal(Uri.parse(url, true)),
       signIn: async () => commands.executeCommand('blackhole.accountSignIn'), signOut: async () => commands.executeCommand('blackhole.accountSignOut'), close: () => this.pane.dispose(),
     });

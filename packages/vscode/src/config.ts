@@ -23,10 +23,12 @@ export interface ExtConfig {
   semanticMode: 'off' | 'explicit' | 'auto';
 }
 
+export { useManagedPort } from './managedEndpoint';
+import { managedPortValue } from './managedEndpoint';
 export function getConfig(): ExtConfig {
   const c = workspace.getConfiguration('blackhole');
   return {
-    port: c.get<number>('port') ?? 7306,
+    port: managedPortValue() ?? c.get<number>('port') ?? 7306,
     daemonEntry: resolveCloudEndpoint().environment === 'test' ? (c.get<string>('daemonEntry') ?? '').trim() : '',
     cloudflaredPath: (c.get<string>('cloudflaredPath') ?? '').trim(),
     channelMode: c.get<string>('channelMode') === 'custom' ? 'custom' : c.get<string>('channelMode') === 'openai' ? 'openai' : 'cloudflare',

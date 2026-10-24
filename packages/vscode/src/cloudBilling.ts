@@ -1,6 +1,7 @@
 import { commands, Disposable, env, ProgressLocation, Uri, window } from 'vscode';
 import { randomUUID } from 'node:crypto';
-import { authSleep, CloudAuthClient, CloudAuthError, type BillingOrder, type BillingPlan } from './cloudAuthClient';
+import { authSleep, CloudAuthClient, CloudAuthError, type BillingOrder } from './cloudAuthClient';
+import { membershipPlanLabel } from '../../contracts/src/membership';
 
 const statusNames:Record<BillingOrder['status'],string>={payment_pending:'待付款 / 待确认',paid:'付款已确认，权益处理中',fulfilled:'已到账',expired:'支付窗口已结束',review:'超时付款，未交付权益',refunded:'已退款'};
 const errorMessages:Record<string,string>={
@@ -18,7 +19,7 @@ const errorMessages:Record<string,string>={
 function days(seconds:number){return Math.max(1,Math.round(seconds/86400));}
 function price(minor:number){return '¥'+(minor/100).toFixed(2);}
 function durationLabel(seconds:number){const days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.ceil(seconds%3600/60);return [days?days+' 天':'',hours?hours+' 小时':'',minutes?minutes+' 分钟':''].filter(Boolean).join(' ')||'不足 1 分钟';}
-function planLabel(plan:BillingPlan){return `${plan.amountMinor===1?'支付验收 · ':''}${days(plan.durationSeconds)} 天 · ${price(plan.amountMinor)}`;}
+// New-sale prices use membershipPlanLabel; legacy order labels below preserve original facts.
 function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 · ${price(order.amountMinor)} · ${statusNames[order.status]}`;}
 
 /** User-driven only: no background order polling and no automatic recurring payment. */
@@ -61,21 +62,35 @@ export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Dis
   }
   finally{if(abort===controller)abort=undefined;}
  }
- async function buy(client:CloudAuthClient,userId:string,requestedSku?:string,confirmedBySettings=false) {
-  const catalogue=await client.billingPlans(userId);
-  if(!catalogue.enabled){info('支付宝时长购买尚未开放；现有订阅卡兑换不受影响。');return;}
-  const requested=requestedSku?catalogue.plans.find(plan=>plan.sku===requestedSku):undefined;
-  const picked=requested?{label:planLabel(requested),plan:requested}:await window.showQuickPick(catalogue.plans.map(plan=>({label:planLabel(plan),description:'单次付款，不自动续费',plan})),{title:'购买 BlackHole 使用时长',placeHolder:'选择 1 天、7 天或 30 天时长包',ignoreFocusOut:false});
-  if(!picked||disposed)return;
-  // Settings may show a cached standard price; a one-cent acceptance always needs a fresh server-price confirmation.
-  if(!confirmedBySettings||picked.plan.amountMinor===1){
-   const environment=catalogue.environment==='sandbox'?'沙箱测试，不使用真实资金。':'支付宝单次付款，不会自动续费。';
-   if(await window.showInformationMessage(`确认购买 ${picked.label}？`,{modal:true,detail:`购买账号：${userId}\n${environment}\n支付宝确认付款后，对应订阅时长会自动增加到当前账号。`},'前往付款')!=='前往付款')return;
-  }
-  const created=await client.createBillingOrder(userId,picked.plan.sku,randomUUID());
-  if(created.order.sku!==picked.plan.sku||created.order.amountMinor!==picked.plan.amountMinor||created.order.durationSeconds!==picked.plan.durationSeconds){warn('BlackHole：订单价格或时长已变化，未打开付款页。请重新查看方案，并在购买记录核对该待支付订单。');return;}
-  if(!await env.openExternal(Uri.parse(created.checkoutUrl))){warn('未能打开系统浏览器。订单已经保留，请从购买记录继续付款。');return;}
-  await waitForPayment(client,userId,created.order);
+ async function buy(client:CloudAuthClient,userId:string,_requestedSku?:string,_confirmedBySettings=false) {
+  const catalogue=await client.membershipCatalogue(userId);
+  if(disposed)return;
+  if(!catalogue.salesEnabled){info('即刻收商品与价格暂不可用或尚未开放新购。请稍后刷新，不会使用旧套餐价格。');return;}
+  const state=await client.membershipStatus(userId);
+  if(disposed)return;
+  if(!state.canPurchase){info(state.decision==='ALLOW'||state.legacyExpiresAt>state.checkedAt?'当前会员或试用权益尚未到期，无需重复购买。':'当前暂不可购买，请稍后刷新权益。');return;}
+  let selected=catalogue.plans.find(p=>p.sku===_requestedSku);
+  if(!selected)selected=catalogue.plans.length===1?catalogue.plans[0]:(await window.showQuickPick(catalogue.plans.map(plan=>({label:membershipPlanLabel(plan),plan})),{title:'选择即刻收时长套餐',ignoreFocusOut:false}))?.plan;
+  if(!selected||disposed)return;
+  const detail=membershipPlanLabel(selected)+'\n\n周期按日历计算，不自动续费。将生成此档位的付款二维码，请在有效期内扫码并核对最终金额。即刻收时长包目前不支持退款，也不支持按剩余时长退费。请确认套餐和金额后再付款；重复扣款、未交付等异常请保留凭证联系支持核查。';
+  if(await window.showInformationMessage('打开即刻收购买页？',{modal:true,detail},'打开购买页')!=='打开购买页'||disposed)return;
+  const entrance=await client.membershipCheckout(userId,selected.sku);if(disposed)return;
+  if(!await env.openExternal(Uri.parse(entrance.checkoutUrl))){warn('未能打开系统浏览器，请重新发起购买入口。');return;}
+  const controller=new AbortController();abort=controller;let active=false;
+  try{
+   await window.withProgress({location:ProgressLocation.Notification,title:'BlackHole：等待会员权益确认',cancellable:true},async(_progress,cancellation)=>{
+    const registration=cancellation.onCancellationRequested(()=>controller.abort());
+    try{for(let i=0;i<12&&!disposed&&!controller.signal.aborted;i++){
+     await authSleep(5000,controller.signal);
+     try{const status=await client.membershipStatus(userId);if(status.decision==='ALLOW'){active=true;break;}}
+     catch(error){if(error instanceof CloudAuthError&&error.code==='rejected')throw error;}
+    }}finally{registration.dispose();}
+   });
+   if(disposed||controller.signal.aborted)return;
+   if(active){await commands.executeCommand('blackhole.accountRefresh');info('BlackHole：会员权益已生效，有效期以服务端校验为准。');}
+   else info('BlackHole：权益暂未确认，请稍后刷新。不要因为等待结束而重复付款。');
+  }catch(error){if(!controller.signal.aborted)throw error;if(!disposed)info('BlackHole：已停止等待。请稍后刷新权益；此操作不会取消支付宝购买或判定支付失败。');}
+  finally{if(abort===controller)abort=undefined;}
  }
  async function orders(client:CloudAuthClient,userId:string) {
   const rows=await client.billingOrders(userId);if(!rows.length){info('当前账号还没有支付宝购买订单。');return;}

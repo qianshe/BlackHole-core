@@ -53,6 +53,22 @@ export interface ExecutionRuntime {
   };
 }
 export interface Health extends ConnectionHealth {
+  /** Canonical DB path reported by the local daemon; used for guarded legacy handoff. */
+  db_path?: string;
+  lifecycle_state?: 'managed';
+  maintenance_idle?: boolean;
+  lifecycle_upgrade_version?: 1;
+  upgrade_idle?: boolean;
+  upgrade_blockers?: string[];
+  runtime_id?: string;
+  runtime_version?: string;
+  build_id?: string;
+  descriptor_hash?: string;
+  data_root_id?: string;
+  web_build_id?: string;
+  core_environment?: 'test' | 'production';
+  core_cloud_origin?: string;
+  core_protocol?: { min: number; max: number };
   ok: boolean;
   version: string;
   /** Fingerprint of the extension/configuration that spawned this daemon. Older daemons omit it. */
@@ -383,6 +399,8 @@ export interface ProxyToolsResult {
 
 /** Daemon-owned settings as served by /api/settings. */
 export interface DaemonSettings {
+  /** Set only by a Manager-owned Core; absent on legacy daemons. */
+  managed?: boolean;
   revision: number;
   migrated: boolean;
   values: Record<string, unknown>;
@@ -630,8 +648,8 @@ export class ControlApi {
     });
   }
 
-  listSessions(): Promise<{ sessions: SessionInfo[] }> {
-    return this.req('GET', '/sessions');
+  listSessions(port = this.cfg().port): Promise<{ sessions: SessionInfo[] }> {
+    return this.req('GET', '/sessions', undefined, 8_000, port);
   }
 
   reorderSessions(ids: string[]): Promise<{ sessions: SessionInfo[] }> {

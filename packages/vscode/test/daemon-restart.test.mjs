@@ -35,10 +35,11 @@ function makeManager() {
   };
   const module = { exports: {} };
   vm.runInNewContext(js, {
-    module, exports: module.exports, process, console, setTimeout, clearTimeout,
+    module, exports: module.exports, process, console, URL, setTimeout, clearTimeout,
     require: name => name === 'vscode' ? vscode
       : name === './cloudEnvironment' ? { resolveCloudEndpoint: () => ({ environment: 'test' }) }
       : name === './vscodeRipgrep' ? { pathFromEnvironment: () => '', prependToolDirectory: value => value, resolveExecutionRg: () => undefined }
+      : name === './hostCoreUi' ? { reportHostCoreFailure: () => {} }
       : require(name),
   });
   const manager = new module.exports.DaemonManager(context, () => ({}), api, { appendLine: line => logs.push(line) });
@@ -335,4 +336,87 @@ test('handoff reads a slow healthy listener instead of aborting every response',
   await h.manager.syncConfigRestart(true);
   assert.equal(shutdowns,1);assert.equal(h.manager.currentState,'running');
   assert.deepEqual(h.notices, []);
+});
+
+test('managed mode uses only Manager attach, blocks legacy mutations and detaches on disposal', async () => {
+  const h = makeManager(); let attaches = 0, closes = 0, shutdowns = 0;
+  h.manager.cfg = () => ({ port: 17306 });
+  h.api.shutdown = async () => { shutdowns++; throw Error('must not be called'); };
+  h.manager.health = async () => { throw Error('legacy health/start path must not run'); };
+  h.manager.useCoreManager({ attach: async port => { assert.equal(port,17306); attaches++; return {localUrl:'http://127.0.0.1:17306/ui/'}; }, matchesHealth: value => value.daemon_id === 'managed', close: async () => { closes++; } });
+  assert.equal(await h.manager.ensureRunning(),true);assert.equal(attaches,1);
+  assert.equal(await h.manager.stop(),false);assert.equal(await h.manager.restart(),false);
+  await h.manager.syncConfigRestart();assert.equal(shutdowns,0);assert.equal(attaches,1);
+  assert.equal(h.manager.observeHealth({ok:true,version:'independent-core-version',daemon_id:'managed'},h.manager.captureHealthObservation()),true);
+  h.manager.dispose();await settle();assert.equal(closes,1);
+});
+test('known active_work refusal keeps a verified Shared Core running and its lease renewable', async () => {
+ const h=makeManager();let attempts=0;
+ const session={
+   receipt:{daemonId:'managed',startFingerprint:'fp'},
+   maintain:async()=>{attempts++;throw Error('active_work')},
+   matchesHealth:health=>health.daemon_id==='managed' && health.lifecycle_state==='managed',
+   close:async()=>{}
+ };
+ h.api.health=async()=>({ok:true,daemon_id:'managed',lifecycle_state:'managed'});
+ h.manager.useCoreManager(session);
+ h.manager.setState('running');
+ const target=h.manager.managedCoreTarget;
+ for(let i=0;i<2;i++){
+   assert.equal(await h.manager.maintainSharedCore('restart',true,target,7),false);
+   assert.equal(h.manager.currentState,'running',JSON.stringify({reason:h.manager.error,logs:h.logs}));
+   assert.equal(h.manager.maintenanceRefusal,'active_work');
+   assert.equal(h.manager.managedCoreTarget,target);
+ }
+ assert.equal(attempts,2,'only explicit requests, no automatic retry');
+ assert.equal(h.notices.length,0,'a confirmed refusal must not be labeled a lost Core');
+ assert.match(h.logs.join('\n'),/maintenance refused: active_work/);
+ h.manager.dispose();
+});
+test('an ambiguous maintenance outcome still enters an error state, never claims success',async()=>{
+ const h=makeManager();let attempts=0;
+ const session={receipt:{daemonId:'managed',startFingerprint:'fp'},
+  maintain:async()=>{attempts++;throw Error('maintenance_outcome_requires_inspection:transaction-fixture')},close:async()=>{}};
+ h.manager.useCoreManager(session);h.manager.setState('running');
+ assert.equal(await h.manager.maintainSharedCore('restart',true,h.manager.managedCoreTarget,7),false);
+ assert.equal(h.manager.currentState,'error');assert.equal(h.manager.maintenanceRefusal,'');
+ assert.equal(attempts,1);
+ h.manager.dispose();
+});
+
+test('legacy configuration sync never retries fingerprints against a managed Core after downgrade',async()=>{
+ const h=makeManager();let shutdowns=0;
+ h.manager.health=async()=>({ok:true,version:'0.4.1',daemon_id:'managed-still-alive',lifecycle_state:'managed',start_fingerprint:'not-a-legacy-json-fingerprint'});
+ h.api.shutdown=async()=>{shutdowns++;throw Error('MUST_NOT_STOP_MANAGED_CORE')};
+ for(let n=0;n<4;n++)await h.manager.syncConfigRestart(n===0);
+ assert.equal(shutdowns,0);assert.equal(h.manager.currentState,'error');
+ assert.equal(h.manager.error,'core_manager_required');
+ assert.equal(h.logs.filter(x=>x.includes('legacy fingerprint restart is disabled')).length,1);
+ assert.doesNotMatch(h.logs.join('\n'),/retrying handoff|config\/version changed/);
+ h.manager.dispose();
+});
+
+test('legacy stop never sends shutdown to a managed listener', async () => {
+  const h=makeManager();let shutdowns=0;
+  h.manager.waitForHealthOrClosed=async()=>({ok:true,version:'core',daemon_id:'managed',lifecycle_state:'managed'});
+  h.api.shutdown=async()=>{shutdowns++};
+  assert.equal(await h.manager.stop(),false);assert.equal(shutdowns,0);
+});
+test('bridge classification holds startup and configuration restarts without spawning', async () => {
+  const h=makeManager();let starts=0;
+  h.manager.ensureRunningOnce=async()=>{starts++;return true};
+  h.manager.pauseForBridge();assert.equal(await h.manager.ensureRunning(),false);
+  assert.equal(await h.manager.stop(),false);assert.equal(await h.manager.restart(),false);
+  await h.manager.syncConfigRestart();assert.equal(starts,0);
+  h.manager.allowLegacyStartup();assert.equal(await h.manager.ensureRunning(),true);assert.equal(starts,1);
+});
+
+test('managed maintenance requires explicit confirmation and the target captured before the dialog',async()=>{
+ const h=makeManager();let calls=0;const session={receipt:{daemonId:'a',startFingerprint:'one'},maintain:async operation=>{calls++;return{operation}},close:async()=>{}};
+ h.manager.useCoreManager(session);const target=h.manager.managedCoreTarget;
+ assert.equal(await h.manager.maintainSharedCore('stop',false,target),false);assert.equal(calls,0);
+ session.receipt={daemonId:'b',startFingerprint:'two'};
+ assert.equal(await h.manager.maintainSharedCore('stop',true,target),false);assert.equal(calls,0);
+ assert.equal(await h.manager.maintainSharedCore('restart',true,h.manager.managedCoreTarget),true);assert.equal(calls,1);
+ await h.manager.syncConfigRestart();assert.equal(calls,1);assert.equal(await h.manager.stop(),false);assert.equal(await h.manager.restart(),false);h.manager.dispose();
 });

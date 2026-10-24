@@ -43,6 +43,28 @@ Open **Settings → BlackHole** for channel, Web Agent, skills and other options
 - **Linux/macOS:** restricted commands require working `/usr/bin/bwrap` and user namespaces on Linux, or `/usr/bin/sandbox-exec` on macOS. A universal VSIX does not mean every OS/architecture has been release-tested.
 - **Cloudflare channels:** `cloudflared` is not bundled. The Public Channel card can explicitly initialize the pinned build for the current OS/CPU, or reuse PATH/a manually entered full path. It never downloads silently or starts a channel during initialization. After manually changing PATH, restart VS Code and any already-running BlackHole daemon.
 
+## 0.4.0 development packaging (not yet published)
+
+The new Windows x64 `host-node` package uses VS Code's own Node/Electron and the
+same signature-verified Core v2 used by Desktop. It contains no Node executable
+or duplicate daemon/Web/native-module tree. A compatible existing Core is reused
+at the canonical `~/.blackhole` root and default port 7306.
+
+The default **thin** package contains a pinned Core release reference. When no
+Core exists, it asks before downloading the small signed code archive; it does
+not download Node. The optional **offline-code** package includes that code
+archive once and needs no first-run code download. Closing an extension host
+only detaches its own lease, not another client's Core. An old 200 daemon,
+conflicting client or unknown state blocks startup rather than creating another
+profile. Runtime incompatibility requires upgrading VS Code, not injecting an
+arbitrary executable path.
+
+Current local review packages are not Marketplace releases. Their temporary
+Test signature and unpublished reference must not be used in a working profile.
+Actual Electron-host code tests passed; UI activation, migration, platform and
+security release acceptance are still separate gates. See the repository's
+`installers/HOST-NODE-PACKAGING-20261017.md` for reproducible packaging and evidence.
+
 ## Accounts and subscriptions
 
 New accounts receive a **3-day trial**, starting at the original registration time—not each login. Manage your account, purchase history and subscription-card redemption inside the extension.

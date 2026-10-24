@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'node:crypto';
+import { captureCoreBuildInputs, recordCoreBundleBuild } from '../../scripts/core-runtime-freshness.mjs';
 import { parseBuildArgs, buildDefines, daemonBuildDefines } from './build-config.mjs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -271,6 +272,9 @@ if (watch) {
   await Promise.all(contexts.map(context => context.watch()));
   console.log('watching for changes...');
 } else {
+  // Capture before work so concurrent source changes cannot certify stale code.
+  const coreBuildRoot = join(process.cwd(), '../..');
+  const coreBuildInputs = captureCoreBuildInputs(coreBuildRoot);
   await esbuild.build(settingsOptions);
   await esbuild.build(extensionOptions);
   // check-webview resolves the embedded scripts by source identifier names, which minify renames;
@@ -306,5 +310,7 @@ if (watch) {
     rmSync(`dist/daemon/${name}`, { force: true });
   }
   console.log('Universal build: cloudflared is external (PATH or blackhole.cloudflaredPath).');
+  recordCoreBundleBuild(coreBuildRoot, coreBuildInputs);
+  console.log('Core input/output freshness receipt recorded.');
 }
 
