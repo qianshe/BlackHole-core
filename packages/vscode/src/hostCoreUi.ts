@@ -57,6 +57,15 @@ export function reportHostCoreFailure(error: unknown): void {
     });
     return;
   }
+  if (/^core_trust_root_missing/.test(code)) {
+    // The Core was signed by a trust root this host does not carry yet — an
+    // upgrade-order problem, not corruption. Say so instead of the generic
+    // "core not ready" fallback.
+    void window.showWarningMessage(
+      'BlackHole：共享 Core 由本插件尚未携带的测试签名钥匙签发，验证被刻意拒绝（不会带病启动）。请把 BlackHole 插件升级到与 Core 同版本或更高；Desktop 需要一并升级。',
+    );
+    return;
+  }
   const message = code === 'core_download_cancelled' ? 'Core 准备已取消，未启动或更换后台。'
     : /data_root_in_use/.test(code) ? '原数据库仍由其他端口的 Core 持有。请先在原宿主确认状态并正常停止，再执行“BlackHole: Retry Shared Core”；不会强行结束进程。'
     : /platform_unsupported/.test(code) ? '该插件中的 Core 发布配置尚未支持当前宿主系统/架构，不会退回旧后台。'

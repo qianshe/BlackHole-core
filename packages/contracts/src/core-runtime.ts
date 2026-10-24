@@ -153,7 +153,7 @@ export const MigrationRecordSchema = z.object({
 export type MigrationRecord = z.infer<typeof MigrationRecordSchema>;
 
 export const CoreErrorCodeSchema = z.enum([
-  'core_missing', 'core_download_failed', 'core_archive_signature_invalid', 'installer_signature_invalid',
+  'core_missing', 'core_download_failed', 'core_archive_signature_invalid', 'core_trust_root_missing', 'installer_signature_invalid',
   'core_repair_required', 'core_update_required', 'client_update_required', 'legacy_migration_required',
   'legacy_client_uncoordinated', 'managed_core_required', 'foreign_listener', 'data_root_conflict',
   'environment_mismatch', 'active_clients', 'update_blocked', 'migration_pending',

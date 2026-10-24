@@ -59,7 +59,12 @@ export async function verifyCoreArchive(file, { publicKeys, platform, arch, envi
   const entries = await readArchive(file); const descriptorEntry = entries.get('core-descriptor.json'); if (!descriptorEntry) throw new Error('core_descriptor_missing');
   let raw; try { raw = JSON.parse(descriptorEntry.bytes.toString('utf8')); } catch { throw new Error('core_descriptor_invalid_json'); }
   const parsed = CoreDescriptorSchema.safeParse(raw); if (!parsed.success) throw new Error('core_descriptor_invalid'); const descriptor = parsed.data;
-  const key = publicKeys[descriptor.signingKeyId]; if (!key || !verifyDescriptorSignature(descriptor, key)) throw new Error('core_archive_signature_invalid');
+  // A key absent from the caller's trust roots means the host predates the
+  // Core's signing rotation (upgrade the host), which is actionable and must
+  // not read as archive corruption; a present key that fails verification is.
+  const key = publicKeys[descriptor.signingKeyId];
+  if (!key) throw new Error(`core_trust_root_missing:${descriptor.signingKeyId}`);
+  if (!verifyDescriptorSignature(descriptor, key)) throw new Error('core_archive_signature_invalid');
   if (descriptor.platform !== platform || descriptor.arch !== arch) throw new Error('core_platform_mismatch');
   if (descriptor.environment !== environment) throw new Error('environment_mismatch');
   const declared = new Set(); for (const member of descriptor.members ?? []) { const name=safeArchivePath(member.path); const keyName=name.toLowerCase(); if (declared.has(keyName)) throw new Error(`core_descriptor_duplicate_member:${name}`); declared.add(keyName);
@@ -106,7 +111,9 @@ export function verifyInstalledCore(root, expectedHash, { publicKeys, platform, 
   if (sha256(bytes) !== expectedHash) throw new Error('core_descriptor_hash_invalid');
   const descriptor = CoreDescriptorSchema.parse(JSON.parse(bytes.toString('utf8')));
   const key = publicKeys[descriptor.signingKeyId];
-  if (!key || (environment === 'production' && descriptor.signingKeyId.startsWith('test-')) || !verifyDescriptorSignature(descriptor, key)) throw new Error('core_archive_signature_invalid');
+  if (!key) throw new Error(`core_trust_root_missing:${descriptor.signingKeyId}`);
+  if (environment === 'production' && descriptor.signingKeyId.startsWith('test-')) throw new Error('core_archive_signature_invalid');
+  if (!verifyDescriptorSignature(descriptor, key)) throw new Error('core_archive_signature_invalid');
   if (descriptor.platform !== platform || descriptor.arch !== arch) throw new Error('core_platform_mismatch');
   if (descriptor.environment !== environment) throw new Error('environment_mismatch');
   if (descriptor.members.length > MAX_MEMBERS) throw new Error('core_archive_too_many_members');
