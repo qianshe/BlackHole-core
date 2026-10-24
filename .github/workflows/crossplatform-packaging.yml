@@ -57,11 +57,8 @@ jobs:
         run: |
           pnpm build
           pnpm --dir packages/web build
-          node packages/host-runtime/build.mjs --environment test
-          node packages/vscode/esbuild.mjs --environment test
-        env:
-          BLACKHOLE_TEST_CLOUD_ORIGIN: ${{ env.TEST_CLOUD_ORIGIN }}
-          BLACKHOLE_TEST_CLOUD_PUBLIC_KEY: ${{ env.TEST_ENTITLEMENT_PUBLIC_KEY }}
+          node packages/host-runtime/build.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY"
+          node packages/vscode/esbuild.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY"
       - name: Assemble platform Core layout
         run: |
           mkdir -p staging
@@ -93,10 +90,8 @@ jobs:
           BH_SEED_CORE_ARCHIVE="$PWD/staging/core-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}.zip" \
           BH_SEED_CORE_PUBLIC_KEY="$PWD/.github/workflows/ci-test-core-public.pem" \
           node scripts/package-vsix.mjs --environment test --core-package offline-code \
+            --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_ENTITLEMENT_PUBLIC_KEY" \
             --out "staging/blackhole-vscode-${version}-test-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}.vsix"
-        env:
-          BLACKHOLE_TEST_CLOUD_ORIGIN: ${{ env.TEST_CLOUD_ORIGIN }}
-          BLACKHOLE_TEST_CLOUD_PUBLIC_KEY: ${{ env.TEST_ENTITLEMENT_PUBLIC_KEY }}
       - name: Audit the packaged VSIX
         run: |
           ls staging/*.vsix | head -1 | xargs node scripts/audit-universal-vsix.mjs
