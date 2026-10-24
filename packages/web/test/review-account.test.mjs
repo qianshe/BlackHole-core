@@ -74,7 +74,8 @@ test('settings home lets a known offline identity use the existing sign-out acti
 
 const { TestAccountButton } = load('../src/console/Sidebar.tsx', {
   react: {}, '../../../contracts/src/account-summary': summary,
-  './ChannelSwitch': {}, '../format': {}, '../ui': { Icon: () => null },
+  './ChannelSwitch': {},
+  './SidebarUpdate': { SidebarUpdate: () => null }, '../format': {}, '../ui': { Icon: () => null },
   './common': { useMenu: () => ({ open: true, close() {}, toggle() {}, onKeyDown() {}, wrapRef: null }) },
   './courierFeed': {}, './sessionActions': {}, './console.module.css': { default: {} },
 }, '\nexport { AccountButton as TestAccountButton };\n');

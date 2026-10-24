@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
+import { SidebarUpdate } from './SidebarUpdate';
 import type { AccountView, ChannelSwitchView, ProjectView, SessionView } from '../api';
 import { ChannelSwitch } from './ChannelSwitch';
 import { groupSessions, sessionTitle, SESSION_STATUS_LABEL } from '../format';
@@ -307,6 +308,7 @@ export function Sidebar(p: Props) {
         )}
       </nav>
 
+      <SidebarUpdate collapsed={p.collapsed} />
       <AccountButton account={p.account} onAction={p.onAccount} />
     </aside>
   );

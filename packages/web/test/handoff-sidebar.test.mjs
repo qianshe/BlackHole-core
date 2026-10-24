@@ -18,6 +18,7 @@ const styles = new Proxy({}, { get: (_target, key) => String(key) });
 const mocks = {
   '../../../contracts/src/account-summary': {},
   './ChannelSwitch': {},
+  './SidebarUpdate': { SidebarUpdate: () => null },
   '../format': { sessionTitle: x => x.name, SESSION_STATUS_LABEL: { paused: '已暂停' } },
   '../ui': { Icon: () => null },
   './common': { useMenu: () => ({ open: false, close() {}, toggle() {}, onKeyDown() {}, wrapRef: null }) },
