@@ -1,7 +1,8 @@
 /** Host bridge surface for the shared settings renderer. No arbitrary URLs or commands. */
 export interface SettingsRequest { id: string; method: string; path: string; body?: unknown }
 export interface SettingsReply { id: string; ok: boolean; value?: unknown; error?: { status: number; code: string; detail?: string } }
-export interface SettingsHostInfo { kind: 'vscode'; version: string; environment: 'test' | 'production'; cloudOrigin: string; port: number; pollIntervalMs: number; daemonEntry?: string }
+export interface SettingsHostInfo { kind: 'vscode'; version: string; environment: 'test' | 'production'; cloudOrigin: string; port: number; pollIntervalMs: number; daemonEntry?: string; managedCore?: boolean }
+export type SettingsCoreAction = 'apply-settings' | 'configure-port' | 'inspect-maintenance';
 
 const nativeRoutes: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', /^\/(health|settings|semantic|tunnel|channel|approvals|proxies|account|remote)$/],
@@ -19,10 +20,13 @@ const nativeRoutes: ReadonlyArray<readonly [string, RegExp]> = [
 ];
 const hostRoutes: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', /^\/host\/info$/], ['PATCH', /^\/host\/settings$/],
+  ['POST', /^\/host\/core\/(apply-settings|configure-port|inspect-maintenance)$/],
   ['POST', /^\/host\/(clipboard|external|close|sign-in|sign-out)$/],
   ['POST', /^\/daemon\/(restart|stop)$/],
   ['GET', /^\/(cloudflared|openai-tunnel)\/install$/], ['POST', /^\/(cloudflared|openai-tunnel)\/install$/],
   ['GET', /^\/account\/(plans|orders|refundable)$/],
+  ['GET', /^\/account\/membership(?:\/status)?$/],
+  ['POST', /^\/account\/membership\/checkout$/],
   ['POST', /^\/account\/(refresh|orders|redeem)$/],
   ['POST', /^\/account\/orders\/[^/]+\/(checkout|reconcile|refund-quote|refund)$/],
 ];

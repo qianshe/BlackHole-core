@@ -32,6 +32,26 @@ test('extra fields are rejected so secrets cannot ride along', () => {
   assert.equal(ReadyReceiptSchema.safeParse({ ...receipt, mcpUrl: 'https://t/mcp/token' }).success, false);
 });
 
+
+test('shared-Core identity is optional for legacy receipts and strictly validated when present', () => {
+  const managed = {
+    ...receipt,
+    runtimeId: 'blackhole-core',
+    runtimeVersion: '0.4.0',
+    buildId: 'build-1',
+    descriptorHash: 'a'.repeat(64),
+    dataRootId: 'b'.repeat(64),
+    webBuildId: 'web-1',
+    coreProtocol: { min: 1, max: 2 },
+    environment: 'production',
+    cloudOrigin: 'https://example.invalid',
+    lifecycleState: 'managed',
+  };
+  assert.equal(ReadyReceiptSchema.safeParse(managed).success, true);
+  assert.equal(ReadyReceiptSchema.safeParse({ ...managed, coreProtocol: { min: 3, max: 2 } }).success, false);
+  assert.equal(ReadyReceiptSchema.safeParse({ ...managed, descriptorHash: 'bad' }).success, false);
+});
+
 test('localUrl must be loopback', () => {
   for (const localUrl of ['https://example.trycloudflare.com/ui/', 'http://192.168.1.2:7306/ui/', 'file:///C:/ui/index.html']) {
     assert.equal(ReadyReceiptSchema.safeParse({ ...receipt, localUrl }).success, false, localUrl);

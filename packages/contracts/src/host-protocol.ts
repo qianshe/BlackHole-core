@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CapabilitySchema } from './capabilities.js';
+import { CoreEnvironmentSchema, ProtocolRangeSchema, Sha256Schema } from './core-runtime.js';
 
 /**
  * Host protocol between the entry points (desktop launcher, VS Code extension)
@@ -39,6 +40,17 @@ export const ReadyReceiptSchema = z.object({
     message: 'must be relative to the UI base',
   }),
   capabilities: z.array(CapabilitySchema),
+  /** Shared-Core identity fields are optional for one legacy compatibility window. */
+  runtimeId: z.string().min(1).max(200).optional(),
+  runtimeVersion: z.string().min(1).max(100).optional(),
+  buildId: z.string().min(1).max(200).optional(),
+  descriptorHash: Sha256Schema.optional(),
+  dataRootId: Sha256Schema.optional(),
+  webBuildId: z.string().min(1).max(200).optional(),
+  coreProtocol: ProtocolRangeSchema.optional(),
+  environment: CoreEnvironmentSchema.optional(),
+  cloudOrigin: z.string().url().optional(),
+  lifecycleState: z.enum(['legacy', 'managed', 'quiescing', 'draining', 'stopping']).optional(),
 }).strict();
 export type ReadyReceipt = z.infer<typeof ReadyReceiptSchema>;
 
