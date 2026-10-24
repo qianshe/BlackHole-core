@@ -44,7 +44,7 @@ func describe(r bootstrap.Result) string {
 	return text
 }
 
-func main() {
+func legacyMain() {
 	noBrowser := flag.Bool("no-browser", false, "start or attach to the daemon without opening the window")
 	windowMode := flag.Bool("window", false, "internal: show the app window for the ticket URL read from stdin")
 	stop := flag.Bool("stop", false, "stop the running daemon")

@@ -36,6 +36,9 @@ func TestWatchBeatsAndDetectsStop(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/heartbeat" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
+		if got := r.Header.Get("x-blackhole-client"); got != "tray" {
+			t.Errorf("heartbeat must retain the tray marker, got %q", got)
+		}
 		beats.Add(1)
 		w.WriteHeader(200)
 	})
@@ -65,4 +68,34 @@ func TestWatchToleratesShortOutage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	Client{Port: port}.Watch(ctx, 10*time.Millisecond, 3, func() { t.Error("single misses must not stop the tray") })
+}
+
+// roundTripFunc keeps cancellation tests entirely in memory.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWatchAlreadyCancelledDoesNotBeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := Client{Port: 1, HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Error("cancelled watcher must not send a heartbeat")
+		return nil, context.Canceled
+	})}}
+	c.Watch(ctx, time.Hour, 1, func() { t.Error("local exit is not daemon loss") })
+}
+
+func TestWatchCancelledDuringBeatDoesNotReportDaemonGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	c := Client{Port: 1, HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		cancel()
+		return nil, r.Context().Err()
+	})}}
+	c.Watch(ctx, time.Hour, 1, func() { t.Error("cancelled request is not evidence the daemon stopped") })
+	if calls != 1 {
+		t.Fatalf("want one cancelled in-flight heartbeat, got %d", calls)
+	}
 }

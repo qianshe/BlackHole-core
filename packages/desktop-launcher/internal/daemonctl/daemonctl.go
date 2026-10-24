@@ -5,8 +5,6 @@ package daemonctl
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -49,32 +47,6 @@ func (c Client) do(ctx context.Context, method, route string) (int, error) {
 	return res.StatusCode, nil
 }
 
-// OthersActive reports whether a client other than the tray (VS Code) sent a
-// heartbeat recently. Older daemons without /clients answer false: quitting
-// then stops the daemon, as before.
-func (c Client) OthersActive(ctx context.Context) bool {
-	hc := c.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: 3 * time.Second}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(c.Port)+"/api/clients", nil)
-	if err != nil {
-		return false
-	}
-	res, err := hc.Do(req)
-	if err != nil {
-		return false
-	}
-	defer res.Body.Close()
-	var body struct {
-		OthersActive bool `json:"others_active"`
-	}
-	if res.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&body) != nil {
-		return false
-	}
-	return body.OthersActive
-}
-
 // Beat sends one heartbeat and reports whether the daemon answered.
 func (c Client) Beat(ctx context.Context) bool {
 	code, err := c.do(ctx, http.MethodPost, "/heartbeat")
@@ -88,7 +60,16 @@ func (c Client) Watch(ctx context.Context, interval time.Duration, misses int, o
 	defer t.Stop()
 	failed := 0
 	for {
-		if c.Beat(ctx) {
+		if ctx.Err() != nil {
+			return
+		}
+		alive := c.Beat(ctx)
+		// Local teardown cancels in-flight HTTP too. That is not evidence that
+		// the shared daemon disappeared, and must not trigger onGone.
+		if ctx.Err() != nil {
+			return
+		}
+		if alive {
 			failed = 0
 		} else if failed++; failed >= misses {
 			onGone()

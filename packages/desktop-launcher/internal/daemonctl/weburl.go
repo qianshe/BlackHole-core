@@ -51,11 +51,27 @@ func (c Client) WebURL(ctx context.Context) (string, error) {
 	return "http://127.0.0.1:" + strconv.Itoa(c.Port) + body.Path + "#" + body.Ticket, nil
 }
 
-// ValidWebURL guards the window process: it only ever opens a local ticket URL.
+// WelcomeURL selects the native document. The browser document at / keeps
+// its opener-isolation policy; the native document preserves WebView2 bindings.
+// A URL does not authorize account actions: the native host remains required.
+func (c Client) WelcomeURL() (string, error) {
+	if c.Port < 1 || c.Port > 65535 {
+		return "", errors.New("invalid_welcome_port")
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(c.Port) + "/desktop/", nil
+}
+
+// The window accepts only its fixed native document or a legacy ticket URL.
+// Browser roots, arbitrary fragments, queries and remote origins are rejected.
 func ValidWebURL(u string) bool {
 	rest, ok := strings.CutPrefix(u, "http://127.0.0.1:")
 	if !ok {
 		return false
+	}
+	if strings.HasSuffix(rest, "/desktop/") {
+		port := strings.TrimSuffix(rest, "/desktop/")
+		p, err := strconv.Atoi(port)
+		return err == nil && p > 0 && p < 65536 && strconv.Itoa(p) == port
 	}
 	port, frag, ok := strings.Cut(rest, "/ui/#")
 	p, err := strconv.Atoi(port)

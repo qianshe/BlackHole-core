@@ -17,10 +17,10 @@ import (
 // The app window runs in its own process (`blackhole --window`): the tray and
 // the WebView each need the main thread's message loop.
 const (
-	windowTitle   = "BlackHole"
 	exitNoWebView = 3
 )
 
+var windowTitle = "BlackHole"
 var errNoWebView = errors.New("webview unavailable")
 
 // runWindowMode reads the ticket URL from stdin (never argv) and shows the window.
@@ -29,6 +29,13 @@ func runWindowMode() int {
 	url := strings.TrimSpace(line)
 	if !daemonctl.ValidWebURL(url) {
 		return 2
+	}
+	if !legacyMode {
+		release, err := acquireWindowLease(url)
+		if err != nil {
+			return 2
+		}
+		defer release()
 	}
 	if err := showWindow(url); err != nil {
 		if errors.Is(err, errNoWebView) {
@@ -45,7 +52,13 @@ func openUI(ctx context.Context, rt bootstrap.Runtime, port int) {
 	if focusExistingWindow() {
 		return
 	}
-	url, err := daemonctl.Client{Port: port}.WebURL(ctx)
+	var url string
+	var err error
+	if legacyMode {
+		url, err = daemonctl.Client{Port: port}.WebURL(ctx)
+	} else {
+		url, err = daemonctl.Client{Port: port}.WelcomeURL()
+	}
 	if err != nil {
 		showError("BlackHole", "无法打开 BlackHole 窗口。\n\n"+err.Error())
 		return
@@ -64,7 +77,14 @@ func spawnWindow(url string) int {
 	if err != nil {
 		return exitNoWebView
 	}
-	cmd := exec.Command(exe, "--window")
+	args := []string{"--window"}
+	if legacyMode {
+		args = append(args, "--legacy-dev")
+	}
+	cmd := exec.Command(exe, args...)
+	if sharedTrayInstanceID != "" {
+		cmd.Env = append(os.Environ(), "BLACKHOLE_DESKTOP_TRAY_INSTANCE_ID="+sharedTrayInstanceID)
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return exitNoWebView
