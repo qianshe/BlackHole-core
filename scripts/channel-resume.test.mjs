@@ -42,6 +42,13 @@ test('launcher turned the channel off (custom channel mode): never resumes', () 
   assert.equal(resumeChannel(d), false);
 });
 
+test('manual-only Test channel also resumes a remembered channel on heartbeat', () => {
+  const d = deps({ cfg: { tunnel: 'manual' } });
+  d.channelIntent.set('quick');
+  assert.equal(resumeChannel(d),true);
+  assert.deepEqual(d.tunnel.starts,['quick']);
+});
+
 test('tab decoupling migration: custom-tab intent is dropped exactly once; other tabs keep theirs', () => {
   const st = memState();
   new ChannelIntent(st).set('named');

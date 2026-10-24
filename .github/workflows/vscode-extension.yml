@@ -163,14 +163,16 @@ jobs:
           node-version: 22.20.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Never install, upload, sign or publish this isolated CI candidate.
-      # Production uses the checked-in public origin/key only, with no credentials.
-      - name: Package a production-profile VSIX candidate and audit the archive
-        run: node scripts/package-vsix.mjs --environment production --out .cache/ci-vsix-candidate.vsix
-      - name: Independently validate the VSIX contents and build identity
-        run: node scripts/audit-universal-vsix.mjs .cache/ci-vsix-candidate.vsix
-      - name: Boot the packaged daemon with isolated home, port and credentials
-        run: node scripts/packed-daemon-smoke.mjs .cache/ci-vsix-candidate.vsix
+      # Production VSIX now needs a separately verified Core v2 reference. Do
+      # not invent one or silently fall back to the former bundled daemon.
+      # Real paired VSIX/Core/Desktop artifacts run in the reviewed, manual
+      # shared-core-prepare workflow; these automatic checks use synthetic code.
+      - name: Build host contracts and verify the VS Code adapter
+        run: pnpm build && pnpm --dir packages/vscode typecheck
+      - name: Node-free VSIX, pinned Core reference and one-Node Desktop policies
+        run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs scripts/environment-packaging.test.mjs packages/vscode/test/managed-core-session.test.mjs
+      - name: Full package acceptance is a separate reviewed-source gate
+        run: node -e "console.log('Source and synthetic archive checks only. Real v2 VSIX/Core/Desktop package acceptance requires Shared Core release preparation; not a published build.')"
 
   settings-browser:
     name: Shared settings browser (Linux-x64)

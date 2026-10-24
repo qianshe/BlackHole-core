@@ -1,0 +1,3 @@
+import fs from 'node:fs'; import { verifyCoreArchive } from './core-runtime-lib.mjs';
+const args=Object.fromEntries(process.argv.slice(2).map((v,i,a)=>v.startsWith('--')?[v.slice(2),a[i+1]]:null).filter(Boolean)); for(const k of ['archive','public-key','key-id','platform','arch','environment']) if(!args[k]) throw new Error(`missing --${k}`);
+const result=await verifyCoreArchive(args.archive,{publicKeys:{[args['key-id']]:fs.readFileSync(args['public-key'])},platform:args.platform,arch:args.arch,environment:args.environment}); console.log(JSON.stringify({ok:true,...result,descriptor:undefined}));

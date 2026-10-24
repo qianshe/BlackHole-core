@@ -160,6 +160,17 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.deepEqual([on.status, on.json.ok, on.json.error], [409, false, 'cloudflared']);
     const off = await request(port, 'POST', '/api/channel', { on: false });
     assert.deepEqual([off.status, off.json.ok, off.json.view.on], [200, true, false]);
+    // The daemon booted with an unusable cloudflared path. Merely saving the
+    // new pinned executable (a non-executable file fixture) must refresh UI
+    // readiness without a daemon restart or an actual public tunnel.
+    const fixture = path.join(iso.home, 'cloudflared-fixture.exe');
+    fs.writeFileSync(fixture, 'TEXT ONLY, DO NOT EXECUTE');
+    const saved = await request(port, 'PATCH', '/api/settings', { values: { cloudflaredPath: fixture } });
+    assert.equal(saved.status,200);
+    const after = await request(port, 'GET', '/api/channel');
+    assert.equal(after.status,200);
+    assert.equal(after.json.missing,null,'channel readiness reads the newly saved path, not the daemon startup snapshot');
+    assert.equal(after.json.on,false,'saving a path never starts the tunnel');
   });
 }
 void freePort; void CF_LIVE;

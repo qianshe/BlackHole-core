@@ -271,3 +271,14 @@ test('lifecycle audit correlates to the originating call without storing output 
   assert.ok(events.length >= 2); assert.ok(events.every(e => e.data.call_id === 'synthetic-call-id'));
   assert.ok(!JSON.stringify(events).includes('not-an-audit-payload'));
 });
+
+test('failed readiness with a spawned handle stays unknown until cleanup is confirmed',async t=>{
+ let events;const f=fixture(t,{backend:(_spec,cb)=>{events=cb;return{pid:123,ready:Promise.reject(Error('monitor lost')),stop:async()=>cb.exit({exitCode:1,cleanupConfirmed:true})}}});
+ const result=await f.start('maintenance-unknown');assert.equal(result.state,'unknown');assert.equal(f.manager.maintenanceBusy(),true);
+ events.exit({exitCode:1,cleanupConfirmed:true});assert.equal(f.manager.maintenanceBusy(),false);
+});
+test('maintenance closes process admission again after asynchronous authorization',async t=>{
+ let accepting=true;const f=fixture(t,{canStart:()=>accepting});
+ const result=await f.start('maintenance-admission',{},async()=>{accepting=false});assert.equal(result.state,'failed');assert.equal(f.children.length,0);
+ await assert.rejects(f.start('maintenance-admission-2'));
+});

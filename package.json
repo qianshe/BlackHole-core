@@ -1,6 +1,6 @@
 {
   "name": "blackhole",
-  "version": "0.3.200",
+  "version": "0.4.14",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -57,6 +57,9 @@
     "test:contracts": "pnpm --dir packages/contracts test",
     "test:changelog": "node --test packages/vscode/test/changelog.test.mjs",
     "test:host-runtime": "node --test scripts/isolated-env.test.mjs && pnpm --dir packages/host-runtime test",
+    "test:core-runtime": "pnpm build && node --test scripts/core-runtime.test.mjs",
+    "test:shared-core:preflight": "node --test scripts/shared-core-acceptance-preflight.test.mjs",
+    "verify:shared-core:acceptance": "node scripts/shared-core-acceptance-preflight.mjs",
     "build:launcher": "pnpm --dir packages/host-runtime build && go -C packages/desktop-launcher build -trimpath -o ../../.tmp/launcher/dev/ ./cmd/blackhole",
     "test:local-web": "pnpm build && pnpm --dir packages/web build && pnpm --dir packages/web test && node --test scripts/local-web.test.mjs scripts/account.test.mjs scripts/web-console.test.mjs scripts/web-sessions.test.mjs scripts/remote-access.test.mjs scripts/settings-store.test.mjs scripts/openai-tunnel.test.mjs scripts/secret-file.test.mjs scripts/courier.test.mjs scripts/direct-access.test.mjs scripts/direct-access-settings.test.mjs scripts/direct-panel.test.mjs scripts/connection-routes.test.mjs",
     "test:openai-tunnel-runtime:native": "pnpm build && node scripts/openai-tunnel-runtime-native.mjs",
@@ -80,6 +83,8 @@
     "@types/node": "^22.10.2",
     "chrome-devtools-mcp": "1.9.0",
     "playwright": "1.64.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "yauzl": "3.4.0",
+    "yazl": "2.5.1"
   }
 }

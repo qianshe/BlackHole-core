@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { MachineStateRepo } from '../dist/storage/machineState.js';
-import { applySettingsToConfig, normalizeSettingsPatch, pendingRestartKeys, unseededKeys, SettingsStore, DEFAULT_SETTINGS, DEFAULT_WEB_AGENTS, V1_SETTING_KEYS, SETTINGS_KEY } from '../dist/settings/store.js';
+import { applySettingsToConfig, normalizeSettingsPatch, pendingRestartKeys, savedCloudflaredBinary, unseededKeys, SettingsStore, DEFAULT_SETTINGS, DEFAULT_WEB_AGENTS, V1_SETTING_KEYS, SETTINGS_KEY } from '../dist/settings/store.js';
 import { readFileSync } from 'node:fs';
 import { migrateSettings, patchSettings, putCourierSite, removeCourierSite } from '../dist/settings/service.js';
 
@@ -82,6 +82,12 @@ test('patch service: revision required for Web, 409 carries current values, pend
   assert.equal(conflict.status, 409);
   assert.equal(conflict.body.current.revision, 1);
   assert.deepEqual(pendingRestartKeys(DEFAULT_SETTINGS, DEFAULT_SETTINGS), []);
+  const withPath = { seeded: ['cloudflaredPath'], values: { ...DEFAULT_SETTINGS, cloudflaredPath: 'C:/bin/cloudflared.exe' } };
+  assert.equal(savedCloudflaredBinary(withPath, 'C:/old/stale.exe'), 'C:/bin/cloudflared.exe');
+  assert.equal(savedCloudflaredBinary({ ...withPath, values: { ...DEFAULT_SETTINGS, cloudflaredPath: '' } }, 'C:/old/stale.exe'), undefined, 'explicitly cleared path cannot resurrect an old binary');
+  assert.equal(savedCloudflaredBinary({ ...withPath, seeded: [] }, 'C:/fallback.exe'), 'C:/fallback.exe');
+  assert.equal(savedCloudflaredBinary(undefined, 'C:/fallback.exe'), 'C:/fallback.exe');
+  assert.deepEqual(pendingRestartKeys(DEFAULT_SETTINGS, { ...DEFAULT_SETTINGS, cloudflaredPath: 'C:/trusted/cloudflared.exe' }), [], 'saved cloudflared is resolved on explicit channel start; active jobs do not need a Core restart');
 });
 
 test('unified direct access does not require an advertised URL and has no enabling aliases', () => {

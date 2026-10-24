@@ -1,0 +1,42 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { CloudAuthClient, CLOUD_AUTH_ORIGIN, credentialKey } from '../dist/account/cloud-auth-client.js';
+import { parseMembershipCheckout } from '../dist/account/membership-checkout.js';
+const now = Math.floor(Date.now() / 1000), origin = CLOUD_AUTH_ORIGIN;
+const url = origin + '/api/billing/membership/checkout#' + new URLSearchParams({flow:randomUUID(),checkout:'A'.repeat(43)});
+test('native checkout admits only a short-lived same-Cloud capability, not a provider or attacker URL', () => {
+  assert.deepEqual(parseMembershipCheckout({checkoutUrl:url,expiresAt:now+300},origin,now),{checkoutUrl:url,expiresAt:now+300});
+  for (const checkoutUrl of [url.replace(origin,'https://evil.invalid'),url.replace('/membership',''),url+'&user=other','alipays://platformapi/startapp?appId=x',url+'&flow='+randomUUID()]) assert.throws(()=>parseMembershipCheckout({checkoutUrl,expiresAt:now+300},origin,now));
+  for (const expiresAt of [now,now+601,NaN,'tomorrow']) assert.throws(()=>parseMembershipCheckout({checkoutUrl:url,expiresAt},origin,now));
+});
+test('real native client consumes the new contract, binds calls to its user and keeps bearer out of the checkout URL', async () => {
+  const userId=randomUUID(),sessionId=randomUUID(),token='bhp_'+'V'.repeat(43),clientId='membership-client-fixture-001';
+  let credential={userId,sessionId,token,clientId,loginOrder:1,expiresAt:now+3600};
+  const receipt={version:1,origin,loginOrder:1,sessionId,kind:'login'};
+  const requests=[];
+  let switchDuringRequest=false,restricted=false;
+  const catalogue={enabled:true,salesEnabled:true,productId:'DIRECT_example',productName:'BlackHole',capabilityStatus:'ENABLED',plans:[{sku:'calendar-month',displayName:'一个月',amountMinor:1990,currency:'CNY',durationPeriod:'MONTH'}],checkedAt:now};
+  const client=new CloudAuthClient({clientId,now:()=>now*1000,secrets:{get:async key=>key===credentialKey(sessionId)?JSON.stringify(credential):undefined,store:async()=>{},delete:async()=>{}},receipts:{list:async()=>[receipt],put:async()=>{},remove:async()=>{}},openExternal:async()=>false,fetch:async(input,init)=>{
+    const request=new Request(input,init);requests.push(request);
+    assert.equal(request.headers.get('Authorization'),'Bearer '+token);
+    assert.equal(request.headers.has('Cookie'),false);assert.equal(request.headers.has('Origin'),false);
+    if(switchDuringRequest)credential={...credential,userId:randomUUID()};
+    if(restricted&&request.url.endsWith('/checkout'))return Response.json({error:'nowpay_purchase_restricted'},{status:403});
+    return new Response(JSON.stringify(request.url.endsWith('/catalogue')?catalogue:request.url.endsWith('/status')?{decision:'ALLOW',validFrom:now-100,validUntil:now+100,legacyExpiresAt:0,canPurchase:false,checkedAt:now}:{checkoutUrl:url,expiresAt:now+300}),{headers:{'Content-Type':'application/json'}});
+  }});
+  assert.deepEqual(await client.membershipCatalogue(userId),catalogue);
+  assert.equal((await client.membershipStatus(userId)).decision,'ALLOW');
+  const checkout=await client.membershipCheckout(userId,'calendar-month');assert.equal(checkout.checkoutUrl.includes(token),false);
+  assert.deepEqual(await requests.at(-1).json(),{sku:'calendar-month'});
+  const count=requests.length;
+  for(const sku of [undefined,'','bad sku','x'.repeat(33)])await assert.rejects(()=>client.membershipCheckout(userId,sku),error=>error.code==='invalid_response');
+  assert.equal(requests.length,count);
+  await assert.rejects(()=>client.membershipStatus(randomUUID()),error=>error.code==='rejected');
+  restricted=true;
+  await assert.rejects(()=>client.membershipCheckout(userId,'calendar-month'),error=>error.code==='payment_not_available');
+  assert.equal((await client.membershipStatus(userId)).decision,'ALLOW');
+  restricted=false;
+  switchDuringRequest=true;
+  await assert.rejects(()=>client.membershipStatus(userId),error=>error.code==='rejected');
+});

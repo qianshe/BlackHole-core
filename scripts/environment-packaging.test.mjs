@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {generateKeyPairSync} from 'node:crypto';
 import {readProfiles,assertServiceBuild,PRODUCTION_ORIGIN,PRODUCTION_KEY} from './environment-config.mjs';
-import {resolveBuildConfig,parseBuildArgs} from '../packages/vscode/build-config.mjs';
+import {resolveBuildConfig,parseBuildArgs,assertBundledCoreVersion} from '../packages/vscode/build-config.mjs';
 const key=()=>generateKeyPairSync('ed25519').publicKey.export({format:'der',type:'spki'}).toString('base64');
 const root=fileURLToPath(new URL('../',import.meta.url));
 
@@ -33,6 +33,19 @@ test('explicit test origin/key pair takes precedence; ambient variables cannot c
   for(const name of names)process.env[name]='https://wrong.example.org';
   assert.deepEqual(parseBuildArgs(['--environment','production'],{packaging:true}).build,{environment:'production',origin:PRODUCTION_ORIGIN,entitlementPublicKey:PRODUCTION_KEY});
  }finally{for(const name of names)if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];}
+});
+
+test('both interaction entries carry a signed Core seed by default; thin VSIX is opt-in',()=>{
+ const base=['--environment','production'];
+ assert.equal(parseBuildArgs(base,{packaging:true}).corePackage,'offline-code');
+ assert.equal(parseBuildArgs([...base,'--core-package','offline-code'],{packaging:true}).corePackage,'offline-code');
+ assert.equal(parseBuildArgs([...base,'--core-package','thin','--core-url','https://github.com/fixture'],{packaging:true}).corePackage,'thin');
+});
+test('a published full VSIX must contain a matching signed Core runtime version',()=>{
+ assert.doesNotThrow(()=>assertBundledCoreVersion('offline-code','0.4.6','0.4.6'));
+ assert.throws(()=>assertBundledCoreVersion('offline-code','0.4.6','0.4.5'),/vsix_bundled_core_version_mismatch/);
+ assert.throws(()=>assertBundledCoreVersion('offline-code','0.4.6',undefined),/vsix_bundled_core_version_mismatch/);
+ assert.doesNotThrow(()=>assertBundledCoreVersion('thin','0.4.6','0.4.5'));
 });
 test('optional test.json is public-only, invalid files fail closed, and production can ignore them',t=>{
  const cache=path.join(root,'.cache');fs.mkdirSync(cache,{recursive:true});const dir=fs.mkdtempSync(path.join(cache,'environment-regression-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

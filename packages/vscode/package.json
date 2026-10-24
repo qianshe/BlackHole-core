@@ -2,7 +2,7 @@
   "name": "blackhole-vscode",
   "displayName": "BlackHole",
   "description": "Connect Web Agents to your local workspace, shell and MCP tools with explicit execution boundaries.",
-  "version": "0.3.200",
+  "version": "0.4.14",
   "private": true,
   "publisher": "qianshe",
   "icon": "media/icon.png",
@@ -52,7 +52,7 @@
     "package:test": "node ../../scripts/package-vsix.mjs --environment test",
     "package:production": "node ../../scripts/package-vsix.mjs --environment production",
     "vscode:prepublish": "node esbuild.mjs --environment production && node ../../scripts/check-webview.mjs && node ../../scripts/proxy-sync-unit.mjs",
-    "test:cloud-auth": "node test/prepare-cloud-auth.mjs && node --test --experimental-test-isolation=none test/cloud-auth.test.mjs"
+    "test:cloud-auth": "pnpm --dir ../contracts build && node test/prepare-cloud-auth.mjs && node --test --experimental-test-isolation=none test/cloud-auth.test.mjs"
   },
   "contributes": {
     "configuration": {
@@ -246,6 +246,26 @@
         "category": "BlackHole"
       },
       {
+        "command": "blackhole.handoffLegacyCore",
+        "title": "Core：从旧版安全切换",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.activateBundledCoreCold",
+        "title": "Core：应用本插件配套版本",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.retrySharedCore",
+        "title": "Core：重试连接",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.applyBundledCoreUpdate",
+        "title": "Apply Bundled Core Update",
+        "category": "BlackHole"
+      },
+      {
         "command": "blackhole.restartDaemon",
         "title": "Restart Daemon",
         "category": "BlackHole"
@@ -290,6 +310,22 @@
         "command": "blackhole.accountStatus",
         "title": "账号：检查登录状态",
         "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.applyCoreSettings",
+        "title": "BlackHole: Apply Shared Core Settings"
+      },
+      {
+        "command": "blackhole.configureCorePort",
+        "title": "BlackHole: Configure Shared Core Port (Stopped Core)"
+      },
+      {
+        "command": "blackhole.inspectCoreMaintenance",
+        "title": "BlackHole: Inspect and Recover Shared Core Maintenance"
+      },
+      {
+        "command": "blackhole.repairCoreStart",
+        "title": "BlackHole: Inspect and Repair Shared Core Start"
       }
     ],
     "viewsContainers": {

@@ -28,9 +28,9 @@ if (process.argv.includes('--fixture-daemon')) {
     await new Promise(resolve => socket.close(resolve));
     const env = { ...process.env,
       HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
-      BLACKHOLE_DB: path.join(root, 'fixture.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_PUBLIC_URL: '',
-      BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_SEMANTIC_KEY: '', BLACKHOLE_SEMANTIC_KEY_FILE: path.join(home, 'semantic-key'),
-      BLACKHOLE_PROXY_CONFIG: path.join(home, 'missing-proxies.yaml'), BLACKHOLE_SKILLS_DIR: '', SMOKE_PORT: String(port),
+      BLACKHOLE_DB: path.join(home, '.blackhole', 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_PUBLIC_URL: '',
+      BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_SEMANTIC_KEY: '', BLACKHOLE_SEMANTIC_KEY_FILE: path.join(home, '.blackhole', 'semantic-key'),
+      BLACKHOLE_PROXY_CONFIG: path.join(home, '.blackhole', 'mcp-proxies.yaml'), BLACKHOLE_SKILLS_DIR: '', SMOKE_PORT: String(port),
     };
     delete env.BLACKHOLE_PUBLIC_URL; // Unset, not an empty origin override.
     const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });

@@ -51,6 +51,26 @@ function make({ probe, ready, urls = [URL1, URL2], probeProxy }) {
 }
 
 const CF530 = { ok: false, kind: 'http', status: 530, detail: 'Cloudflare 找不到隧道连接器（HTTP 530 / 1033）' };
+test('cloudflared is resolved on each explicit channel start, without stopping a running Core',async()=>{
+ const seen=[];let saved='C:/runtime/cloudflared-original.exe';
+ const sp=fakeSpawner([URL1,URL2]);
+ const m=new TunnelManager(54321,{enabled:true,bin:()=>saved,
+   spawnProcess:(bin,...args)=>{seen.push(bin);return sp.spawnProcess(bin,...args)},
+   probe:async()=>({ok:true}),readyCheck:async()=>true,
+   healthCheckIntervalMs:1000,onEvent:()=>{},log:()=>{}
+ });
+ m.start('quick');
+ await until(()=>m.status==='online');
+ assert.deepEqual(seen,['C:/runtime/cloudflared-original.exe']);
+ saved='C:/runtime/cloudflared-updated.exe';
+ assert.equal(seen.length,1,'changing the saved path must not restart an active channel');
+ await m.stop();
+ m.start('quick');
+ await until(()=>m.status==='online');
+ assert.deepEqual(seen,['C:/runtime/cloudflared-original.exe','C:/runtime/cloudflared-updated.exe']);
+ await m.stop();
+});
+
 test('public self-probes read the application proxy dynamically without changing cloudflared transport', async () => {
   let current = 'http://127.0.0.1:7890';
   const seen = [];

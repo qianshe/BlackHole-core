@@ -12,6 +12,20 @@ import { createIsolatedEnv } from './fixtures/isolated-env.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 if (process.argv.includes('--fixture-daemon')) {
+  // Cloud responses are synthetic and local to this test child. Verification
+  // succeeds only for the exact migrated fixture credential; no Internet IO.
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/api/auth/plugin/session' && url.protocol === 'https:') {
+      assert.equal(init.headers.Authorization, 'Bearer ' + 'bhp_' + 'a'.repeat(43));
+      return Response.json({ userId: 'user_1', clientId: 'c'.repeat(22),
+        sessionId: '11111111-2222-4333-8444-555555555555',
+        expiresAt: Number(process.env.WEB_TEST_AUTH_EXPIRES_AT), loginOrder: 7 });
+    }
+    if (url.protocol === 'http:' && ['127.0.0.1','localhost'].includes(url.hostname)) return nativeFetch(input, init);
+    throw Error('external_network_forbidden_fixture');
+  };
   const { startDaemon } = await import('../dist/daemon.js');
   const daemon = await startDaemon({ port: Number(process.env.BLACKHOLE_PORT), dbPath: process.env.BLACKHOLE_DB, tunnel: 'off' }, () => {});
   process.on('message', (message) => {
@@ -21,7 +35,9 @@ if (process.argv.includes('--fixture-daemon')) {
 } else {
   test('local web: ticket login, read-only data, local-only boundary', { timeout: 60_000 }, async (t) => {
     const iso = await createIsolatedEnv({ name: 'local-web' });
-    const env = { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') };
+    const expiration = Math.floor(Date.now()/1000) + 3600;
+    const env = { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist'),
+      BLACKHOLE_ACCOUNT_OFFLINE: '0', WEB_TEST_AUTH_EXPIRES_AT: String(expiration) };
     const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     const exited = new Promise((resolve) => child.once('exit', resolve));
     let client;
@@ -69,9 +85,7 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await bootstrap({ origin })).status, 403, 'browser Origin must not mint tickets');
     assert.equal((await bootstrap({ 'sec-fetch-site': 'same-origin' })).status, 403);
     assert.equal((await bootstrap({ 'x-forwarded-for': '1.2.3.4' })).status, 403);
-    const issued = await (await bootstrap()).json();
-    assert.match(issued.ticket, /^[A-Za-z0-9_-]{43}$/);
-    assert.equal(issued.path, '/ui/');
+    assert.equal((await bootstrap()).status, 401, 'Core must verify login before issuing Web tickets');
 
     // The page lives at /: browsers on this machine get it; tunnel traffic and scripts get the banner.
     const html = { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' };
@@ -79,6 +93,16 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal(root.status, 200);
     assert.match(await root.text(), /<div id="root">/);
     assert.equal(root.headers.get('cache-control'), 'no-store');
+    assert.equal(root.headers.get('cross-origin-opener-policy'), 'same-origin', 'browser opener isolation remains intact');
+    const desktop = await fetch(base + '/desktop/', { headers: html, redirect: 'manual' });
+    assert.equal(desktop.status, 200, 'native document must not redirect into the browser document');
+    assert.equal(desktop.headers.get('cross-origin-opener-policy'), null, 'native document must preserve WebView2 bindings');
+    assert.match(desktop.headers.get('content-security-policy'), /script-src 'self'.*frame-ancestors 'none'/);
+    assert.equal(desktop.headers.get('x-frame-options'), 'DENY');
+    assert.equal(desktop.headers.get('cache-control'), 'no-store');
+    for (const headers of [{'x-forwarded-for':'1.2.3.4'}, {'cf-connecting-ip':'1.2.3.4'}]) {
+      assert.equal((await fetch(base+'/desktop/',{headers,redirect:'manual'})).status,403,'native document never served through a proxy');
+    }
     assert.match(await (await fetch(base + '/')).text(), /MCP endpoint/, 'non-browser callers keep the banner');
     for (const h of [{ 'cf-connecting-ip': '1.1.1.1' }, { 'x-forwarded-for': '1.1.1.1' }]) {
       assert.match(await (await fetch(base + '/', { headers: { ...html, ...h } })).text(), /MCP endpoint/, JSON.stringify(h));
@@ -117,11 +141,27 @@ if (process.argv.includes('--fixture-daemon')) {
       });
     assert.equal((await web('/sessions')).status, 401);
 
-    // Login bootstrap may read only a non-sensitive channel-configuration summary.
+    // Only a read-only, same-origin status is exposed before a Core login.
+    assert.equal((await web('/auth/status')).status, 200);
+    assert.equal((await fetch(base + '/web-api/v1/auth/status')).status, 403);
+    assert.equal((await web('/auth/setup')).status, 401, 'unverified account cannot inspect channel settings');
+    assert.equal((await web('/auth/local', { method: 'POST', body: {} })).status, 401);
+    assert.equal((await web('/auth/login', { method: 'POST', body: {} })).status, 410, 'browser must not start OAuth');
+
+    const earlyCred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22),
+      sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: expiration, loginOrder: 7 };
+    assert.deepEqual(await control('/account/migrate', { credential: earlyCred }), { migrated: true });
+    assert.equal((await control('/account/call', { method: 'check', args: [] })).result.state, 'verified');
+    assert.equal((await control('/account/welcome')).state, 'verified');
+    assert.deepEqual(await (await web('/auth/status')).json(), { state: 'verified' });
     const setupSummary = await web('/auth/setup');
     assert.equal(setupSummary.status, 200);
     assert.deepEqual(await setupSummary.json(), { configuration: 'absent' });
-    assert.equal((await fetch(base + '/web-api/v1/auth/setup')).status, 403, 'setup summary still requires the local Web client marker');
+    assert.equal((await fetch(base + '/web-api/v1/auth/setup')).status, 403);
+
+    const issued = await (await bootstrap()).json();
+    assert.match(issued.ticket, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(issued.path, '/ui/');
 
     // Exchange: exact Origin + client header, one use only.
     assert.equal((await web('/auth/exchange', { method: 'POST', body: { ticket: issued.ticket }, headers: { origin: 'http://evil.test' } })).status, 403);
@@ -137,35 +177,14 @@ if (process.argv.includes('--fixture-daemon')) {
     const me = await (await web('/auth/session', { cookie })).json();
     assert.equal(me.authenticated, true);
 
-    // Account gate: a ticket alone opens no business data until this machine's account is signed in.
-    assert.equal(me.account_required, true);
-    assert.equal((await (await web('/sessions', { cookie })).json()).error, 'account_required');
-    assert.equal((await web('/account', { cookie })).status, 200, 'the login page can still read account state');
+    assert.equal(me.account_required, false, 'only a verified Core account received this cookie');
+    assert.equal((await web('/account', { cookie })).status, 200);
+    assert.equal((await web('/sessions', { cookie })).status, 200);
 
-    assert.equal((await web('/auth/local', { method: 'POST', body: {} })).status, 401, 'no account yet: local entry refused');
-
-    // Browser login without any session: same-origin only, rate limited, result by polling.
-    const login = (headers = {}) => web('/auth/login', { method: 'POST', body: {}, headers });
-    assert.equal((await login({ origin: 'http://evil.test' })).status, 403);
-    const started = await login();
-    assert.equal(started.status, 202);
-    const { attempt } = await started.json();
-    assert.match(attempt, /^[A-Za-z0-9_-]{43}$/);
-    let polled;
-    for (let i = 0; i < 50; i++) {
-      polled = await (await web('/auth/login/' + attempt)).json();
-      if (polled.state !== 'running') break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    assert.equal(polled.state, 'failed', 'offline fixture: the cloud sign-in cannot complete');
-    assert.equal((await web('/auth/login/' + attempt)).status, 404, 'attempt is single-use');
-    assert.equal((await web('/auth/login/' + 'B'.repeat(43))).status, 404);
-    for (let i = 0; i < 4; i++) await login();
-    assert.equal((await login()).status, 429, 'at most 5 per minute');
-
-    const earlyCred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: Math.floor(Date.now() / 1000) + 3600, loginOrder: 7 };
-    assert.deepEqual(await control('/account/migrate', { credential: earlyCred }), { migrated: true });
-    assert.equal((await (await web('/auth/session', { cookie })).json()).account_required, false);
+    // Even with a valid Web cookie, the former Web OAuth entrypoints are gone.
+    assert.equal((await web('/auth/login', { method: 'POST', body: {} })).status, 410);
+    assert.equal((await web('/auth/login/' + 'B'.repeat(43))).status, 410);
+    assert.equal((await web('/auth/login/' + 'B'.repeat(43) + '/cancel', { method: 'POST', body: {} })).status, 410);
 
     // Local browser with no ticket: the machine's signed-in account lets it in; foreign origins never.
     assert.equal((await web('/auth/local', { method: 'POST', body: {}, headers: { origin: 'http://evil.test' } })).status, 403);
@@ -224,10 +243,23 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.deepEqual(todos.items.map((i) => i.content), ['first step', 'second step']);
     assert.equal((await web('/sessions/nope/todos', { cookie })).status, 404);
 
-    // Current-turn review uses the persisted Editor navigation hashes and the latest sent user message,
-    // not earlier Editor calls in the same session.
+    // No user message: a completed guide call supplies the boundary for direct/unpaired sessions.
+    const noMarkerSession = await control('/sessions', { workspace_path: iso.home, name: 'no boundary' });
+    const noMarker = await (await web(`/sessions/${noMarkerSession.id}/current-turn-diff`, { cookie })).json();
+    assert.equal(noMarker.turnAt, null);
+    assert.deepEqual(noMarker.files, []);
+
+    // Current-turn review uses persisted Editor navigation hashes. Repeating guide starts a new
+    // direct work round without any Courier/WebAgent messages.
     await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'turn.txt', operation: { command: 'create', content: 'before\n' } } });
     await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'old-only.txt', operation: { command: 'create', content: 'prior\n' } } });
+    const firstGuideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+    assert.notEqual(firstGuideRound.turnAt, null, 'a guide boundary exists without sent messages');
+    assert.deepEqual(firstGuideRound.files.map((file) => file.path), ['old-only.txt', 'turn.txt']);
+    await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+    const newGuideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+    assert.deepEqual(newGuideRound.files, [], 'earlier editor writes do not leak into the next guide round');
+
     const [{ openDb }, { CourierMessages }] = await Promise.all([
       import('../dist/storage/db.js'), import('../dist/courier/messages.js'),
     ]);
@@ -261,6 +293,18 @@ if (process.argv.includes('--fixture-daemon')) {
       assert.deepEqual(deleted.files.map((file) => file.path), ['old-only.txt']);
       assert.equal(deleted.files[0].status, 'deleted');
       assert.deepEqual(deleted.files[0].lines, [], 'deleted content is not fabricated from summary stats');
+
+      // In an unpaired session an additional guide supersedes the old Courier send marker.
+      await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'guide-only.txt', operation: { command: 'create', content: 'local round\n' } } });
+      // Calls can share one timestamp; rowid still determines whether the edit followed guide.
+      const guideMarker = turnStorage.db.prepare("SELECT created_at AS at FROM tool_calls WHERE session_id = ? AND tool = 'guide' ORDER BY rowid DESC LIMIT 1").get(session.id);
+      const lastCall = turnStorage.db.prepare('SELECT id FROM tool_calls WHERE session_id = ? ORDER BY rowid DESC LIMIT 1').get(session.id);
+      turnStorage.db.prepare('UPDATE tool_calls SET created_at = ? WHERE id = ?').run(guideMarker.at, lastCall.id);
+      const guideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+      assert.equal(guideRound.turnAt, guideMarker.at);
+      assert.deepEqual(guideRound.files.map((file) => file.path), ['guide-only.txt'], 'old message and previous guide edits do not leak');
+      assert.equal(guideRound.files[0].status, 'ready');
     } finally {
       turnStorage.close();
     }
@@ -413,7 +457,7 @@ if (process.argv.includes('--fixture-daemon')) {
     const acc = await (await web('/account', { cookie })).json();
     assert.equal(acc.userId, 'user_1');
     assert.equal(acc.storage, 'available');
-    assert.equal(acc.signIn.state, 'failed', 'the offline browser-login attempt above');
+    assert.equal(acc.signIn.state, 'idle', 'passive Web never starts a login job');
     assert.ok(!JSON.stringify(acc).includes('bhp_'), 'token never leaves the daemon');
     assert.ok(!JSON.stringify(await control('/account')).includes('bhp_'));
     assert.equal((await post('/account/call', { method: 'migrationCredential' })).status, 400, 'only whitelisted methods');

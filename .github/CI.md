@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | [Core Runtime CI](workflows/vscode-extension.yml) | PRs and pushes to `main` | Run the complete matrix |
 | [Desktop launcher CI](workflows/launcher-native.yml) | PRs changing the launcher, host runtime or contracts | `build_artifacts=true`: build development executables after tests |
+| [Shared Core release preparation](workflows/shared-core-prepare.yml) | Manual dispatch only | Builds matched test Seed/VSIX/Desktop candidates, runs the packaged joint smokes and emits SBOM/hash/download-metadata review artifacts. Never installs, production-signs, deploys or publishes; release gates live in [RELEASE-GATES.md](../RELEASE-GATES.md) |
 
 Open **Actions → the workflow → Run workflow**, select the intended ref and enable the required options. Manual options are off by default. The desktop workflow does not repeat its PR checks on the merge push.
 

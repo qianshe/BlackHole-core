@@ -64,10 +64,10 @@ test('packaged daemon refuses tool calls only when its files were modified', asy
   copyAll(src, path.join(dir, 'dist'));
   const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => ['PATH', 'SYSTEMROOT', 'COMSPEC'].includes(k.toUpperCase())));
-  Object.assign(env, { HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, TEMP: dir, TMP: dir, BLACKHOLE_PROXY_CONFIG: path.join(dir, 'proxies.yaml'), BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SKILLS_DIR: '' });
+  Object.assign(env, { HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, TEMP: dir, TMP: dir, BLACKHOLE_PROXY_CONFIG: path.join(dir, '.blackhole', 'mcp-proxies.yaml'), BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SKILLS_DIR: '' });
   async function toolCallStatus() {
     const port = await freePort();
-    const child = spawn(process.execPath, [path.join(dir, 'dist/daemon/cli.js'), 'serve', '--port', String(port), '--db', path.join(dir, 'fixture.db'), '--tunnel', 'off'], { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
+    const child = spawn(process.execPath, [path.join(dir, 'dist/daemon/cli.js'), 'serve', '--port', String(port), '--db', path.join(dir, '.blackhole', 'blackhole.db'), '--tunnel', 'off'], { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
     try {
       let health;
       for (const t0 = Date.now(); Date.now() - t0 < 15000;) {

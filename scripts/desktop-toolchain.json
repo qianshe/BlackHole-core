@@ -17,6 +17,19 @@
   "workspace": {
     "@blackhole/contracts": { "zod": "3.25.76" }
   },
+  "innoSetup": {
+    "observedAt": "2026-10-12",
+    "version": "6.7.3",
+    "scope": "repository-local portable tools only; not system-installed",
+    "source": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe",
+    "sourceSha256": "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732",
+    "compilerSha256": "0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7",
+    "authenticodePublisher": "Pyrsys B.V.",
+    "authenticodeVerified": true,
+    "preparation": "scripts/prepare-inno.ps1 -ApprovedPortableTools (explicit approval required)",
+    "commercialLicense": "unverified; compiler prints Non-commercial use only; release owner must confirm before commercial release",
+    "installerExecution": "not authorized by toolchain preparation"
+  },
   "planned": {
     "react": { "version": "19.3.0", "license": "MIT", "task": "T3" },
     "react-dom": { "version": "19.3.0", "license": "MIT", "task": "T3" },

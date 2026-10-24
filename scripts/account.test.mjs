@@ -36,12 +36,12 @@ function fakeCloud(log) {
   };
 }
 
-function service({ secrets = { kind: 'memory', port: memorySecretPort() }, gate } = {}) {
+function service({ secrets = { kind: 'memory', port: memorySecretPort() }, gate, cloudFetch } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-account-'));
   const state = new Map();
   const calls = [];
-  const svc = new AccountService({ origin: ORIGIN, dataDir, machineState: { get: (k) => state.get(k), set: (k, v) => state.set(k, v) }, secrets, gate, openExternal: async () => true, fetch: fakeCloud(calls), log: () => {} });
-  return { svc, state, calls, cleanup: () => fs.rmSync(dataDir, { recursive: true, force: true }) };
+  const svc = new AccountService({ origin: ORIGIN, dataDir, machineState: { get: (k) => state.get(k), set: (k, v) => state.set(k, v) }, secrets, gate, openExternal: async () => true, fetch: cloudFetch ?? fakeCloud(calls), log: () => {} });
+  return { svc, state, calls, cleanup: async () => { await svc.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); } };
 }
 
 test('migration adopts the VS Code login once and the daemon proves entitlement itself', async (t) => {
@@ -109,9 +109,177 @@ test('only whitelisted methods with string arguments can be called', async (t) =
   await assert.rejects(svc.migrate({ token: 'x' }), (e) => e instanceof AccountError && e.code === 'invalid_input');
 });
 
+test('only a cloud-verified Core identity can open Web, and explicit failed verification revokes it', async t => {
+  let cloudAvailable = false;
+  const fixture = cred();
+  const cloudFetch = async (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, ORIGIN, 'fixture must not contact real services');
+    if (url.pathname === '/api/auth/plugin/session') {
+      if (!cloudAvailable) return Response.json({error:'unavailable'}, {status:503});
+      const {token, ...facts} = fixture;
+      assert.equal(init.headers.Authorization, 'Bearer '+token);
+      return Response.json(facts);
+    }
+    if (url.pathname === '/api/auth/plugin/logout') return new Response(null,{status:204});
+    throw Error('unexpected_external_auth_call');
+  };
+  const {svc,cleanup} = service({cloudFetch});
+  t.after(cleanup);
+  assert.equal(svc.webAuthStatus(), 'checking');
+  await svc.start();
+  assert.equal(svc.webAuthStatus(), 'logged_out');
+  assert.equal(svc.currentVerifiedUserId(),null);
+  await svc.migrate(fixture);
+  await svc.call('check',[]);
+  assert.equal(svc.currentVerifiedUserId(),null,'saved/unavailable credential never authorizes Web');
+  cloudAvailable = true;
+  assert.equal((await svc.call('check',[])).state,'verified');
+  assert.equal(svc.webAuthStatus(),'verified');
+  assert.equal(svc.currentVerifiedUserId(),fixture.userId);
+  cloudAvailable = false;
+  assert.equal((await svc.call('check',[])).state,'unavailable');
+  assert.equal(svc.currentVerifiedUserId(),null,'known verification failure must fail closed');
+  cloudAvailable = true;
+  assert.equal((await svc.call('check',[])).state,'verified');
+  await svc.call('signOut',[]);
+  assert.equal(svc.webAuthStatus(),'logged_out');
+  assert.equal(svc.currentVerifiedUserId(),null,'logout revokes confirmed Web access');
+});
+
+test('native account call and GET view keep the same verified Core state across cache expiration',async t=>{
+ const fixture=cred(),requests=[];
+ let wall=Date.now(),revoked=false;
+ const cloudFetch=async(input,init)=>{
+  const url=new URL(String(input));assert.equal(url.origin,ORIGIN);
+  requests.push(url.pathname);
+  if(url.pathname==='/api/auth/plugin/session'){
+   if(revoked)return Response.json({error:'revoked'},{status:401});
+   const {token,...facts}=fixture;assert.equal(init.headers.Authorization,'Bearer '+token);
+   return Response.json(facts);
+  }
+  throw Error('ONLY_READ_ONLY_AUTH_ALLOWED');
+ };
+ const {svc,cleanup}=service({cloudFetch});t.after(cleanup);
+ await svc.migrate(fixture);await svc.call('check',[]);
+ // Test-only clock injection into the actual client, never into the running daemon.
+ const client=svc.need();client.now=()=>wall;
+ let before=requests.length;
+ for(let n=0;n<10;n++){
+  wall+=61_000;
+  assert.equal((await client.view()).state,'saved','this was the welcome guard regression');
+  const views=await Promise.all([svc.call('view',[]),svc.view(),svc.call('view',[])]);
+  assert.ok(views.every(v=>v.state==='verified'));
+  assert.equal(svc.webAuthStatus(),'verified');
+  assert.equal(requests.length,++before,'one Core request for all native clients');
+ }
+ revoked=true;wall+=61_000;
+ assert.equal((await svc.call('view',[])).state,'logged_out');
+ assert.equal(svc.currentVerifiedUserId(),null);assert.equal(svc.webAuthStatus(),'logged_out');
+ assert.ok(requests.every(p=>p==='/api/auth/plugin/session'));
+});
+
+test('Core recovers account verification without any UI account polling', async t => {
+ t.mock.timers.enable({apis:['setInterval']});
+ const fixture=cred();let wall=Date.now(),available=true,reads=0;
+ const cloudFetch=async input=>{
+  assert.equal(new URL(String(input)).origin,ORIGIN);
+  assert.equal(new URL(String(input)).pathname,'/api/auth/plugin/session');
+  reads++;
+  const {token,...facts}=fixture;
+  return available?Response.json(facts):Response.json({error:'unavailable'},{status:503});
+ };
+ const {svc,cleanup}=service({cloudFetch});
+ t.after(cleanup);
+ await svc.start();await svc.migrate(fixture);
+ const verified=await svc.call('check',[]);wall=verified.checkedAt;
+ const client=svc.need();client.now=()=>wall;
+ const initial=reads;
+ for(let cycle=0;cycle<4;cycle++){
+  wall+=45_000;t.mock.timers.tick(45_000);
+  for(let n=0;n<10;n++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(svc.webAuthStatus(),'verified','healthy idle Core stays verified across multiple cache windows');
+ }
+ assert.equal(reads,initial+4);
+ available=false;wall+=45_000;t.mock.timers.tick(45_000);
+ for(let n=0;n<10;n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reads,initial+5,'Core must renew without api.account polling');
+ assert.equal(svc.webAuthStatus(),'unavailable','failed checks must still close Web access');
+ available=true;wall+=31_000;t.mock.timers.tick(15_000);
+ for(let n=0;n<10;n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(svc.webAuthStatus(),'verified','waiting Desktop can observe automatic recovery');
+ assert.equal(svc.currentVerifiedUserId(),fixture.userId);
+ await svc.stop();const stopped=reads;wall+=61_000;t.mock.timers.tick(60_000);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reads,stopped,'shutdown cancels account polling');
+});
+
+test('Core shutdown cancels an in-flight verification before a late 401 mutates credentials', async t => {
+ const fixture=cred();let release,started;
+ const waiting=new Promise(resolve=>{started=resolve;});
+ let delay=false;
+ const cloudFetch=async input=>{
+  assert.equal(new URL(String(input)).origin,ORIGIN);
+  if(delay){started();return new Promise(resolve=>{release=resolve;});}
+  const {token,...facts}=fixture;return Response.json(facts);
+ };
+ const {svc,cleanup}=service({cloudFetch});t.after(cleanup);
+ await svc.start();await svc.migrate(fixture);await svc.call('check',[]);
+ const client=svc.need();client.now=()=>Date.now()+61_000;
+ delay=true;const observing=svc.view();await waiting;
+ const stopping=svc.stop();
+ release(Response.json({error:'revoked'},{status:401}));
+ await stopping;await observing;
+ assert.equal((await client.migrationCredential()).sessionId,fixture.sessionId,
+  'a response arriving after cancellation cannot delete the saved credential');
+ assert.equal((await svc.view()).state,'unavailable','a stopped service cannot restart IO');
+});
+
+test('native Core login opens the validated cloud page without exposing PKCE or granting Web access', { timeout: 10_000 }, async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-native-auth-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const state = new Map(), vault = memorySecretPort();
+  const flowId = '11111111-2222-4333-8444-555555555555';
+  const authorizationUrl = ORIGIN + '/api/auth/plugin/authorize#flow=' + flowId + '&launch=' + 'A'.repeat(43);
+  let requestBody, receiveOpen;
+  const opened = new Promise(resolve => { receiveOpen = resolve; });
+  const svc = new AccountService({
+    origin: ORIGIN, dataDir, machineState: { get: k => state.get(k), set: (k, v) => state.set(k, v) },
+    secrets: { kind: 'memory', port: vault }, log() {},
+    openExternal: async url => { receiveOpen(url); return true; },
+    fetch: async (input, init) => {
+      assert.equal(new URL(String(input)).origin, ORIGIN, 'cloud issuer is pinned');
+      const name = new URL(String(input)).pathname;
+      if (name !== '/api/auth/plugin/start') throw Error('unexpected_cloud_request:' + name);
+      requestBody = JSON.parse(String(init.body));
+      return Response.json({ flowId, authorizationUrl, expiresAt: Math.floor(Date.now() / 1000) + 600, pollInterval: 2 });
+    },
+  });
+  const job = svc.beginSignIn({ sameAccount: true });
+  assert.equal(job.state, 'running');
+  const url = await Promise.race([opened, new Promise((_resolve, reject) => setTimeout(() => reject(Error('auth_url_not_opened')), 3000))]);
+  assert.equal(url, authorizationUrl);
+  assert.deepEqual(Object.keys(requestBody).sort(), ['challenge', 'clientId']);
+  assert.match(requestBody.challenge, /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(!url.includes(requestBody.challenge));
+  assert.equal(svc.webAuthStatus(), 'checking', 'an account not initialized must not report authenticated');
+  assert.equal(svc.currentVerifiedUserId(), null, 'opening a link is not account verification');
+  assert.doesNotMatch(JSON.stringify(await svc.view()), /authorizationUrl|verifier|bhp_/);
+  svc.cancelSignIn();
+  for (let i = 0; i < 30 && svc.signInState().state === 'running'; i++)
+    await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(svc.signInState().state, 'failed');
+  assert.equal(svc.signInState().error, 'cancelled');
+  assert.equal(svc.currentVerifiedUserId(), null);
+});
+
 test('Web "stop background service" shuts the daemon down gracefully', { timeout: 60_000 }, async (t) => {
   const iso = await createIsolatedEnv({ name: 'web-stop' });
-  const child = spawn(process.execPath, [path.join(ROOT, 'dist/cli.js'), 'serve', '--port', String(iso.port)], { env: { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') }, stdio: 'ignore' });
+  const expiration = Math.floor(Date.now()/1000)+3600;
+  const env = { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist'),
+    BLACKHOLE_ACCOUNT_OFFLINE: '0', WEB_TEST_AUTH_EXPIRES_AT: String(expiration),
+    NODE_OPTIONS: '--require ' + path.join(ROOT, 'scripts/fixtures/fake-cloud-auth.cjs') };
+  const child = spawn(process.execPath, [path.join(ROOT, 'dist/cli.js'), 'serve', '--port', String(iso.port)], { env, stdio: 'ignore' });
   const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
   t.after(async () => { if (child.exitCode === null) child.kill(); await exited; try { iso.cleanup(); } catch { /* windows locks */ } });
   const base = `http://127.0.0.1:${iso.port}`;
@@ -120,8 +288,11 @@ test('Web "stop background service" shuts the daemon down gracefully', { timeout
     await new Promise((r) => setTimeout(r, 250));
   }
   // The Web opens no business routes until this machine has a cloud account (plan 6.13 L2).
-  const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: Math.floor(Date.now() / 1000) + 3600, loginOrder: 7 };
+  const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: expiration, loginOrder: 7 };
+  assert.equal((await fetch(base + '/api/web/bootstrap', { method: 'POST' })).status, 401);
   assert.equal((await fetch(base + '/api/account/migrate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ credential: cred }) })).status, 200);
+  const verified = await fetch(base + '/api/account/call', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method:'check',args:[] }) });
+  assert.equal((await verified.json()).result.state,'verified');
   const { ticket } = await (await fetch(base + '/api/web/bootstrap', { method: 'POST' })).json();
   const headers = { 'x-blackhole-web': '1', 'content-type': 'application/json', origin: base };
   const ex = await fetch(base + '/web-api/v1/auth/exchange', { method: 'POST', headers, body: JSON.stringify({ ticket }) });

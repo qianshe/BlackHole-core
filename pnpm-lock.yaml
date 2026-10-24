@@ -42,6 +42,12 @@ importers:
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
+      yauzl:
+        specifier: 3.4.0
+        version: 3.4.0
+      yazl:
+        specifier: 2.5.1
+        version: 2.5.1
 
   packages/contracts:
     dependencies:
