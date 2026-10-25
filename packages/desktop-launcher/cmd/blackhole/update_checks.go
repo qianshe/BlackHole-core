@@ -62,7 +62,13 @@ func startBackgroundUpdateChecks(ctx context.Context, bundle distribution.Bundle
 	if !p.Automatic {
 		return
 	}
-	go checker.Run(ctx, func(updatefeed.CheckStatus) {})
+	// Opening Desktop is the moment update discovery matters most: check once
+	// immediately (metadata only) instead of waiting out the daily cadence,
+	// then let the background loop keep its 24h rhythm.
+	go func() {
+		checker.Check(ctx, true)
+		checker.Run(ctx, func(updatefeed.CheckStatus) {})
+	}()
 }
 
 // Native bridge exposes status, an explicitly requested check, the

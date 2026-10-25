@@ -43,3 +43,4 @@ BlackHole_短片素材/
 **/.dev.vars.*
 **/.secrets.*.env
 /packages/desktop-launcher/blackhole
+packages/desktop-launcher/blackhole.exe

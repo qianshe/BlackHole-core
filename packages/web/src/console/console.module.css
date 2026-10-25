@@ -2203,12 +2203,13 @@
 .turnDiffText { white-space: pre; }
 .turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 12px; text-align: right; }
 
-/* Sidebar update rail: one compact row above the account button. Interactive only when
-   a release is ready to download; progress states render as a passive status row. */
+/* Sidebar update rail: one compact row above the account button. Ready state
+   is a quiet accent call-to-action; download/install progress fills the row
+   background itself — one mechanism per state, no stacked chrome. */
 .updateRow {
   position: relative;
-  margin: 0 4px 2px;
-  height: 34px;
+  margin: 0 6px 4px;
+  height: 36px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);
@@ -2222,13 +2223,20 @@
   cursor: pointer;
   flex: 0 0 auto;
 }
-.updateRow:hover:not(:disabled) { background: var(--surface-hover); }
-.updateRow:disabled { cursor: default; color: var(--text-3); }
+.updateRowReady {
+  border-color: color-mix(in srgb, var(--sel) 55%, var(--border));
+  background: color-mix(in srgb, var(--sel) 14%, var(--surface-2));
+}
+.updateRowReady:hover:not(:disabled) { background: color-mix(in srgb, var(--sel) 22%, var(--surface-2)); }
+.updateRowBusy { color: var(--text-3); cursor: default; }
+.updateRow:disabled { cursor: default; }
+.updateGlyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--text-bright); }
+.updateRowBusy .updateGlyph { color: var(--text-3); }
 .updateLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .updatePct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-3); }
-.updateProgress { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--sel); transition: width .3s; }
-.updateProgressIndet { position: absolute; left: -30%; bottom: 0; height: 2px; width: 30%; background: var(--sel); animation: updateIndet 1.2s infinite linear; }
-@keyframes updateIndet { to { left: 100%; } }
-.collapsed .updateRow { width: 40px; margin: 0 4px 2px; padding: 0; justify-content: center; }
-.collapsed .updateLabel, .collapsed .updatePct { display: none; }
-.updateBadgeDot { width: 8px; height: 8px; border-radius: 50%; background: var(--sel); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sel) 25%, transparent); }
+.updateFill { position: absolute; inset: 0; pointer-events: none; transition: background .3s; }
+.updateIndeterminate { position: absolute; left: -30%; bottom: 0; height: 2px; width: 30%; background: var(--sel); animation: updateIndeterminate 1.2s infinite linear; }
+@keyframes updateIndeterminate { to { left: 100%; } }
+.updateRowCollapsed { width: 40px; margin: 0 6px 4px; padding: 0; justify-content: center; }
+.updateRowCollapsed .updateLabel, .updateRowCollapsed .updatePct { display: none; }
+.updateDot { width: 8px; height: 8px; border-radius: 50%; background: var(--sel); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sel) 25%, transparent); }

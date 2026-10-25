@@ -119,6 +119,14 @@ func runUpdateHelper(args []string) int {
 		showError("BlackHole", "旧版 Desktop 尚未正常退出，未运行安装器："+err.Error())
 		return 1
 	}
+	// The parent exiting does not clear every AppMutex: the tray is a separate
+	// process and quits asynchronously after the published stop. Inno checks
+	// these mutexes and, with message boxes suppressed, aborts on any hold.
+	// Wait bounded so an ordinary exit race cannot fail the whole update.
+	if err = waitForAppMutexRelease(f.Config.Environment, 60*time.Second); err != nil {
+		showError("BlackHole", "仍有 BlackHole 实例在运行（请检查托盘），未运行安装器："+err.Error())
+		return 1
+	}
 	// A second integrity read after parent exit prevents a stage file from
 	// being swapped between the in-app check and this process handoff.
 	if _, _, err = f.VerifyStage(args[0]); err != nil {
@@ -207,4 +215,40 @@ func handoffUpdate(stage string) error {
 		return err
 	}
 	return cmd.Process.Release()
+}
+
+// waitForAppMutexRelease polls the Inno AppMutex set for this environment
+// until every mutex is free or the timeout elapses. The updater already
+// stopped the Core and closed its own window; a lingering tray process exits
+// asynchronously after the published stop, so an ordinary exit race must not
+// fail the whole update. A mutex still held after the timeout means a real
+// instance is alive and the caller reports it instead of racing the installer.
+func waitForAppMutexRelease(environment string, timeout time.Duration) error {
+	names := []string{"Local\\BlackHoleDesktopInstall", "Local\\BlackHoleTray-7306", "Local\\BlackHoleTray-17306"}
+	if environment == "test" {
+		names = []string{"Local\\BlackHoleDesktopTestInstall", "Local\\BlackHoleTray-7306", "Local\\BlackHoleTray-17306"}
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		held := ""
+		for _, name := range names {
+			ptr, err := windows.UTF16PtrFromString(name)
+			if err != nil {
+				continue
+			}
+			h, err := windows.OpenMutex(windows.SYNCHRONIZE, false, ptr)
+			if err == nil {
+				windows.CloseHandle(h)
+				held = name
+				break
+			}
+		}
+		if held == "" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("update_mutex_still_held: %s", held)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }

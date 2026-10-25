@@ -21,6 +21,7 @@ export type IconName =
   | 'circle'
   | 'dot'
   | 'play'
+  | 'download'
   | 'x'
   | 'pause'
   | 'plus'
@@ -53,6 +54,7 @@ const PATHS: Record<IconName, ReactNode> = {
   circle: <circle cx="12" cy="12" r="8" />,
   dot: <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />,
   play: <path d="M8 5.5v13l10-6.5Z" fill="currentColor" stroke="none" />,
+  download: <path d="M12 4v10m0 0-4-4m4 4 4-4M5 19h14" />,
   x: <path d="M7 7l10 10M17 7 7 17" />,
   pause: <path d="M9 6v12M15 6v12" />,
   plus: <path d="M12 5v14M5 12h14" />,
