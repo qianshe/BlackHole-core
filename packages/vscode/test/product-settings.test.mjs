@@ -20,7 +20,7 @@ test('daemon entry selection independently ignores overrides in production',()=>
  const js=ts.transpileModule(read('../src/daemonManager.ts'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
  for(const environment of ['production','test']){
   const module={exports:{}};
-  vm.runInNewContext(js,{module,exports:module.exports,process,require:name=>name==='vscode'?{}:name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment})}:name==='./vscodeRipgrep'?{}:require(name)});
+  vm.runInNewContext(js,{module,exports:module.exports,process,require:name=>name==='vscode'?{}:name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment})}:name==='./vscodeRipgrep'?{}:name==='./hostCoreUi'?{}:require(name)});
   const entry=module.exports.DaemonManager.prototype.entryPath;
   const owner={cfg:()=>({daemonEntry:'custom/cli.js'}),context:{extensionPath:'bundled'}};
   const bundled=path.join('bundled','dist','daemon','cli.js');
@@ -42,17 +42,13 @@ test('Cloud API environment is not a user-editable product setting', () => {
   const properties = JSON.parse(read('../package.json')).contributes.configuration.properties;
   assert.equal(properties['blackhole.cloudEnvironment'], undefined);
   assert.equal(properties['blackhole.cloudTestOrigin'], undefined);
-  const panel = read('../src/configPanel.ts');
-  assert.doesNotMatch(panel, /key: 'cloudEnvironment'|key: 'cloudTestOrigin'|values\.cloudEnvironment|values\.cloudTestOrigin/);
   assert.doesNotMatch(read('../src/cloudAccount.ts'), /config\.get\('cloudEnvironment'\)|config\.get\('cloudTestOrigin'\)/);
 });
 
 // 用户 2026-10-03：模型归因拆成独立服务（BlackHole-courier/attribution-service），BlackHole 产品里不再有任何归因代码。
 test('model attribution is not part of BlackHole: no settings card, no control API, no daemon mount', () => {
-  const panel = read('../src/configPanel.ts');
   const api = read('../src/controlApi.ts');
   const daemon = read('../../../src/daemon.ts') + read('../../../src/deps.ts') + read('../../../src/control/api.ts');
-  assert.doesNotMatch(panel, /模型归因|id="fp[A-Z]|fingerprint(Config|Action|Reload|Result)/);
   assert.doesNotMatch(api, /attribution-admin|fingerprintConfig|AttributionPolicy/);
   assert.doesNotMatch(daemon, /attribution\/|attribution-routes|AttributionRuntime|mountAttribution/);
   assert.equal(fs.existsSync(new URL('../../../src/attribution', import.meta.url)), false);

@@ -34,58 +34,6 @@ test('settings metadata describes project merge and exclusive custom replacement
   assert.doesNotMatch(property.description, /in addition|Empty = the skill tool reports itself unavailable/);
 });
 
-function statusReader() {
-  const source = read('../src/configPanel.ts');
-  const fn = source.match(/export function skillDirectoryStatus\([\s\S]*?\n\}/)?.[0];
-  assert.ok(fn, 'use the same helper as the settings panel, not a copied implementation');
-  const module = { exports: {} };
-  const js = ts.transpileModule(fn, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  vm.runInNewContext(js, { module, exports: module.exports, fs, path, os });
-  assert.match(source, /skillDirectoryStatus\(skillsDir\)/);
-  return module.exports.skillDirectoryStatus;
-}
-
-test('settings panel previews the user default and expands custom home paths without requiring a default directory', t => {
-  fs.mkdirSync('.cache/tests', { recursive: true });
-  const home = fs.mkdtempSync(path.resolve('.cache/tests/skill-settings-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const inspect = statusReader();
-  let info = inspect('', home);
-  assert.equal(info.directory, path.join(home, '.agents', 'skills'));
-  assert.doesNotMatch(info.hint, /skill 工具不可用/);
-  assert.notEqual(info.cls, 'bad');
-  fs.mkdirSync(path.join(info.directory, 'valid'), { recursive: true });
-  fs.writeFileSync(path.join(info.directory, 'valid', 'SKILL.md'), '# Fixture');
-  info = inspect('', home); assert.match(info.hint, /1/);
-  assert.match(info.hint, /有 1 个 Skill/); assert.ok(info.hint.length < 30, 'keep the hint short');
-  for (const custom of ['~/custom', '~\\custom']) {
-    info = inspect(custom, home);
-    assert.equal(info.directory, path.join(home, 'custom'));
-    assert.match(info.hint, /不会回退到默认用户目录/);
-    assert.equal(info.cls, 'bad');
-  }
-  const file = path.join(home, 'file'); fs.writeFileSync(file, 'not a directory');
-  for (const value of [file, path.join(file, 'child')]) {
-    info = inspect(value, home); assert.equal(info.cls, 'bad');
-    assert.match(info.hint, /不是目录|无法读取/);
-    assert.doesNotMatch(info.hint, /不存在/);
-  }
-});
-
-test('settings preview never scans an unselected default library and reports unreadable configuration honestly', t => {
-  fs.mkdirSync('.cache/tests', { recursive: true });
-  const home = fs.mkdtempSync(path.resolve('.cache/tests/skill-settings-private-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const manual = path.join(home, 'manual'); fs.mkdirSync(manual);
-  const inspect = statusReader(), scans = [], original = fs.readdirSync;
-  t.mock.method(fs, 'readdirSync', (file, ...args) => { scans.push(file); return original(file, ...args); });
-  inspect(manual, home); assert.deepEqual(scans, [manual]);
-  t.mock.method(fs, 'readdirSync', () => { throw Object.assign(new Error('fixture denied'), { code: 'EACCES' }); });
-  const info = inspect(manual, home);
-  assert.equal(info.cls, 'bad'); assert.match(info.hint, /完整 Skill 发现可能失败/);
-  assert.doesNotMatch(info.hint, /其他.*仍会/);
-});
-
 test('skill result cards show selected skills and diagnostics instead of an ambiguous ok or empty state', () => {
   const module = { exports: {} };
   const js = ts.transpileModule(read('../src/callFormat.ts'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;

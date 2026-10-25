@@ -259,7 +259,7 @@ export async function copyTemplateSession(api: ControlApi, node: SessionInfo, ki
   window.setStatusBarMessage(
     kind === 'sandbox' ? 'BlackHole: 沙箱提示词已复制'
       : target.mcpKind === 'direct' ? 'BlackHole: 连接器提示词已复制（直连）'
-        : target.openai === 'ready' && (!target.mcpUrl || isLoopbackUrl(target.mcpUrl)) ? `BlackHole: 连接器提示词已复制（OpenAI Tunnel · @${connectorName}）`
+        : target.openai === 'ready' && (!target.mcpUrl || isLoopbackUrl(target.mcpUrl)) ? `BlackHole: 连接器提示词已复制（OpenAI Tunnel @${connectorName}）`
           : 'BlackHole: 连接器提示词已复制',
     4000,
   );

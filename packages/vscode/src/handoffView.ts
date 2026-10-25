@@ -1,7 +1,7 @@
 /** Handoff presentation: summaries only until explicit preview; never assembles credentials. */
 export const handoffStyles = `
   #handoffBanner[hidden], #handoffStatus:empty { display:none; }
-  .handoffBar { display:inline-flex; align-items:baseline; gap:2px; flex:none; white-space:nowrap; font-family:var(--vscode-font-family); font-size:11px; font-weight:400; line-height:14px; }
+  .handoffBar { display:inline-flex; align-items:baseline; gap:2px; flex:none; white-space:nowrap; font-family:var(--vscode-font-family); font-size: 12px; font-weight:400; line-height:14px; }
   .handoffBar button { padding:0 2px; margin:0; border:0; border-radius:3px; background:transparent; color:var(--vscode-textLink-foreground); font:inherit; cursor:pointer; }
   .handoffBar button:hover:not(:disabled) { background:var(--vscode-toolbar-hoverBackground); }
   .handoffBar button:disabled { opacity:.5; cursor:default; }
@@ -38,14 +38,14 @@ export const handoffStyles = `
   #handoffBanner { flex-shrink:0; padding:6px 10px; border-bottom:1px solid var(--vscode-panel-border); }
   #handoffBanner .handoffBar { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-height:32px; white-space:normal; }
   #handoffBanner .handoffBar button { padding:3px 7px; line-height:18px; border:0; }
-  #handoffBanner .handoffBar button:first-child { margin-right:auto; padding-left:0; color:var(--vscode-foreground); font-size:12px; font-weight:600; }
-  #handoffStatus { padding:4px 10px 6px; margin:0; font-size:11px; line-height:1.5; overflow-wrap:anywhere; color:var(--vscode-descriptionForeground); }
+  #handoffBanner .handoffBar button:first-child { margin-right:auto; padding-left:0; color:var(--vscode-foreground); font-size: 12px; font-weight:600; }
+  #handoffStatus { padding:4px 10px 6px; margin:0; font-size: 12px; line-height:1.5; overflow-wrap:anywhere; color:var(--vscode-descriptionForeground); }
   #handoffDialog { box-sizing:border-box; width:calc(100vw - 24px); max-width:680px; max-height:calc(100vh - 24px); padding:12px; border:1px solid var(--vscode-widget-border,var(--vscode-panel-border)); border-radius:6px; color:var(--vscode-foreground); background:var(--vscode-editorWidget-background,var(--vscode-sideBar-background)); box-shadow:0 6px 24px var(--vscode-widget-shadow,rgba(0,0,0,.25)); }
   #handoffDialog[open] { display:flex; flex-direction:column; gap:10px; }
   #handoffDialog::backdrop { background:rgba(0,0,0,.35); }
   #handoffDialog header { display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
-  #handoffDialog h2 { margin:0; font-size:13px; font-weight:600; }
-  #handoffDialog p { margin:0; font-size:11px; line-height:1.6; overflow-wrap:anywhere; flex-shrink:0; }
+  #handoffDialog h2 { margin:0; font-size: 13px; font-weight:600; }
+  #handoffDialog p { margin:0; font-size: 12px; line-height:1.6; overflow-wrap:anywhere; flex-shrink:0; }
   #handoffTime, #handoffHint { color:var(--vscode-descriptionForeground); }
   #handoffBody { margin:0; min-height:0; padding:10px; border:1px solid var(--vscode-panel-border); border-radius:3px; background:var(--vscode-textCodeBlock-background); overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.65 var(--vscode-editor-font-family); }
   #handoffBody:empty { display:none; }
@@ -59,7 +59,7 @@ export const handoffMarkup = `
   <section id="handoffBanner" hidden aria-label="Handoff"></section>
   <p id="handoffStatus" role="status" aria-live="polite"></p>
   <dialog id="handoffDialog" aria-labelledby="handoffTitle" aria-describedby="handoffHint">
-    <header><h2 id="handoffTitle">Handoff · 接力上下文</h2><button class="ib" id="handoffClose" type="button" aria-label="关闭 Handoff" autofocus>×</button></header>
+    <header><h2 id="handoffTitle">Handoff 接力上下文</h2><button class="ib" id="handoffClose" type="button" aria-label="关闭 Handoff" autofocus>×</button></header>
     <p id="handoffTime"></p><pre id="handoffBody" tabindex="0"></pre>
     <p id="handoffHint">复制包含工作区访问凭据的完整提示词，仅交给预期接手者。</p>
     <div id="handoffActions" class="handoffBar"><button id="handoffConnector" type="button">复制连接器</button><button id="handoffSandbox" type="button">复制沙箱</button></div>
@@ -112,7 +112,7 @@ function mountHandoffView(document, send) {
     const buttons=(compact?['Handoff']:['Handoff','连接器','沙箱']).map((label,i)=>{
       const b=document.createElement('button'); b.type='button'; b.textContent=label;
       b.dataset.sessionId=s.id; b.dataset.handoffId=s.pending_handoff.id; b.dataset.handoffAction=String(i);
-      b.setAttribute('aria-label',i===0?'查看 Handoff（可选）':'复制 Handoff · '+label);
+      b.setAttribute('aria-label',i===0?'查看 Handoff（可选）':'复制 Handoff '+label);
       if(i===0)b.setAttribute('aria-haspopup','dialog');
       b.addEventListener('click',e=>{e.stopPropagation(); i===0?open(s,b):copy(s,i===1?'connector':'sandbox');});
       b.addEventListener('contextmenu',e=>e.stopPropagation());

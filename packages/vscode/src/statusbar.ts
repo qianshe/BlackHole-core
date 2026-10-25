@@ -202,12 +202,12 @@ export class StatusBarController implements Disposable {
   private set(text: string, tooltip: string | MarkdownString, before: { text: string; tooltip: string | MarkdownString | undefined }): void {
     const extra = this.channelExtra;
     if (extra) {
-      text += ` · ${extra.text}`;
+      text += ` ${extra.text}`;
       if (typeof tooltip === 'string') tooltip = `${tooltip}\n${extra.tip}`;
       else tooltip.appendMarkdown('\n\n' + extra.tip.replace(/[\\`*_[\]()#|<>]/g, (c) => '\\' + c));
     }
     const label = this.accountLabel();
-    if (label) text += ` · ${label}`;
+    if (label) text += ` ${label}`;
     const remaining = this.remainingLabel();
     const executionWarning = this.executionWarning();
     if (typeof tooltip === 'string') {

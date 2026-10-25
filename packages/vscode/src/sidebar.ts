@@ -1280,13 +1280,13 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .list-wrap .jump:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
   .hdr { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0; background: var(--vscode-sideBar-background); }
   .hdr .ttl { font-weight: 650; font-size: 13px; }
-  .hdr .ttl.small { font-weight: 600; font-size: 12.5px; }
+  .hdr .ttl.small { font-weight: 600; font-size: 13px; }
   .hdr .sp { flex: 1; }
   .ib { width: 24px; height: 24px; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); cursor: pointer; font-family: inherit; padding: 0; font-size: 13px; }
   .ib:hover { background: var(--vscode-toolbar-hoverBackground); }
   .ib svg { display: block; }
   /* 渠道状态胶囊：融进标题行；点击进设置页 */
-  .chanpill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 9px; border-radius: 999px; border: none; cursor: pointer; font-family: inherit; color: var(--vscode-descriptionForeground); background: transparent; margin-right: 4px; }
+  .chanpill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 9px; border-radius: 999px; border: none; cursor: pointer; font-family: inherit; color: var(--vscode-descriptionForeground); background: transparent; margin-right: 4px; }
   .chanpill .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .chanpill.ok { color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 12%, transparent); }
   .chanpill.warn { color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
@@ -1307,7 +1307,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .bh-onboard, .bh-onboard * { box-sizing: border-box; }
   .bh-onboard { width: 100%; padding: 30px 24px 26px; color: var(--vscode-foreground); text-align: center; }
   .bh-onboard-body { width: 100%; max-width: 320px; margin: 0 auto; }
-  .bh-onboard-progress { display: flex; align-items: center; justify-content: center; list-style: none; padding: 0; margin: 0 0 30px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-progress { display: flex; align-items: center; justify-content: center; list-style: none; padding: 0; margin: 0 0 30px; font-size: 12px; color: var(--vscode-descriptionForeground); }
   .bh-onboard-progress li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .bh-onboard-progress li:not(:last-child)::after { content: ''; width: 16px; height: 1px; background: var(--vscode-panel-border); margin: 0 9px; }
   .bh-onboard-progress .num { font-family: var(--vscode-editor-font-family); }
@@ -1315,7 +1315,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .bh-onboard-progress .current .num { color: var(--vscode-textLink-foreground); }
   .bh-onboard-progress .done .num { color: var(--vscode-charts-green); }
   .bh-onboard-mark { display: block; width: 37px; height: 37px; margin: 0 auto 23px; background: var(--vscode-foreground); mask: url('${brandIcon}') center / contain no-repeat; }
-  .bh-onboard h2 { margin: 0 0 12px; font-size: 21px; font-weight: 500; line-height: 1.4; letter-spacing: -.4px; text-wrap: balance; }
+  .bh-onboard h2 { margin: 0 0 12px; font-size: 18px; font-weight: 500; line-height: 1.4; letter-spacing: -.4px; text-wrap: balance; }
   .bh-onboard p { margin: 0; font-size: 12px; line-height: 1.8; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
   .bh-onboard-actions { display: flex; flex-direction: column; align-items: center; gap: 7px; margin-top: 23px; }
   .bh-onboard-options { display: grid; gap: 9px; margin-top: 22px; text-align: left; }
@@ -1323,18 +1323,18 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .bh-onboard-option:hover { border-color: var(--vscode-focusBorder) !important; background: var(--vscode-list-hoverBackground); }
   .bh-onboard-option strong, .bh-onboard-option span { display: block; }
   .bh-onboard-option strong { font-size: 12px; font-weight: 600; }
-  .bh-onboard-option span { margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.55; }
+  .bh-onboard-option span { margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.55; }
   .bh-openai-form { margin-top: 20px; text-align: left; }
-  .bh-openai-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 0; border-top: 1px solid var(--vscode-panel-border); border-bottom: 1px solid var(--vscode-panel-border); font-size: 11px; }
+  .bh-openai-runtime { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 0; border-top: 1px solid var(--vscode-panel-border); border-bottom: 1px solid var(--vscode-panel-border); font-size: 12px; }
   .bh-openai-runtime .ok { color: var(--vscode-charts-green); }
   .bh-openai-runtime .bad { color: var(--vscode-errorForeground); }
   .bh-openai-field { margin-top: 15px; }
-  .bh-openai-field label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--vscode-foreground); }
+  .bh-openai-field label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--vscode-foreground); }
   .bh-openai-field-row { display: flex; gap: 7px; align-items: stretch; }
-  .bh-openai-field input { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; outline: none; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: 11px var(--vscode-editor-font-family); }
+  .bh-openai-field input { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; outline: none; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: 12px var(--vscode-editor-font-family); }
   .bh-openai-field input:focus { border-color: var(--vscode-focusBorder); }
   .bh-openai-field-row .link { flex: none; color: var(--vscode-textLink-foreground); }
-  .bh-openai-note { margin-top: 5px; font-size: 10.5px; line-height: 1.55; color: var(--vscode-descriptionForeground); }
+  .bh-openai-note { margin-top: 5px; font-size: 12px; line-height: 1.55; color: var(--vscode-descriptionForeground); }
   .bh-openai-note.done { color: var(--vscode-charts-green); }
   .bh-openai-note.bad { color: var(--vscode-errorForeground); }
   .bh-onboard button, .bh-onboard summary { font: inherit; font-size: 12px; cursor: pointer; }
@@ -1346,27 +1346,27 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .bh-onboard .link:hover { color: var(--vscode-textLink-foreground); text-decoration: underline; }
   .bh-onboard button:focus-visible, .bh-onboard summary:focus-visible, .bh-onboard h2:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; }
   .bh-onboard-helper { border-top: 1px solid var(--vscode-panel-border); padding-top: 14px; margin-top: 24px; text-align: left; }
-  .bh-onboard-helper p { font-size: 11px; }
+  .bh-onboard-helper p { font-size: 12px; }
   .bh-onboard details { margin-top: 15px; min-width: 0; text-align: left; color: var(--vscode-descriptionForeground); }
-  .bh-onboard summary { min-height: 26px; line-height: 1.7; font-size: 11px; }
-  .bh-onboard details p { font-size: 11px; padding-top: 8px; }
-  .bh-onboard details .link { color: var(--vscode-textLink-foreground); font-size: 11px; }
-  .bh-onboard pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.7 var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background)); padding: 9px 10px; margin: 8px 0 0; max-height: 160px; overflow-y: auto; }
-  .bh-onboard-status { margin-top: 16px; font-size: 11px; line-height: 1.7; color: var(--vscode-descriptionForeground); }
-  .bh-onboard-failure { color: var(--vscode-errorForeground); font-size: 11px; margin-bottom: 8px; }
+  .bh-onboard summary { min-height: 26px; line-height: 1.7; font-size: 12px; }
+  .bh-onboard details p { font-size: 12px; padding-top: 8px; }
+  .bh-onboard details .link { color: var(--vscode-textLink-foreground); font-size: 12px; }
+  .bh-onboard pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background)); padding: 9px 10px; margin: 8px 0 0; max-height: 160px; overflow-y: auto; }
+  .bh-onboard-status { margin-top: 16px; font-size: 12px; line-height: 1.7; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-failure { color: var(--vscode-errorForeground); font-size: 12px; margin-bottom: 8px; }
   .bh-onboard[data-state="unverified"] .bh-onboard-failure { color: var(--vscode-descriptionForeground); }
   .bh-onboard-steps { padding: 0; margin: 22px 0 0; list-style: none; display: grid; gap: 10px; text-align: left; font-size: 12px; }
   .bh-onboard-steps li { display: flex; align-items: center; gap: 9px; line-height: 1.7; color: var(--vscode-descriptionForeground); }
-  .bh-onboard-steps .mk { width: 12px; height: 12px; flex: none; display: grid; place-items: center; border: 1px solid var(--vscode-panel-border); border-radius: 50%; font-size: 10px; line-height: 1; }
+  .bh-onboard-steps .mk { width: 12px; height: 12px; flex: none; display: grid; place-items: center; border: 1px solid var(--vscode-panel-border); border-radius: 50%; font-size: 12px; line-height: 1; }
   .bh-onboard-steps .active { color: var(--vscode-foreground); }
   .bh-onboard-steps .active .mk { border-color: var(--vscode-progressBar-background); border-top-color: transparent; animation: bhGuideSpin 1s linear infinite; }
   .bh-onboard-steps .done .mk { border: 0; color: var(--vscode-charts-green); }
   .bh-onboard-steps .failed, .bh-onboard-steps .failed .mk { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
-  .bh-onboard-facts { padding: 0; margin: 20px 0 0; text-align: left; font-size: 11px; }
+  .bh-onboard-facts { padding: 0; margin: 20px 0 0; text-align: left; font-size: 12px; }
   .bh-onboard-facts div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--vscode-panel-border); }
   .bh-onboard-facts dd { margin: 0; color: var(--vscode-charts-green); }
   .bh-onboard.is-collapsed { padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border); }
-  .bh-onboard-resume { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .bh-onboard-resume { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--vscode-descriptionForeground); }
   .bh-onboard-resume .link { color: var(--vscode-textLink-foreground); white-space: nowrap; }
   .bh-onboard [hidden] { display: none !important; }
   .hdr .ttl { min-width: 0; white-space: nowrap; }
@@ -1385,7 +1385,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     .chsw, .chsw::after { transition: none; }
     .chsw[data-state="starting"]::after, .bh-onboard-steps .active .mk { animation: none; }
   }
-  .err { color: var(--vscode-errorForeground); font-size: 11px; padding: 6px 12px 0; overflow-wrap: anywhere; }
+  .err { color: var(--vscode-errorForeground); font-size: 12px; padding: 6px 12px 0; overflow-wrap: anywhere; }
   #cherr { box-sizing: border-box; margin: 8px 10px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 28%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--vscode-errorForeground) 7%, transparent); line-height: 1.4; }
   /* 会话行：账本式 —— 全宽、发丝线分隔、更密 */
   .row { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent); }
@@ -1398,11 +1398,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .drag:active { cursor: grabbing; }
   .drag::before { content: '⠿'; font-size: 15px; line-height: 1; }
   .row .main { flex: 1; min-width: 0; }
-  .row .name { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .row .name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; }
   .row .name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .cur { font-size: 10px; color: var(--vscode-charts-blue); border: 1px solid color-mix(in srgb, var(--vscode-charts-blue) 45%, transparent); border-radius: 999px; padding: 0 6px; flex-shrink: 0; }
-  .row .sub { font-size: 10.5px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .st { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+  .row .cur { font-size: 12px; color: var(--vscode-charts-blue); border: 1px solid color-mix(in srgb, var(--vscode-charts-blue) 45%, transparent); border-radius: 999px; padding: 0 6px; flex-shrink: 0; }
+  .row .sub { font-size: 12px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .st { font-size: 12px; white-space: nowrap; flex-shrink: 0; }
   .st.active { color: var(--vscode-charts-green); }
   .st.paused { color: var(--vscode-charts-yellow); }
   .st.await { color: var(--vscode-charts-yellow); font-weight: 600; }
@@ -1438,24 +1438,24 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .call-hd:hover, .call.open .call-hd { opacity: 1; background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
   .call-hd:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
   /* Codex 式状态符号：颜色 + 符号，文字在 aria-label/title 里 */
-  .call .bullet { flex: none; width: 12px; text-align: center; font-family: var(--vscode-editor-font-family); font-size: 10px; color: var(--vscode-descriptionForeground); }
+  .call .bullet { flex: none; width: 12px; text-align: center; font-family: var(--vscode-editor-font-family); font-size: 12px; color: var(--vscode-descriptionForeground); }
   .call .bullet.completed { color: var(--vscode-charts-green); }
   .call .bullet.started { color: var(--vscode-charts-blue); animation: bhPulse 1.6s ease-in-out infinite; }
   .call .bullet.awaiting { color: var(--vscode-charts-yellow); }
   .call .bullet.failed, .call .bullet.denied { color: var(--vscode-charts-red); }
   @media (prefers-reduced-motion: reduce) { .call .bullet.started { animation: none; } }
   /* 工具名退成标签，动宾短语（c.summary）才是主体 */
-  .call .tool { font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: 500; color: var(--vscode-descriptionForeground); flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .call .sum, .call .resource-wrap { flex: 1 1 0; min-width: 0; font-family: var(--vscode-editor-font-family); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .call .tool { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground); flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .call .sum, .call .resource-wrap { flex: 1 1 0; min-width: 0; font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .call .sum { color: var(--vscode-descriptionForeground); }
   .call .resource-wrap { display: none; align-items: baseline; gap: 4px; color: var(--vscode-descriptionForeground); }
   .call .resource-kind { flex: none; }
   .call .resource { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0 0 4px; border: 0; border-left: 1px solid var(--vscode-widget-border); background: transparent; color: var(--vscode-textLink-foreground); text-align: left; cursor: pointer; }
   .call .resource:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
   .call .resource:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; border-radius: 3px; }
-  .call .meta { font-size: 10px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); white-space: nowrap; flex-shrink: 0; opacity: .85; }
-  .call .scope { color: var(--vscode-charts-green); font-size: 10px; font-weight: 600; flex-shrink: 0; }
-  .badge { border: 0; border-radius: 999px; padding: 0 6px; font-family: inherit; font-size: 10px; font-weight: 600; flex-shrink: 0; }
+  .call .meta { font-size: 12px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); white-space: nowrap; flex-shrink: 0; opacity: .85; }
+  .call .scope { color: var(--vscode-charts-green); font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .badge { border: 0; border-radius: 999px; padding: 0 6px; font-family: inherit; font-size: 12px; font-weight: 600; flex-shrink: 0; }
   .badge:empty { display: none; }
   .call .badge.completed { background: transparent; padding: 0; opacity: .75; }
   .badge.completed { color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 14%, transparent); }
@@ -1465,16 +1465,16 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .badge.denied { color: var(--vscode-charts-red); opacity: .8; background: transparent; }
   .badge.unknown { color: var(--vscode-charts-orange); background: color-mix(in srgb, var(--vscode-charts-orange) 14%, transparent); }
   /* 改动统计跟着它描述的文件走：Added path (+N -M) */
-  .diff { font-family: var(--vscode-editor-font-family); font-size: 10px; font-weight: 650; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
+  .diff { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 650; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
   .diff .add { color: var(--vscode-charts-green); margin-right: 3px; }
   .diff .del { color: var(--vscode-charts-red); }
   /* 调用参数悬浮提示：单例浮层，替代原生 title（即时弹出、主题一致、可格式化） */
-  #tip { position: fixed; z-index: 20; display: none; max-width: min(480px, calc(100vw - 16px)); max-height: min(320px, 60vh); overflow: auto; padding: 8px 11px; border-radius: 8px; font-family: var(--vscode-editor-font-family); font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; color: var(--vscode-foreground); background: var(--vscode-editorHoverWidget-background, var(--vscode-sideBar-background)); border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border)); box-shadow: 0 8px 24px rgba(0,0,0,.4); cursor: default; }
+  #tip { position: fixed; z-index: 20; display: none; max-width: min(480px, calc(100vw - 16px)); max-height: min(320px, 60vh); overflow: auto; padding: 8px 11px; border-radius: 8px; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; color: var(--vscode-foreground); background: var(--vscode-editorHoverWidget-background, var(--vscode-sideBar-background)); border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border)); box-shadow: 0 8px 24px rgba(0,0,0,.4); cursor: default; }
   /* 输出挂在调用下面（Codex 的 └ 连接线），并收在「… 还有 N 行」后面 */
   .call .body { position: relative; padding: 3px 10px 8px 29px; display: none; }
   .call.open .body { display: block; }
-  .call.open .body::before { content: '└'; position: absolute; left: 13px; top: 4px; font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); opacity: .6; pointer-events: none; }
-  .call .body .more { margin: 3px 0 0; padding: 1px 9px; font-family: var(--vscode-editor-font-family); font-size: 10.5px; color: var(--vscode-descriptionForeground); background: transparent; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 16%, transparent); border-radius: 999px; cursor: pointer; }
+  .call.open .body::before { content: '└'; position: absolute; left: 13px; top: 4px; font-family: var(--vscode-editor-font-family); font-size: 12px; color: var(--vscode-descriptionForeground); opacity: .6; pointer-events: none; }
+  .call .body .more { margin: 3px 0 0; padding: 1px 9px; font-family: var(--vscode-editor-font-family); font-size: 12px; color: var(--vscode-descriptionForeground); background: transparent; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 16%, transparent); border-radius: 999px; cursor: pointer; }
   .call .body .more:hover { color: var(--vscode-foreground); }
   /* 极细滚动条（页面级 + 展开卡片 <pre> 两级）：平时半透明 4px，hover 加深——
      存在感最小化，滚动能力不打折；webkit webview 的标准做法 */
@@ -1483,34 +1483,34 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent); border-radius: 999px; }
   ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--vscode-foreground) 38%, transparent); }
   ::-webkit-scrollbar-corner { background: transparent; }
-  .call pre { background: transparent; padding: 2px 0 0; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; font-size: 11.5px; line-height: 1.6; margin: 0; }
+  .call pre { background: transparent; padding: 2px 0 0; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; font-size: 12px; line-height: 1.6; margin: 0; }
   /* proxy 调用的行内取消按钮：视觉与审批卡的「拒绝」一致（红描边幽灵按钮） */
-  .call .cx { font-family: inherit; font-size: 10px; padding: 2px 9px; border-radius: 5px; cursor: pointer; flex-shrink: 0; color: var(--vscode-charts-red); background: transparent; border: 1px solid color-mix(in srgb, var(--vscode-charts-red) 40%, transparent); }
+  .call .cx { font-family: inherit; font-size: 12px; padding: 2px 9px; border-radius: 5px; cursor: pointer; flex-shrink: 0; color: var(--vscode-charts-red); background: transparent; border: 1px solid color-mix(in srgb, var(--vscode-charts-red) 40%, transparent); }
   .call .cx:hover { background: color-mix(in srgb, var(--vscode-charts-red) 12%, transparent); }
   /* 审批终稿：队列式悬浮详情卡（overlay，不顶开列表）。设计稿见
      _temp/design-demos/scrollbar-approval.html */
   #abar { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 9; display: none; max-height: 72%; border-radius: 10px; background: var(--vscode-sideBar-background); border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 50%, transparent); box-shadow: 0 12px 36px rgba(0,0,0,.5); }
   #abar.has { display: block; }
-  .apq .aphead { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-size: 11.5px; font-weight: 650; color: var(--vscode-editorWarning-foreground, #caa20a); background: var(--vscode-inputValidation-warningBackground, rgba(122,91,0,.18)); border-bottom: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 45%, transparent); }
+  .apq .aphead { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-size: 12px; font-weight: 650; color: var(--vscode-editorWarning-foreground, #caa20a); background: var(--vscode-inputValidation-warningBackground, rgba(122,91,0,.18)); border-bottom: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 45%, transparent); }
   .apq .adot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: appulse 1.8s ease-in-out infinite; flex-shrink: 0; }
   @keyframes appulse { 50% { opacity: .35; } }
   .apq .sp { flex: 1; }
-  .apq .acnt { font-family: var(--vscode-editor-font-family); font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--vscode-editorWarning-foreground, #caa20a); color: #1f1f1f; }
-  .apq .srcrow { display: flex; align-items: center; gap: 6px; padding: 10px 12px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .apq .acnt { font-family: var(--vscode-editor-font-family); font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--vscode-editorWarning-foreground, #caa20a); color: #1f1f1f; }
+  .apq .srcrow { display: flex; align-items: center; gap: 6px; padding: 10px 12px 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
   .apq .srcrow .nm { font-weight: 650; color: var(--vscode-foreground); }
-  .apq .srcrow .go { color: var(--vscode-charts-blue); cursor: pointer; font-size: 10.5px; margin-left: auto; }
+  .apq .srcrow .go { color: var(--vscode-charts-blue); cursor: pointer; font-size: 12px; margin-left: auto; }
   .apq .srcrow .go:hover { text-decoration: underline; }
   /* 风险标签-命中同色图例（级别派生）：红=critical 不可逆 / 黄=warn 影响大 / 蓝=info 常规变更 */
   .apq .riskrow { display: flex; align-items: center; gap: 6px; padding: 8px 12px 0; flex-wrap: wrap; }
-  .apq .rchip { font-size: 10px; font-weight: 600; padding: 1px 8px; border-radius: 999px; color: var(--vscode-charts-red); background: color-mix(in srgb, var(--vscode-charts-red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-charts-red) 32%, transparent); }
+  .apq .rchip { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; color: var(--vscode-charts-red); background: color-mix(in srgb, var(--vscode-charts-red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-charts-red) 32%, transparent); }
   .apq .rchip.warn { color: var(--vscode-editorWarning-foreground, #caa20a); background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 10%, transparent); border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 30%, transparent); }
   .apq .rchip.info { color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 10%, transparent); border-color: color-mix(in srgb, var(--vscode-charts-blue) 30%, transparent); }
-  .apq .acmd { font-family: var(--vscode-editor-font-family); font-size: 11px; margin: 8px 12px 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, #000 25%, transparent); white-space: pre-wrap; word-break: break-all; line-height: 1.7; max-height: 30vh; overflow-y: auto; }
+  .apq .acmd { font-family: var(--vscode-editor-font-family); font-size: 12px; margin: 8px 12px 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, #000 25%, transparent); white-space: pre-wrap; word-break: break-all; line-height: 1.7; max-height: 30vh; overflow-y: auto; }
   .apq .acmd .hit { color: var(--vscode-charts-red); font-weight: 700; background: color-mix(in srgb, var(--vscode-charts-red) 13%, transparent); border-radius: 3px; padding: 0 2px; }
   .apq .acmd .hit.warn { color: var(--vscode-editorWarning-foreground, #caa20a); background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #caa20a) 12%, transparent); }
   .apq .acmd .hit.info { color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); }
   .apq .abtns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 12px 12px; }
-  .apq button { font-size: 11px; padding: 4px 14px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; font-family: inherit; }
+  .apq button { font-size: 12px; padding: 4px 14px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; font-family: inherit; }
   .apq button.ok { color: var(--vscode-button-foreground); background: var(--vscode-button-background); font-weight: 600; }
   .apq button.more { color: var(--vscode-descriptionForeground); background: transparent; border-color: var(--vscode-panel-border); }
   .apq button.more:hover { color: var(--vscode-foreground); }
@@ -1519,19 +1519,19 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .appr button.view:hover { color: var(--vscode-foreground); }
   /* 分页 */
   /* 分页器在列表外独立占位，末尾卡片无需额外补偿即可完整滚入视口。 */
-  .older { display: flex; justify-content: center; padding: 6px 0 2px; font-size: 11px; color: var(--vscode-descriptionForeground); }
-  .older button { font-size: 11px; padding: 2px 10px; cursor: pointer; border: none; border-radius: 6px; color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); font-family: inherit; }
+  .older { display: flex; justify-content: center; padding: 6px 0 2px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+  .older button { font-size: 12px; padding: 2px 10px; cursor: pointer; border: none; border-radius: 6px; color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); font-family: inherit; }
   /* 任务清单（V2F 浮层版）：头部常驻，展开浮层悬在调用卡上方 */
   #tasks { position: relative; flex-shrink: 0; z-index: 8; margin: 0 0 2px; padding: 4px 10px 2px; background: var(--vscode-sideBar-background); }
   #tasks .t2f { position: relative; }
   #tasks .hd { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer; }
   #tasks .hd:hover { background: var(--vscode-toolbar-hoverBackground); }
   #tasks .hd .sp { flex: 1; }
-  #tasks .t-name { font-size: 11.5px; font-weight: 650; }
-  #tasks .num { font-family: var(--vscode-editor-font-family); font-size: 11.5px; font-weight: 700; color: var(--vscode-charts-blue); transition: color .5s ease; }
+  #tasks .t-name { font-size: 12px; font-weight: 650; }
+  #tasks .num { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 700; color: var(--vscode-charts-blue); transition: color .5s ease; }
   #tasks .num.all { color: var(--vscode-charts-green); }
-  #tasks .sub { font-size: 10px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
-  #tasks .chev { color: var(--vscode-descriptionForeground); font-size: 10px; transition: transform .15s; }
+  #tasks .sub { font-size: 12px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+  #tasks .chev { color: var(--vscode-descriptionForeground); font-size: 12px; transition: transform .15s; }
   #tasks .t2f.open .chev { transform: rotate(180deg); }
   #tasks .bar { height: 2px; border-radius: 999px; background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent); overflow: hidden; position: relative; }
   #tasks .bar i { display: block; height: 100%; width: 0; border-radius: 999px; transition: width .55s cubic-bezier(.22, 1, .36, 1), background-color .5s ease; background: linear-gradient(90deg, var(--vscode-charts-blue) 0%, color-mix(in srgb, var(--vscode-charts-blue) 45%, #fff) 50%, var(--vscode-charts-blue) 100%); background-size: 200% 100%; animation: bhFlow 2.2s linear infinite; }
@@ -1545,7 +1545,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   @keyframes bhPop { from { opacity: 0; transform: translateY(-5px); } }
   #tasks .items { padding: 1px 0 2px; }
   #tasks .ti { display: flex; align-items: baseline; gap: 8px; padding: 2.5px 0; font-size: 12px; min-width: 0; }
-  #tasks .ti .tk { width: 13px; text-align: center; flex-shrink: 0; font-size: 10px; }
+  #tasks .ti .tk { width: 13px; text-align: center; flex-shrink: 0; font-size: 12px; }
   #tasks .ti .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #tasks .ti.goal .tk { color: var(--vscode-charts-blue); }
   #tasks .ti.goal .tx { font-weight: 600; }
@@ -1565,7 +1565,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   #ctx .item:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
   #ctx .sep { height: 1px; margin: 4px 0; background: var(--vscode-menu-separatorBackground); }
   #ctx .item.danger { color: var(--vscode-errorForeground); }
-  #ctx .grp { padding: 4px 14px 2px; font-size: 11px; color: var(--vscode-descriptionForeground); cursor: default; }
+  #ctx .grp { padding: 4px 14px 2px; font-size: 12px; color: var(--vscode-descriptionForeground); cursor: default; }
   /* Chat: messages in the call timeline + composer docked at the bottom */
   .msg { margin: 12px 12px; font-size: 13px; line-height: 1.55; }
   /* 回复是正文不是卡片：不加框，只留出两侧空白，与通栏工具带区分 */
@@ -1573,11 +1573,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .msg.user { width: fit-content; max-width: 85%; margin: 24px 12px 32px auto; border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent); padding: 6px 10px; border-radius: 10px; background: color-mix(in srgb, var(--vscode-focusBorder) 14%, transparent); }
   .msg.user .msg-body { white-space: pre-wrap; word-break: break-word; }
   .msg.user .msg-body.folded { max-height: 200px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent); mask-image: linear-gradient(to bottom, #000 70%, transparent); }
-  .msg-fold { display: block; margin: 2px 0 0 auto; padding: 2px 0; border: 0; background: none; color: var(--vscode-textLink-foreground); font: inherit; font-size: 11px; cursor: pointer; }
+  .msg-fold { display: block; margin: 2px 0 0 auto; padding: 2px 0; border: 0; background: none; color: var(--vscode-textLink-foreground); font: inherit; font-size: 12px; cursor: pointer; }
   .msg-fold:hover { text-decoration: underline; }
   .msg-fold:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
-  .msg-st { display: block; margin-top: 2px; font-size: 11px; }
-  .msg-img { display: block; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--vscode-textLink-foreground); font-size: 11px; cursor: pointer; }
+  .msg-st { display: block; margin-top: 2px; font-size: 12px; }
+  .msg-img { display: block; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--vscode-textLink-foreground); font-size: 12px; cursor: pointer; }
   .msg-img:hover { text-decoration: underline; }
   .img-view { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px; overflow: auto; background: rgba(0, 0, 0, 0.8); outline: none; }
   .img-view img { max-width: 100%; height: auto; border-radius: 6px; }
@@ -1592,7 +1592,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .msg.user:hover .msg-copy.user-copy { opacity: 1; }
   .msg-st.failed { color: var(--vscode-errorForeground); }
   .msg-st.unconfirmed { color: var(--vscode-editorWarning-foreground); }
-  .msg-head { display: flex; gap: 8px; align-items: baseline; color: var(--vscode-descriptionForeground); font-size: 11px; margin-bottom: 2px; }
+  .msg-head { display: flex; gap: 8px; align-items: baseline; color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 2px; }
   .msg-head .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .md { word-break: break-word; }
   .md > :first-child { margin-top: 0; }
@@ -1638,11 +1638,11 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .cmp { flex-shrink: 0; padding: 0; background: var(--vscode-sideBar-background); }
   .cmp-extra { padding: 4px 10px; }
   .cmp-box { padding: 6px 10px 8px; border-top: 1px solid var(--vscode-panel-border); }
-  .cmp-head { display: flex; align-items: center; gap: 6px; min-height: 20px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .cmp-head { display: flex; align-items: center; gap: 6px; min-height: 20px; font-size: 12px; color: var(--vscode-descriptionForeground); }
   .cmp-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); }
   /* 紧凑选择器：一段文字 + 小箭头，点开是向上弹出的菜单（原生 select 的弹层没法设计，也太宽） */
   .pick { position: relative; flex: none; display: inline-flex; }
-  .pick-btn { display: inline-flex; align-items: center; gap: 5px; height: 20px; max-width: 180px; padding: 0 6px; margin-left: -6px; font: inherit; font-size: 11px; font-weight: 600; color: var(--vscode-foreground); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
+  .pick-btn { display: inline-flex; align-items: center; gap: 5px; height: 20px; max-width: 180px; padding: 0 6px; margin-left: -6px; font: inherit; font-size: 12px; font-weight: 600; color: var(--vscode-foreground); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
   .pick-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pick-btn::after { content: ''; flex: none; width: 4px; height: 4px; margin-top: -2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .7; }
   .pick-btn:hover, .pick.open .pick-btn { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,.15)); }
@@ -1651,15 +1651,15 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .pick-menu { position: absolute; left: -6px; bottom: calc(100% + 4px); z-index: 20; min-width: 168px; max-width: 260px; padding: 4px; margin: 0; list-style: none; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-dropdown-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, var(--vscode-panel-border))); border-radius: 6px; box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0,0,0,.36)); }
   .pick-menu[hidden] { display: none; }
   .pick-item { display: grid; grid-template-columns: 14px 1fr auto; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 4px; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
-  .pick-item .ck { text-align: center; font-size: 11px; opacity: 0; }
+  .pick-item .ck { text-align: center; font-size: 12px; opacity: 0; }
   .pick-item[aria-selected="true"] .ck { opacity: 1; }
   .pick-item .lb { overflow: hidden; text-overflow: ellipsis; }
-  .pick-item .tg { font-size: 10px; color: var(--vscode-descriptionForeground); }
+  .pick-item .tg { font-size: 12px; color: var(--vscode-descriptionForeground); }
   .pick-item.act { background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); }
   .pick-item.act .tg { color: inherit; opacity: .8; }
   .cmp-head .pill { flex: none; display: inline-flex; align-items: center; gap: 4px; }
   /* 模型信息属于 Composer（当前网页 AI 的模型），不再写进会话消息里 */
-  .cmp-head .model { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 999px; font-size: 10px; color: var(--vscode-descriptionForeground); background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); }
+  .cmp-head .model { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 999px; font-size: 12px; color: var(--vscode-descriptionForeground); background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); }
   .cmp-head .pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .cmp-head .pill.ok { color: var(--vscode-testing-iconPassed, #3fb950); }
   .cmp-head .pill.warn { color: var(--vscode-editorWarning-foreground); }
@@ -1682,16 +1682,16 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
   .qcard { margin-bottom: 6px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-sideBar-background)); box-shadow: 0 1px 3px rgba(0, 0, 0, .18); }
   .qcard .q-head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); }
   .qcard .q-title { flex: 1; min-width: 0; font-size: 12px; line-height: 1.45; }
-  .qcard .q-skip { flex: none; font: inherit; font-size: 11px; padding: 1px 8px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-textLink-foreground); cursor: pointer; }
+  .qcard .q-skip { flex: none; font: inherit; font-size: 12px; padding: 1px 8px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-textLink-foreground); cursor: pointer; }
   .qcard .q-opt { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--vscode-panel-border); background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
   .qcard .q-opt:last-of-type { border-bottom: 0; }
   .qcard .q-opt:hover, .qcard .q-opt:focus-visible { background: var(--vscode-list-hoverBackground); outline: none; }
-  .qcard .q-opt .q-n { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-align: center; color: var(--vscode-descriptionForeground); }
+  .qcard .q-opt .q-n { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--vscode-descriptionForeground); font-size: 12px; line-height: 14px; text-align: center; color: var(--vscode-descriptionForeground); }
   .qcard .q-opt:hover .q-n { border-color: var(--vscode-focusBorder); color: var(--vscode-focusBorder); }
-  .qcard .q-hint { padding: 5px 10px; font-size: 11px; color: var(--vscode-descriptionForeground); border-top: 1px solid var(--vscode-panel-border); }
+  .qcard .q-hint { padding: 5px 10px; font-size: 12px; color: var(--vscode-descriptionForeground); border-top: 1px solid var(--vscode-panel-border); }
   .qcard button:disabled { opacity: .5; cursor: default; }
   /* 备注是输入框上方的一条提示带：输入框永远是这个 composer 的最后一行 */
-  .cmp-note { font-size: 11px; margin: 0 0 5px; padding: 4px 8px; border-radius: 6px; color: var(--vscode-descriptionForeground); background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent); }
+  .cmp-note { font-size: 12px; margin: 0 0 5px; padding: 4px 8px; border-radius: 6px; color: var(--vscode-descriptionForeground); background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent); }
   .cmp-note:empty { display: none; }
   .cmp-note.ok { color: var(--vscode-testing-iconPassed, #3fb950); background: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 13%, transparent); }
   .cmp-note.warn { color: var(--vscode-editorWarning-foreground); background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 13%, transparent); }
@@ -1778,7 +1778,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
     function renderLastToolAge(now = Date.now()) {
       const node = $('lastToolAge');
       if (!node) return;
-      node.textContent = lastToolActivityAt > 0 ? '· ' + fmtAge(now - lastToolActivityAt) : '';
+      node.textContent = lastToolActivityAt > 0 ? '○ ' + fmtAge(now - lastToolActivityAt) : '';
     }
 
     function renderHeader(d) {
@@ -1841,7 +1841,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (d.daemon === 'running' && d.openai && gpMap[d.openai]) parts.push(gpMap[d.openai]);
       if (parts.length) {
         cls = parts.every((p) => p[0] === parts[0][0]) ? parts[0][0] : 'warn';
-        label = parts.map((p) => p[1]).join(' · ');
+        label = parts.map((p) => p[1]).join(' ');
       }
       const onboarding = onboardingState(d);
       // Missing prerequisites are setup states; only actual failures use error styling.
@@ -1873,8 +1873,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       sw.title = c.on
         ? '关闭：停止' + c.running.map((x) => CHANNEL_NAMES[x] || x).join('、')
         : '开启：' + (CHANNEL_NAMES[c.next] || c.next) + (c.last ? '（上次使用）' : '')
-          + (c.missing === 'cloudflared' ? ' · 需要先安装 cloudflared' : '')
-          + (c.state === 'error' && c.reason ? ' · 上次失败：' + c.reason : '');
+          + (c.missing === 'cloudflared' ? ' 需要先安装 cloudflared' : '')
+          + (c.state === 'error' && c.reason ? ' 上次失败：' + c.reason : '');
     }
 
     // B / focused welcome: connection choice is presentation state; actual channel facts still come from the host.
@@ -1954,7 +1954,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       }
       const installFailed = o.step === 'failed' && o.failedAt === 'install';
       const connecting = o.step === 'connecting';
-      const runtimeText = o.runtimeReady ? '✓ 已就绪' + (o.version ? ' · ' + o.version : '')
+      const runtimeText = o.runtimeReady ? '✓ 已就绪' + (o.version ? ' ' + o.version : '')
         : installFailed ? '! 安装未完成' : '正在安装并验证…';
       const runtimeClass = o.runtimeReady ? 'ok' : installFailed ? 'bad' : '';
       const failure = o.step === 'failed'
@@ -2153,7 +2153,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         handoffView.attach(row.querySelector('.name'), s);
         // 账本式副行：完整工作区路径 · 权限模式（状态移到行右侧彩字）
         const modeLabel = s.permission_mode === 'read-only' ? '只读' : s.permission_mode === 'danger-full-access' ? '完全访问' : '工作区可写';
-        row.title = name + ' · ' + s.workspace_path + ' · ' + modeLabel; // single-line row: path and mode on hover
+        row.title = name + ' ' + s.workspace_path + ' ' + modeLabel; // single-line row: path and mode on hover
         const drag = row.querySelector('.drag');
         drag.addEventListener('click', (e) => e.stopPropagation());
         drag.addEventListener('dragstart', (e) => {
@@ -2506,7 +2506,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         if (card._bulletKey !== blk) {
           card._bulletKey = blk;
           bulletEl.className = 'bullet ' + c.status;
-          bulletEl.textContent = { started: '●', awaiting: '▲', completed: '✓', failed: '✕', denied: '✕' }[c.status] || '·';
+          bulletEl.textContent = { started: '●', awaiting: '▲', completed: '✓', failed: '✕', denied: '✕' }[c.status] || '○';
           bulletEl.setAttribute('role', 'img');
           bulletEl.setAttribute('aria-label', ctx.badgeText);
           bulletEl.title = ctx.badgeText;
@@ -2643,7 +2643,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         if (list.dataset.draftSig !== sig) {
           list.dataset.draftSig = sig;
           list.innerHTML = '<div class="draft"><div class="dt">新会话还没有连上网页 AI</div>'
-            + '<div class="row"><button data-draft-copy="connector">复制提示词 · 连接器</button><button data-draft-copy="sandbox">复制提示词 · 沙箱直连</button></div>'
+            + '<div class="row"><button data-draft-copy="connector">复制提示词 连接器</button><button data-draft-copy="sandbox">复制提示词 沙箱直连</button></div>'
             + '<div class="dd">复制提示词交给网页 AI 自行使用；或在下方输入并发送，新开网页 AI 会话并配对（右上方选发送方式）。都没做就返回列表会丢弃这个会话。</div></div>';
         }
         cardById.clear();
@@ -2691,7 +2691,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
       if (older.dataset.k !== olderKey) {
         older.dataset.k = olderKey;
         older.innerHTML = olderKey === 'more' ? '<button id="olderBtn" type="button">加载更早的记录</button>'
-          : olderKey === 'busy' ? '<span>正在加载…</span>' : '<span>会话开始 · 共 ' + (d.callTotal || 0) + ' 次调用</span>';
+          : olderKey === 'busy' ? '<span>正在加载…</span>' : '<span>会话开始 共 ' + (d.callTotal || 0) + ' 次调用</span>';
       }
       let prev = older;
       // Messages are merged into the call order by time (the page may be newest- or oldest-first).
@@ -3257,8 +3257,8 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         chatHeadSig = sig;
         const head = $('cmpHead');
         head.textContent = '';
-        if (link === 'unpaired') head.append(span('name', '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'));
-        else if (link === 'direct') head.append(span('name', '提示词直连 · 只接收，对话在网页 AI 里进行'));
+        if (link === 'unpaired') head.append(span('name', '已解除配对 只接收；可在浏览器 Courier 里重新配对'));
+        else if (link === 'direct') head.append(span('name', '提示词直连 只接收，对话在网页 AI 里进行'));
         else if (!targets.length && link === 'new') {
           const sel = picker('发送方式', methods, method, (v) => { sendMethod = v; vs.setState(Object.assign({}, vs.getState() || {}, { sendMethod })); chatHeadSig = ''; renderComposer(cur); });
           const hint = !c.connected ? '浏览器里的 Courier 未连接，打开浏览器后会自动连上' : methods.find((x) => x.id === method).hint;
@@ -3271,7 +3271,7 @@ export class SidebarProvider implements WebviewViewProvider, Disposable {
         else {
           // 左上方只保留来源（Arena / ChatGPT / …）：会话标题在每条回复里重复，没有信息量
           const src = (t) => SITE_NAME[t.site] || t.site;
-          const label = (t) => src(t) + ' · ' + (t.label || t.conversationKey || '新会话');
+          const label = (t) => src(t) + ' ' + (t.label || t.conversationKey || '新会话');
           const uniqueSites = new Set(targets.map((t) => t.site)).size === targets.length;
           if (targets.length > 1) {
             const sel = picker('选择网页会话', targets.map((t) => ({ id: t.targetId, label: uniqueSites ? src(t) : label(t), tag: chatState(t)[1] })), chatPick, (v) => { chatPick = v; chatHeadSig = ''; renderComposer(cur); });

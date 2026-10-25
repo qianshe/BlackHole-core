@@ -114,7 +114,6 @@ test('test Cloud client uses only its configured origin and an origin-isolated c
 test('extension no longer contributes Cloud API environment settings or reload switching',()=>{
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')),properties=manifest.contributes.configuration.properties;
  assert.equal(properties['blackhole.cloudEnvironment'],undefined);assert.equal(properties['blackhole.cloudTestOrigin'],undefined);
- const panel=readFileSync(new URL('../src/configPanel.ts',import.meta.url),'utf8');assert.equal(panel.includes('values.cloudEnvironment'),false);assert.equal(panel.includes('values.cloudTestOrigin'),false);
 });
 test('Retry-After seconds/date are bounded with safe defaults',()=>{
  const now=Date.now();assert.equal(core.retryDelay('60',now),60000);assert.equal(core.retryDelay(null,now),60000);
@@ -440,15 +439,9 @@ test('extension activation and command contributions are wired without exposing 
  assert.ok(!readFileSync(new URL('../src/cloudAccount.ts',import.meta.url),'utf8').includes('createStatusBarItem'));
  const ignores=readFileSync(new URL('../.vscodeignore',import.meta.url),'utf8');for(const rule of ['test/**','**/.dev.vars*','**/.env*'])assert.ok(ignores.includes(rule));
  for(const name of ['accountSignIn','accountSignOut','accountStatus','accountBuyCard','accountOrders','accountRefund'])assert.equal(pkg.contributes.commands.filter(v=>v.command==='blackhole.'+name).length,1);
- const accountSource=readFileSync(new URL('../src/cloudAccount.ts',import.meta.url),'utf8'),panel=readFileSync(new URL('../src/configPanel.ts',import.meta.url),'utf8');
+ const accountSource=readFileSync(new URL('../src/cloudAccount.ts',import.meta.url),'utf8');
  assert.equal(pkg.contributes.commands.filter(v=>v.command==='blackhole.accountSignInGitHub').length,0);
- assert.ok(!accountSource.includes('accountSignInGitHub'));assert.ok(!panel.includes('cloudSignInGitHub'));
- assert.equal(panel.split('id="cloudSignIn"').length-1,1);
- assert.ok(panel.includes("$('cloudSignIn').style.display=loggedIn?'none':''"));
- assert.ok(panel.includes('id="cloudBuyModal"'));assert.ok(panel.includes("$('cloudBuyConfirm').onclick"));assert.ok(panel.includes("m.action==='buyCard'?[m.sku,true]:[]"));
- assert.ok(panel.includes('id="cloudRefund"'));assert.ok(panel.includes("refund:'blackhole.accountRefund'"));
- assert.ok(panel.includes("event.target===$('cloudBuyModal')"));assert.ok(panel.includes("event.key==='Escape'"));
- for(const name of ['../src/cloudAuthClient.ts','../src/cloudAccount.ts','../../../src/account/cloud-auth-client.ts']){
+  for(const name of ['../src/cloudAuthClient.ts','../src/cloudAccount.ts','../../../src/account/cloud-auth-client.ts']){
   const source=readFileSync(new URL(name,import.meta.url),'utf8');assert.ok(!source.includes('GOOGLE_CLIENT_SECRET'));assert.ok(!source.includes('console.log'));assert.ok(!source.includes('log.append'));
  }
 });
