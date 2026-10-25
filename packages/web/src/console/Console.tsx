@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView, type SessionView } from '../api';
 import { readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
 import { NewChatPane } from './NewChatPane';
@@ -61,6 +62,27 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const [view, setView] = useViewState();
   const now = useNow(5000);
   const [collapsed, setCollapsed] = useState(narrow);
+  // Left navigation width, draggable and persisted (same mechanism as the inspector).
+  const [navWidth, setNavWidth] = useState(() => {
+    const stored = Number(window.localStorage.getItem('bh.web.navWidth'));
+    return Number.isFinite(stored) && stored >= 170 && stored <= 340 ? stored : 284;
+  });
+  const navDrag = useRef<number | null>(null);
+  const onNavSplitDown = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    e.preventDefault();
+    navDrag.current = e.clientX;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onNavSplitMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    if (navDrag.current === null) return;
+    const next = Math.max(170, Math.min(340, navWidth + (e.clientX - navDrag.current)));
+    setNavWidth(next);
+  };
+  const onNavSplitUp = (): void => {
+    if (navDrag.current === null) return;
+    navDrag.current = null;
+    window.localStorage.setItem('bh.web.navWidth', String(navWidth));
+  };
   // crossing into the narrow layout closes the drawer; widening restores the sidebar
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 760px)');
@@ -244,7 +266,22 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const reachable = !sessions.error || !!sessions.data;
 
   return (
-    <div className={`${c.app} ${collapsed ? c.collapsed : ''}`}>
+    <div className={`${c.app} ${collapsed ? c.collapsed : ''}`} style={{ '--nav-w': `${navWidth}px` } as CSSProperties}>
+      <button
+        type="button"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整导航栏宽度"
+        aria-valuenow={navWidth}
+        aria-valuemin={170}
+        aria-valuemax={340}
+        title="拖动调整宽度"
+        className={c.splitter}
+        style={{ display: collapsed ? 'none' : undefined }}
+        onPointerDown={onNavSplitDown}
+        onPointerMove={onNavSplitMove}
+        onPointerUp={onNavSplitUp}
+      />
       <Sidebar
         sessions={listed}
         projects={projectList}
