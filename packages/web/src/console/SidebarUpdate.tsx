@@ -41,11 +41,8 @@ export function SidebarUpdate({ collapsed }: { collapsed: boolean }) {
     void readDesktopUpdate('download').then(next => { if (next) setStatus(next); }).finally(() => setBusy(false));
   };
   const interactive = available && !inProgress && !installing;
-  // Download progress fills the row background left-to-right — one mechanism
-  // for the state, no stacked chrome.
-  const fill = pct !== undefined
-    ? { background: `linear-gradient(to right, var(--accent) ${pct}%, var(--surface-2) ${pct}%)` }
-    : undefined;
+  // Progress is a thin accent line along the row bottom — the row itself stays calm.
+  const line = pct !== undefined ? { width: pct + '%' } : undefined;
   return (
     <button
       type="button"
@@ -59,7 +56,7 @@ export function SidebarUpdate({ collapsed }: { collapsed: boolean }) {
       {!collapsed && downloading && pct !== undefined && <span className={c.updatePct}>{pct}%</span>}
       {collapsed && !interactive && <span className={c.updateDot} aria-hidden="true" />}
       {installing && <span className={c.updateIndeterminate} aria-hidden="true" />}
-      {fill && <span className={c.updateFill} style={fill} aria-hidden="true" />}
+      {line && <span className={c.updateLine} style={line} aria-hidden="true" />}
     </button>
   );
 }

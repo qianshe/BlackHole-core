@@ -2234,7 +2234,7 @@
 .updateRowBusy .updateGlyph { color: var(--text-3); }
 .updateLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .updatePct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-3); }
-.updateFill { position: absolute; inset: 0; pointer-events: none; transition: background .3s; }
+.updateLine { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); transition: width .3s; }
 .updateIndeterminate { position: absolute; left: -30%; bottom: 0; height: 2px; width: 30%; background: var(--accent); animation: updateIndeterminate 1.2s infinite linear; }
 @keyframes updateIndeterminate { to { left: 100%; } }
 .updateRowCollapsed { width: 40px; margin: 0 6px 4px; padding: 0; justify-content: center; }

@@ -53,8 +53,33 @@ func forceStopCoreForUpdate(bundle distribution.Bundle, expectedFingerprint stri
 		desktopLog("update force-stop terminate failed: " + err.Error())
 		return false
 	}
+	// Wait until the process is actually gone so the port frees before the
+	// helper hands off to the installer; an already-dying process settles fast.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		code, err := waitTerminated(handle, 1000)
+		if err == nil && code != 259 {
+			break
+		}
+		if time.Now().After(deadline) {
+			desktopLog("update force-stop: daemon pid did not confirm exit within 10s; continuing")
+			break
+		}
+	}
 	desktopLog(fmt.Sprintf("update force-stop: terminated daemon pid=%d fingerprint=%s (operator-authorized update)", state.PID, state.StartFingerprint))
 	// Ask the tray to exit now instead of waiting out its daemon-watch beats.
 	(peerReleaseStore{dir: managedStateDir}).publishStop(state.StartFingerprint)
 	return true
+}
+
+func waitTerminated(handle windows.Handle, timeoutMs uint32) (uint32, error) {
+	_, err := windows.WaitForSingleObject(handle, timeoutMs)
+	if err != nil {
+		return 259, err
+	}
+	var code uint32
+	if err := windows.GetExitCodeProcess(handle, &code); err != nil {
+		return 259, err
+	}
+	return code, nil
 }

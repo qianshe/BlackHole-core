@@ -114,15 +114,11 @@ func desktopUpdateAction(action string) (string, error) {
 	case "download":
 		// The window process owns a maintenance coordinator bound to the exact
 		// Core incarnation; a click in the Desktop's own native-hosted UI is
-		// the authorization the tray click used to provide. If the guarded
-		// Manager stop is refused (live clients/work), the operator-authorized
-		// fallback terminates exactly the recorded daemon so the update still
-		// completes — updates never stall on Core state.
-		stopForUpdate := func(ctx context.Context) bool {
-			if windowCoordinator != nil && windowCoordinator.StopForUpdate(ctx) {
-				return true
-			}
-			desktopLog("update stop refused by Manager; falling back to operator-authorized termination")
+		// the operator authorization. Updates never stall on Core state: the
+		// recorded daemon is terminated directly (fingerprint-checked) — no
+		// guarded Manager stop, no refusal dialogs, no reliance on running
+		// tasks finishing. The installer replaces program files only.
+		stopForUpdate := func(context.Context) bool {
 			fingerprint := ""
 			if windowCoordinator != nil {
 				fingerprint = windowCoordinator.keeper.current().Receipt.StartFingerprint
