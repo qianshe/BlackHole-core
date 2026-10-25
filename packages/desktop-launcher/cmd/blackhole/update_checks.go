@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"blackhole/desktop-launcher/internal/distribution"
 	"blackhole/desktop-launcher/internal/updatefeed"
@@ -63,11 +64,22 @@ func startBackgroundUpdateChecks(ctx context.Context, bundle distribution.Bundle
 		return
 	}
 	// Opening Desktop is the moment update discovery matters most: check once
-	// immediately (metadata only) instead of waiting out the daily cadence,
-	// then let the background loop keep its 24h rhythm.
+	// immediately (metadata only) instead of waiting out the daily cadence.
+	// Desktop sessions also outlive release moments, so keep force-checking
+	// the signed feed every 15 minutes while the app is open — the rail then
+	// surfaces a version published mid-session without a manual refresh.
 	go func() {
 		checker.Check(ctx, true)
-		checker.Run(ctx, func(updatefeed.CheckStatus) {})
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				checker.Check(ctx, true)
+			}
+		}
 	}()
 }
 
