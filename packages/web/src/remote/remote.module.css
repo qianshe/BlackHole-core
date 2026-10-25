@@ -31,7 +31,7 @@
 .rowMeta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .callItem { display: flex; flex-direction: column; }
 .callBody { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; background: var(--card); padding: 6px 8px 8px; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
 .cardHead { display: flex; flex-direction: column; gap: 2px; }
 .tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 600; }
 .args { margin: 0; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--fg) 6%, transparent); font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
@@ -60,7 +60,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .chatHead { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 4px 8px; padding-top: max(4px, env(safe-area-inset-top)); background: var(--card); border-bottom: 1px solid var(--line); }
 .chatTitle { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .more { min-width: 32px; min-height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); font: inherit; font-size: 18px; line-height: 1; }
-.menu { position: absolute; right: 8px; top: 40px; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.menu { position: absolute; right: 8px; top: 40px; display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
 .menuSep { height: 1px; margin: 4px 8px; background: var(--line); }
 .menu button { min-height: 36px; padding: 0 10px; font-size: 13px; text-align: left; border: 0; border-radius: 8px; background: transparent; color: var(--fg); font-family: inherit; }
 .chatBody { padding: 8px 10px 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -93,13 +93,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .dockText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model { flex: none; max-width: 50%; margin-left: auto; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--fg) 4%, var(--card)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer { display: flex; align-items: flex-end; gap: 6px; }
-.composerInput { flex: 1; min-width: 0; min-height: 36px; max-height: 140px; resize: none; padding: 7px 10px; border-radius: 10px; font-size: 15px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-family: inherit; }
+.composerInput { flex: 1; min-width: 0; min-height: 36px; max-height: 140px; resize: none; padding: 7px 10px; border-radius: 12px; font-size: 15px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-family: inherit; }
 .send { flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-fg); font: inherit; font-size: 18px; }
 .send:disabled { opacity: .45; }
 /* Same slot as .send, so sending and stopping never shift the phone composer. */
 .stop { flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--bad, #b3261e); color: #fff; font: inherit; font-size: 13px; }
 .note { margin: 0; padding: 4px 8px; border-radius: 6px; font-size: 12px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
-.qcard { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.qcard { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .qTitle { padding: 6px 10px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); }
 .qOpt { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--fg); font: inherit; font-size: 13px; }
 .qN { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; font-size: 12px; color: var(--muted); }
@@ -108,7 +108,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .row2 > * { flex: 1; }
 button.bannerWarn { width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 12px; }
 /* iOS-style grouped list: one card, hairline dividers, status dot + chevron. */
-.group { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.group { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .group > li + li, .group > .field + .field { border-top: 1px solid var(--line); }
 .item { width: 100%; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 7px 10px 7px 12px; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: left; }
 .item:active { background: color-mix(in srgb, var(--fg) 6%, transparent); }
@@ -132,7 +132,7 @@ button.bannerWarn { width: 100%; text-align: left; border: 1px solid var(--line)
 .field { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 6px 0 12px; }
 .fieldLabel { flex: none; width: 48px; color: var(--muted); font-size: 13px; }
 .fieldSelect { flex: 1; min-width: 0; height: 40px; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 15px; text-align: right; text-align-last: right; }
-.newComposer { padding: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.newComposer { padding: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
 .newComposer .composerInput { min-height: 72px; background: transparent; border: 0; padding: 4px; }
 .cardBtn { min-height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--accent); font: inherit; font-size: 12px; }
 

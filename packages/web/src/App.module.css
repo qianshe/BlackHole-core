@@ -14,7 +14,7 @@
   width: min(508px, 100%);
   padding: clamp(24px, 4vw, 36px);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--shadow-1);
 }

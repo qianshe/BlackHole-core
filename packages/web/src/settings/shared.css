@@ -97,7 +97,7 @@
 .settings-shell.settings-shell .bhp .home-account-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-shell.settings-shell .bhp .home-account-remaining { font-size: 12px; }
 .settings-shell.settings-shell .bhp .home-signout { width: 28px; height: 28px; min-width: 28px; min-height: 28px; margin-left: 0; padding: 0; }
-.settings-shell .bhp .activity-cell { min-height: 0; padding: 0; border-radius: 2px; }
+.settings-shell .bhp .activity-cell { min-height: 0; padding: 0; border-radius: 4px; }
 .settings-shell .bhp .scan-head { margin: 0; }
 .settings-shell .bhp .scan-copy { flex: 1 1 150px; min-width: 0; }
 .settings-shell .bhp .pair-card { margin-top: 18px; }
@@ -220,7 +220,7 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp
 @media(prefers-reduced-motion:reduce) { .settings-shell *, .settings-shell *::after { transition: none !important; animation: none !important; } }
 
 .settings-shell .bhp .rs { margin-left: 6px; padding: 0 5px; border: 1px solid var(--settings-border); border-radius: 8px; font-size: 12px; font-weight: 400; color: var(--settings-muted); }
-.settings-shell .pair-dialog { width: min(380px,calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; border: 1px solid var(--settings-border); border-radius: 14px; background: var(--settings-card); color: var(--settings-fg); box-shadow: 0 22px 70px #0009; }
+.settings-shell .pair-dialog { width: min(380px,calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow: auto; border: 1px solid var(--settings-border); border-radius: 12px; background: var(--settings-card); color: var(--settings-fg); box-shadow: 0 22px 70px #0009; }
 .settings-shell .pair-dialog-inner { padding: 20px; }
 .settings-shell .pair-dialog-header { display: flex; align-items: center; gap: 12px; }
 .settings-shell .pair-dialog-title { flex: 1; min-width: 0; margin: 0; font-size: 18px; line-height: 1.4; font-weight: 600; }

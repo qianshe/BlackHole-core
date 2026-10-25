@@ -371,7 +371,7 @@
   width: 100%;
   min-height: 32px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
@@ -549,7 +549,7 @@
   z-index: 40;
   background: var(--raised);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-pop);
   padding: 6px;
   min-width: 200px;
@@ -578,7 +578,7 @@
   width: 100%;
   min-height: 38px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -715,7 +715,7 @@
 
 .btn {
   min-height: 34px;
-  border-radius: 7px;
+  border-radius: 8px;
   padding: 0 12px;
   font-size: 12px;
   border: 1px solid var(--border-strong);
@@ -1250,7 +1250,7 @@
   height: 14px;
   margin-top: 2px;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -1279,7 +1279,7 @@
 }
 .progress {
   height: 3px;
-  border-radius: 2px;
+  border-radius: 4px;
   background: var(--border);
   overflow: hidden;
   margin: 2px 0 8px;
@@ -1346,7 +1346,7 @@
   padding: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   font: 12px/1.55 var(--mono);
   color: var(--text-2);
   white-space: pre-wrap;
@@ -1357,7 +1357,7 @@
 .cmd mark {
   background: var(--bad-soft);
   color: var(--bad);
-  border-radius: 2px;
+  border-radius: 4px;
 }
 .cmd .mark_yellow {
   background: var(--warn-soft);
@@ -1748,7 +1748,7 @@
   width: 100%;
   min-height: 38px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
@@ -1822,7 +1822,7 @@
   color: var(--text-3);
   width: 34px;
   height: 34px;
-  border-radius: 7px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
 }
@@ -2157,7 +2157,7 @@
   padding: 0 8px;
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: 5px 5px 0 0;
+  border-radius: 6px 5px 0 0;
   background: transparent;
   color: var(--text-3);
   font-size: 12px;
