@@ -44,7 +44,7 @@ export function SidebarUpdate({ collapsed }: { collapsed: boolean }) {
   // Download progress fills the row background left-to-right — one mechanism
   // for the state, no stacked chrome.
   const fill = pct !== undefined
-    ? { background: `linear-gradient(to right, var(--sel) ${pct}%, var(--surface-2) ${pct}%)` }
+    ? { background: `linear-gradient(to right, var(--accent) ${pct}%, var(--surface-2) ${pct}%)` }
     : undefined;
   return (
     <button
