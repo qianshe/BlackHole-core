@@ -36,11 +36,11 @@ function fakeCloud(log) {
   };
 }
 
-function service({ secrets = { kind: 'memory', port: memorySecretPort() }, gate, cloudFetch } = {}) {
+function service({ secrets = { kind: 'memory', port: memorySecretPort() }, gate, cloudFetch, now } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-account-'));
   const state = new Map();
   const calls = [];
-  const svc = new AccountService({ origin: ORIGIN, dataDir, machineState: { get: (k) => state.get(k), set: (k, v) => state.set(k, v) }, secrets, gate, openExternal: async () => true, fetch: cloudFetch ?? fakeCloud(calls), log: () => {} });
+  const svc = new AccountService({ origin: ORIGIN, dataDir, machineState: { get: (k) => state.get(k), set: (k, v) => state.set(k, v) }, secrets, gate, openExternal: async () => true, fetch: cloudFetch ?? fakeCloud(calls), now, log: () => {} });
   return { svc, state, calls, cleanup: async () => { await svc.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); } };
 }
 
@@ -167,7 +167,7 @@ test('native account call and GET view keep the same verified Core state across 
  let before=requests.length;
  for(let n=0;n<10;n++){
   wall+=61_000;
-  assert.equal((await client.view()).state,'saved','this was the welcome guard regression');
+  assert.equal((await client.view()).state,'unavailable','previously verified but stale is transient, not never-verified');
   const views=await Promise.all([svc.call('view',[]),svc.view(),svc.call('view',[])]);
   assert.ok(views.every(v=>v.state==='verified'));
   assert.equal(svc.webAuthStatus(),'verified');

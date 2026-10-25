@@ -34,6 +34,8 @@ export interface AccountDeps {
   gate?: EntitlementGate;
   openExternal: (url: string) => Promise<boolean>;
   fetch?: typeof fetch;
+  /** Test injection point for the verification-grace clock; defaults to Date.now. */
+  now?: () => number;
   log: (line: string) => void;
 }
 
@@ -42,6 +44,13 @@ export class AccountError extends Error {
 }
 
 const errorCode = (e: unknown): string => (e instanceof CloudAuthError ? e.code : e instanceof AccountError ? e.code : 'invalid_response');
+
+/** A transient verification gap (network blip to the cloud) must not evict an
+ * open Web workspace. Admission from a previously verified credential stays
+ * valid for this long after the last successful verification; an explicit
+ * rejection (401 → credential forgotten) or credential expiry still fails
+ * closed immediately because the credential itself is gone or lapsed. */
+const VERIFIED_GRACE_MS = 10 * 60_000;
 
 export class AccountService {
   private client?: CloudAuthClient;
@@ -136,8 +145,18 @@ export class AccountService {
       const view = await c.view(); // cached status; never starts another network check
       if (this.stopped) return;
       this.signedIn = id?.kind === 'login' ? { userId: id.userId, expiresAt: id.expiresAt } : null;
+      const now = this.deps.now?.() ?? Date.now();
+      // Grace covers only a PASSIVELY stale snapshot (a network blip nobody
+      // asked about). A check that just failed on request (failedAt ~ now) is
+      // fresh evidence the cloud refused us right now: fail closed as before.
+      const freshFailure = view.state === 'unavailable' && view.failedAt !== undefined
+        && now - view.failedAt >= 0 && now - view.failedAt < 60_000;
+      const withinGrace = !freshFailure && view.state === 'unavailable' && view.verifiedAt !== undefined
+        && now - view.verifiedAt >= 0 && now - view.verifiedAt < VERIFIED_GRACE_MS
+        && id?.kind === 'login' && id.userId === view.userId && view.expiresAt !== undefined;
       this.webVerified = view.state === 'verified' && id?.kind === 'login' && view.userId === id.userId
-        ? { userId: id.userId, expiresAt: id.expiresAt } : null;
+        ? { userId: id.userId, expiresAt: id.expiresAt }
+        : withinGrace ? { userId: view.userId!, expiresAt: view.expiresAt! } : null;
       this.webPhase = view.state;
       this.deps.gate?.setIdentity(id);
     } catch {

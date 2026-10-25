@@ -385,6 +385,12 @@ test('saved or unavailable Core identity cannot silently enter Desktop Console',
   h.setCore('unavailable');
   await h.tick();
   assert.equal(done, 0);
+  // Transient unavailability says so and keeps auto-retrying instead of
+  // asking for another verification click.
+  const unavailable = h.render(h.DesktopLogin, props);
+  assert.match(texts(unavailable), /暂时无法确认账号状态/);
+  assert.ok(!texts(unavailable).includes('重新验证已保存的账号'));
+  assert.equal(done, 0);
 });
 
 test('Desktop verification page returns to workspace when Core recovers without another click', async () => {
@@ -393,7 +399,7 @@ test('Desktop verification page returns to workspace when Core recovers without 
   const props = { onDone(auth) { assert.equal(auth.state, 'ok'); done++; } };
   h.render(h.DesktopLogin, props);
   await h.effectsOnce();
-  assert.match(texts(h.render(h.DesktopLogin, props)), /账号尚未验证完成/);
+  assert.match(texts(h.render(h.DesktopLogin, props)), /暂时无法确认账号状态/);
   h.setCore('verified');
   await h.tick();
   assert.equal(done, 1);

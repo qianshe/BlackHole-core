@@ -18,7 +18,7 @@ export interface Receipt {version:1;origin:string;loginOrder:number;sessionId:st
 export interface SecretPort {get(key:string):PromiseLike<string|undefined>;store(key:string,value:string):PromiseLike<void>;delete(key:string):PromiseLike<void>}
 export interface ReceiptPort {list():Promise<Receipt[]>;put(value:Receipt):Promise<void>;remove(value:Receipt):Promise<void>}
 export interface AccountSnapshot {name:string;email:string;status:'active'|'suspended'|'pending';serviceExpiresAt:number;serverNow:number;salesEnabled:false;plans:[]}
-export interface AuthView {state:'logged_out'|'saved'|'verified'|'unavailable';userId?:string;expiresAt?:number;account?:AccountSnapshot;checkedAt?:number;remainingSeconds?:number}
+export interface AuthView {state:'logged_out'|'saved'|'verified'|'unavailable';userId?:string;expiresAt?:number;account?:AccountSnapshot;checkedAt?:number;remainingSeconds?:number;/**ms timestamp of the last successful verification for this credential, present even when the snapshot is stale.*/verifiedAt?:number;/**ms timestamp of the most recent explicit check failure, present only for a FRESH unavailable state.*/failedAt?:number}
 function accountSnapshot(input:unknown):AccountSnapshot|undefined {
  if(input===undefined)return undefined; // Older staging versions do not expose subscription facts.
  if(!input||typeof input!=='object')throw new CloudAuthError('invalid_response');const a=input as AccountSnapshot;
@@ -143,6 +143,10 @@ export class CloudAuthClient {
  private readonly ports:Ports;private readonly now:()=>number;private readonly sleep:(ms:number,signal?:AbortSignal)=>Promise<void>;private readonly origin:string;
  private cooldownUntil=0;
  private running=false;private checked?:{sessionId:string;at:number;state:'verified'|'unavailable';account?:AccountSnapshot;failure?:AuthErrorCode};
+ /** Last successful verification for the current credential. A stale snapshot
+  * for a previously verified credential is 'unavailable' (transient), never
+  * 'saved' (which means: never verified on this install). */
+ private lastVerified?:{sessionId:string;at:number};
  private readonly checks=new Map<string,Promise<AuthView>>();
  private restoration?:Promise<AuthView>;
  // Core-owned read-through observations. UI polling stays cheap; only one
@@ -280,11 +284,16 @@ export class CloudAuthClient {
  }
  async view():Promise<AuthView> {
   const value=await this.current();if(!value||value.expiresAt<=Math.floor(this.now()/1000))return {state:'logged_out'};
-  const checked=this.checked?.sessionId===value.sessionId&&this.now()-this.checked.at>=0&&this.now()-this.checked.at<60000?this.checked.state:'saved';
+  const fresh=this.checked?.sessionId===value.sessionId&&this.now()-this.checked.at>=0&&this.now()-this.checked.at<60000;
+  const previouslyVerified=this.lastVerified?.sessionId===value.sessionId;
+  const checked=fresh?this.checked!.state:previouslyVerified?'unavailable':'saved';
   const snapshot=this.checked?.sessionId===value.sessionId?this.checked:undefined;
   const account=snapshot?.state==='verified'&&this.now()>=snapshot.at?snapshot.account:undefined;
   const elapsed=snapshot?Math.max(0,Math.floor((this.now()-snapshot.at)/1000)):0;
-  return {state:checked,userId:value.userId,expiresAt:value.expiresAt,...(snapshot?{checkedAt:snapshot.at}:{}),
+  return {state:checked,userId:value.userId,expiresAt:value.expiresAt,
+   ...(previouslyVerified?{verifiedAt:this.lastVerified!.at}:{}),
+   ...(snapshot?{checkedAt:snapshot.at}:{}),
+   ...(checked==='unavailable'&&snapshot?.state==='unavailable'?{failedAt:snapshot.at}:{}),
    ...(account?{account:{...account,plans:[]},remainingSeconds:account.status==='active'?Math.max(0,account.serviceExpiresAt-account.serverNow-elapsed):0}:{})};
  }
  /** Core-only observed status: renew a read-only session snapshot before its
@@ -360,7 +369,7 @@ export class CloudAuthClient {
  private async publish(value:Credential) {
   try {await this.ports.secrets.store(credentialKey(value.sessionId,this.origin),JSON.stringify(value));
    await this.ports.receipts.put({version:1,origin:this.origin,loginOrder:value.loginOrder,sessionId:value.sessionId,kind:'login'});
-  }catch{throw new CloudAuthError('storage');}await this.prune();
+  }catch{throw new CloudAuthError('storage');}this.lastVerified=undefined;this.checked=undefined;await this.prune();
  }
  private async forget(value:Credential) {
   // Durable tombstone FIRST. Deletion alone would incorrectly resurrect an older login after logout.
@@ -441,6 +450,7 @@ export class CloudAuthClient {
    const account=accountSnapshot(facts.account),current=await this.current();
    if(current?.sessionId===value.sessionId&&current.loginOrder===value.loginOrder){
     this.checked={sessionId:value.sessionId,at:this.now(),state:'verified',account};
+    this.lastVerified={sessionId:value.sessionId,at:this.checked.at};
    }
   }catch(error){
    if(error instanceof CloudAuthError&&['storage','cancelled'].includes(error.code))throw error;

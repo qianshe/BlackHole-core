@@ -225,7 +225,7 @@ function DesktopLogin({ onDone }: { onDone: (a: Auth) => void }) {
 
   const waiting = status.signIn.state === 'running';
   const checking = status.state === 'checking';
-  const needsVerification = status.state === 'saved' || status.state === 'unavailable';
+  // 'unavailable' (transient) and 'saved' (never verified) get distinct messaging below.
   const failure = status.signIn.state === 'failed' ? status.signIn.error : undefined;
 
   return (
@@ -239,7 +239,9 @@ function DesktopLogin({ onDone }: { onDone: (a: Auth) => void }) {
             <p className={s.status} role="status"><span className={s.spinner} aria-hidden="true" />请在系统浏览器中完成登录，Core 将自动确认结果。</p>
             <button className={s.secondaryAction} type="button" disabled={busy} onClick={() => void act('cancel')}>取消登录</button>
           </>
-        ) : needsVerification ? (
+        ) : status.state === 'unavailable' ? (
+          <p className={s.status} role="status"><span className={s.spinner} aria-hidden="true"/>暂时无法确认账号状态，通常是网络波动；正在自动重试。已打开的工作区不受影响。</p>
+        ) : status.state === 'saved' ? (
           <>
             <p className={s.status} role="status">账号尚未验证完成；不会据此开放 Web 工作区。</p>
             <button className={s.primaryAction} type="button" disabled={busy} onClick={() => void act('verify')}>重新验证已保存的账号</button>
