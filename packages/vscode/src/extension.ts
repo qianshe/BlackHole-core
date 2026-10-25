@@ -411,7 +411,7 @@ async function pickSession(api: ControlApi): Promise<SessionInfo | undefined> {
       return undefined;
     }
     const pick = await window.showQuickPick(
-      live.map((x) => ({ label: x.name?.trim() || path.basename(x.workspace_path), description: `${x.status} · ${x.id}`, session: x })),
+      live.map((x) => ({ label: x.name?.trim() || path.basename(x.workspace_path), description: `${x.status} ${x.id}`, session: x })),
       { placeHolder: '选择会话' },
     );
     return pick?.session;

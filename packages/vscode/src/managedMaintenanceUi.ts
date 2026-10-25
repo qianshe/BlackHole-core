@@ -52,7 +52,7 @@ export function registerManagedMaintenance(core: SharedCoreManager, daemon: Daem
         if (!core.enabled) throw Error('managed_core_required');
         const pending = await core.inspectMaintenances();
         if (!pending.length) { void window.showInformationMessage('BlackHole: 没有未解决的维护事务。'); return; }
-        const pick = await window.showQuickPick(pending.map(record => ({ label: `${record.operation} · ${record.state}`, description: record.requestId, detail: `端口 ${record.target.port} · Core ${record.target.versionName}`, record })), { title: '检查 Shared Core 维护事务', placeHolder: '选择事务查看；取消不会改变状态' });
+        const pick = await window.showQuickPick(pending.map(record => ({ label: `${record.operation}，${record.state}`, description: record.requestId, detail: `端口 ${record.target.port}，Core ${record.target.versionName}`, record })), { title: '检查 Shared Core 维护事务', placeHolder: '选择事务查看；取消不会改变状态' });
         if (!pick) return;
         const current = await core.inspectStart();
         const accept = current?.status === 'ready' && current.startFingerprint !== pick.record.target.startFingerprint ? ['接纳已验证的新实例'] : [];

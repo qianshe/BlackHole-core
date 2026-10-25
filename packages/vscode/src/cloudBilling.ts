@@ -20,7 +20,7 @@ function days(seconds:number){return Math.max(1,Math.round(seconds/86400));}
 function price(minor:number){return '¥'+(minor/100).toFixed(2);}
 function durationLabel(seconds:number){const days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.ceil(seconds%3600/60);return [days?days+' 天':'',hours?hours+' 小时':'',minutes?minutes+' 分钟':''].filter(Boolean).join(' ')||'不足 1 分钟';}
 // New-sale prices use membershipPlanLabel; legacy order labels below preserve original facts.
-function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 · ${price(order.amountMinor)} · ${statusNames[order.status]}`;}
+function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 ${price(order.amountMinor)} ${statusNames[order.status]}`;}
 
 /** User-driven only: no background order polling and no automatic recurring payment. */
 export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Disposable {
