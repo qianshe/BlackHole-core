@@ -46,7 +46,7 @@ const previousKeys=[
 ].slice(0,7);
 const version=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version;
 const extensionVersion=JSON.parse(fs.readFileSync(path.join(root,'packages/vscode/package.json'),'utf8')).version;
-if(!/^0[.]4[.]17$/.test(version)||extensionVersion!==version)throw Error('test_host_and_core_versions_must_match');
+if(!/^0[.]4[.]18$/.test(version)||extensionVersion!==version)throw Error('test_host_and_core_versions_must_match');
 const releaseId=new Date().toISOString().slice(0,10).replaceAll('-','');
 const suffix=randomBytes(3).toString('hex');
 const versionTag=version.replaceAll('.','');
