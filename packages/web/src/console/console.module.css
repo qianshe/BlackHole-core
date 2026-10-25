@@ -5,7 +5,7 @@
   --sidebar-w: 284px;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-w) 0 minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -14,9 +14,6 @@
 }
 .app.collapsed {
   --sidebar-w: 48px;
-}
-.app.collapsed .splitter {
-  display: none;
 }
 
 /* ── sidebar ─────────────────────────────────────────────── */
@@ -632,44 +629,11 @@
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0 min(var(--inspector-w, 300px), max(240px, calc(100% - 360px)));
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 4px;
-}
-.contentPanel {
-  grid-column: 1;
-  grid-row: 1;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-}
-.composerPanel {
-  grid-column: 1;
-  grid-row: 2;
-  margin-top: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .sessionHead {
-  padding: 10px 14px 9px;
+  padding: 16px 26px 13px;
   border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-.headPath {
-  padding: 0 14px 8px;
-  font-size: 12px;
-  color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 0 0 auto;
 }
 .sessionTop {
   display: flex;
@@ -838,11 +802,15 @@
   background: var(--accent);
 }
 .feed {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   overflow: auto;
 }
 /* Composer slot: same grid column as the feed. */
 .dockCell {
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
 }
 .feedHead {
@@ -1891,20 +1859,18 @@
 
 /* ── narrow screens ─────────────────────────────────────── */
 @media (max-width: 1100px) {
-  .sessionView {
+  .workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto auto;
-  }
-  .contentPanel {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .composerPanel {
-    grid-column: 1;
-    grid-row: 2;
+    grid-template-rows: auto auto;
+    overflow: auto;
   }
   .splitter {
     display: none;
+  }
+  .feed {
+    grid-column: 1;
+    grid-row: 1;
+    overflow: visible;
   }
   /* No room for the side column: the details never stack under the replies.
      They float from a top-right icon (sticky, zero height so it takes no space)

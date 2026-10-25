@@ -247,13 +247,17 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   const split = useInspectorResize();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<'overview' | 'changes'>('overview');
   const [focusRequest, setFocusRequest] = useState<{ callId: string; sequence: number } | null>(null);
   const focusSequence = useRef(0);
+  const overviewTabRef = useRef<HTMLButtonElement>(null);
+  const changesTabRef = useRef<HTMLButtonElement>(null);
   const inspectorToggleRef = useRef<HTMLButtonElement>(null);
   const seen = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     setOpen(new Set());
+    setInspectorTab('overview');
     setFocusRequest(null);
     seen.current = null;
   }, [session.id]);
@@ -296,6 +300,13 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
     return guideAt !== null && (userAt === null || (tl.state?.link !== 'paired' && guideAt >= userAt)) ? guideAt : userAt;
   }, [tl.messages, tl.calls, tl.state?.link]);
   useEffect(() => { setFocusRequest(null); }, [session.id, turnAt]);
+  const onInspectorTabKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const next = inspectorTab === 'overview' ? 'changes' : 'overview';
+    setInspectorTab(next);
+    (next === 'overview' ? overviewTabRef.current : changesTabRef.current)?.focus();
+  };
   // The final reply of each turn: the last agent message before your next message (calls between
   // don't count). Only these get a copy button; the segments between tool calls do not.
   const finalReplies = useMemo(() => {
@@ -414,7 +425,6 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
 
   return (
     <section className={c.sessionView} aria-label={sessionTitle(session)}>
-      <div className={c.contentPanel}>
       <header className={c.sessionHead}>
         <div className={c.sessionTop}>
           <div className={c.sessionTitle}>
@@ -441,8 +451,26 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             <SessionMenu session={session} actions={actions} goal={todos.data?.contract?.goal ?? null} />
           </div>
         </div>
-        <div className={c.headPath} title={session.workspace_path}>
-          {session.workspace_path}
+        <div className={c.facts}>
+          <span className={c.path} title={session.workspace_path}>
+            {session.workspace_path}
+          </span>
+          <span className={c.metaSep} aria-hidden="true" />
+          <span>
+            权限 <b>{PERMISSION_LABEL[session.permission_mode] ?? session.permission_mode}</b>
+          </span>
+          <span className={c.metaSep} aria-hidden="true" />
+          <span>
+            最近活动 <b>{relativeTime(session.last_active_at, now)}</b>
+          </span>
+          <span className={c.metaSep} aria-hidden="true" />
+          <span>
+            自动批准 <b>{session.auto_approve ? '开' : '关'}</b>
+          </span>
+          <span className={c.metaSep} aria-hidden="true" />
+          <span>
+            调用 <b>{total}</b>
+          </span>
         </div>
         {/* Prevent a preview for one handoff from surviving a session switch or replacement. */}
         <HandoffBar key={`${session.id}:${session.pending_handoff?.id ?? ''}`} session={session} connectorName={connectorName} now={now} />
@@ -504,6 +532,7 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
                     onNavigateToDiff={isEditorWriteCall(x) ? () => {
                       focusSequence.current += 1;
                       setFocusRequest({ callId: x.id, sequence: focusSequence.current });
+                      setInspectorTab('changes');
                       if (window.matchMedia('(max-width: 1100px)').matches) requestAnimationFrame(() => inspectorToggleRef.current?.focus());
                     } : undefined}
                     onApprove={a ? () => onApprove(a) : undefined}
@@ -520,14 +549,12 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             </div>
           )}
         </section>
-      </div>
 
-      {/* The composer is its own framed panel below the conversation panel. */}
-      <div className={c.composerPanel}>
+        {/* The composer shares the feed column: pinned under the timeline, never
+            crossing onto the session-detail inspector. */}
         <div className={c.dockCell}>
           <ChatDock key={session.id} session={session} question={question} />
         </div>
-      </div>
 
         <div
           role="separator"
@@ -572,6 +599,15 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               )}
             </div>
           )}
+          <div className={c.inspectorTabs} role="tablist" aria-label="会话详情" onKeyDown={onInspectorTabKeyDown}>
+            <button ref={overviewTabRef} id="inspector-tab-overview" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'overview'} aria-controls="inspector-panel-overview" tabIndex={inspectorTab === 'overview' ? 0 : -1} onClick={() => setInspectorTab('overview')}>
+              概览
+            </button>
+            <button ref={changesTabRef} id="inspector-tab-changes" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'changes'} aria-controls="inspector-panel-changes" tabIndex={inspectorTab === 'changes' ? 0 : -1} onClick={() => setInspectorTab('changes')}>
+              本轮修改
+            </button>
+          </div>
+          <div id="inspector-panel-overview" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-overview" tabIndex={0} hidden={inspectorTab !== 'overview'}>
           <div className={c.group}>
             <h3 className={c.groupTitle}>任务</h3>
             {board?.contract ? (
@@ -633,25 +669,17 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             )}
           </div>
           <div className={c.group}>
-            <h3 className={c.groupTitle}>本轮修改</h3>
-            <TurnChanges sessionId={session.id} active turnAt={turnAt} focusRequest={focusRequest} />
-          </div>
-          <div className={c.group}>
-            <h3 className={c.groupTitle}>会话信息</h3>
+            <h3 className={c.groupTitle}>会话</h3>
             <dl className={c.kv}>
               <dt>状态</dt>
               <dd>{SESSION_STATUS_LABEL[session.status] ?? session.status}</dd>
-              <dt>权限</dt>
-              <dd>{PERMISSION_LABEL[session.permission_mode] ?? session.permission_mode}</dd>
-              <dt>自动批准</dt>
-              <dd>{session.auto_approve ? '开' : '关'}</dd>
-              <dt>最近活动</dt>
-              <dd>{relativeTime(session.last_active_at, now)}</dd>
-              <dt>调用</dt>
-              <dd>{total}</dd>
               <dt>创建</dt>
               <dd>{formatFull(session.created_at)}</dd>
             </dl>
+          </div>
+          </div>
+          <div id="inspector-panel-changes" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-changes" tabIndex={0} hidden={inspectorTab !== 'changes'}>
+            <TurnChanges sessionId={session.id} active={inspectorTab === 'changes'} turnAt={turnAt} focusRequest={focusRequest} />
           </div>
         </aside>
         </div>
