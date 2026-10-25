@@ -9,7 +9,7 @@
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
 }
 .app.collapsed {
@@ -42,7 +42,7 @@
   border-radius: 8px;
   background: var(--text-bright);
   color: var(--bg);
-  font: 800 11px var(--mono);
+  font: 800 12px var(--mono);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -128,7 +128,7 @@
   color: var(--text-3);
 }
 .navSummary {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .navSummaryOk {
@@ -228,7 +228,7 @@
   gap: 6px;
 }
 .kbd {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
 }
 /* collapsed rail: logo, nav items and account are all 40x40, 4px apart */
@@ -272,7 +272,7 @@
 .sectionLabel {
   padding: 12px 14px 5px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   display: flex;
@@ -336,7 +336,7 @@
   display: grid;
 }
 .projectCount {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .more {
@@ -414,12 +414,12 @@
   border-radius: 999px;
   background: transparent;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
 }
 .rowMeta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -517,7 +517,7 @@
   text-overflow: ellipsis;
 }
 .accountSub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .accountSubWarn {
@@ -571,7 +571,7 @@
 }
 .menuMeta {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 2px;
 }
 .menuItem {
@@ -604,7 +604,7 @@
 }
 .menuGroupLabel {
   padding: 4px 9px 2px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .menuSep {
@@ -646,14 +646,14 @@
 .title {
   margin: 0;
   color: var(--text-bright);
-  font-size: 22px;
+  font-size: 18px;
   line-height: 1.3;
   font-weight: 620;
   letter-spacing: -0.01em;
   overflow-wrap: anywhere;
 }
 .path {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -833,7 +833,7 @@
 }
 .count {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 .feedActions {
   margin-left: auto;
@@ -847,7 +847,7 @@
   color: var(--text-2);
   border-radius: 6px;
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 12px;
   min-height: 28px;
 }
 .mini:hover {
@@ -898,7 +898,7 @@
   background: var(--raised);
   color: var(--text-2);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -1002,14 +1002,14 @@
 /* The verb phrase is the point ("运行 npm test"), the tool id is its label. */
 .tool {
   flex: 0 0 auto;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   white-space: nowrap;
 }
 .desc {
   flex: 1 1 auto;
   min-width: 0;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -1019,7 +1019,7 @@
   flex: 0 0 auto;
   display: flex;
   gap: 4px;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
   color: var(--text-3);
 }
@@ -1033,7 +1033,7 @@
   color: var(--bad);
 }
 .duration {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   text-align: right;
 }
@@ -1047,7 +1047,7 @@
   background: var(--warn-soft);
   color: var(--warn);
   padding: 0 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .approveLink:hover {
@@ -1065,7 +1065,7 @@
   position: absolute;
   left: 22px;
   top: 6px;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   pointer-events: none;
 }
@@ -1080,7 +1080,7 @@
   border-radius: var(--r-full);
   background: transparent;
   color: var(--text-3);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
 }
 .clipMore:hover {
   color: var(--text);
@@ -1096,14 +1096,14 @@
   justify-content: space-between;
   gap: 8px;
   padding: 0 0 2px;
-  font: 10.5px var(--mono);
+  font: 12px var(--mono);
   letter-spacing: 0.04em;
   color: var(--text-3);
 }
 .pre {
   margin: 0;
   padding: 2px 0 0;
-  font: 11px/1.6 var(--mono);
+  font: 12px/1.6 var(--mono);
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1115,7 +1115,7 @@
   flex-wrap: wrap;
   gap: 14px;
   padding-top: 1px;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   opacity: 0.9;
 }
@@ -1125,7 +1125,7 @@
   justify-content: center;
   gap: 12px;
   padding: 10px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .draftRow {
@@ -1137,7 +1137,7 @@
 
 .feedNote {
   padding: 8px 16px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -1194,7 +1194,7 @@
 }
 .groupTitle {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1212,7 +1212,7 @@
   display: grid;
   grid-template-columns: 64px 1fr;
   gap: 6px 8px;
-  font-size: 11.5px;
+  font-size: 12px;
   margin: 0;
 }
 .kv dt {
@@ -1229,7 +1229,7 @@
 }
 .muted {
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
   margin: 0;
 }
 .todos {
@@ -1243,7 +1243,7 @@
   align-items: flex-start;
   padding: 5px 0;
   color: var(--text-2);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .check {
   width: 14px;
@@ -1273,7 +1273,7 @@
 }
 .todoState {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -1302,7 +1302,7 @@
   gap: 7px;
   padding: 9px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .approvalHead strong {
   color: var(--warn);
@@ -1310,7 +1310,7 @@
 .approvalHead span:last-child {
   margin-left: auto;
   color: var(--text-3);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
 }
 .tags {
   display: flex;
@@ -1319,7 +1319,7 @@
   padding: 8px 10px 0;
 }
 .tag {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 4px;
   border: 1px solid var(--border-strong);
@@ -1347,7 +1347,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 5px;
-  font: 11px/1.55 var(--mono);
+  font: 12px/1.55 var(--mono);
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1400,7 +1400,7 @@
 .channelsHead h1 {
   margin: 0;
   color: var(--text-bright);
-  font-size: 22px;
+  font-size: 18px;
 }
 .channelsHead p {
   margin: 4px 0 0;
@@ -1447,18 +1447,18 @@
 .channelDesc {
   margin-top: 3px;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .channelUrl {
   margin-top: 7px;
   color: var(--text-2);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .channelMeta {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-3);
   display: grid;
   gap: 4px;
@@ -1474,7 +1474,7 @@
   flex-wrap: wrap;
 }
 .provider {
-  font-size: 11px;
+  font-size: 12px;
   border: 1px solid var(--border-strong);
   color: var(--text-3);
   padding: 0 5px;
@@ -1592,7 +1592,7 @@
 .dialogTitle {
   margin: 0;
   color: var(--text-bright);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 650;
 }
 .dialogBody {
@@ -1629,12 +1629,12 @@
   max-height: 260px;
 }
 .approvalNote {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-3);
   line-height: 1.6;
 }
 .expires {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
 }
 
@@ -1692,13 +1692,13 @@
 .result small {
   display: block;
   color: var(--text-3);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .resultKind {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .searchFoot {
@@ -1706,7 +1706,7 @@
   gap: 14px;
   padding: 8px 16px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -1725,7 +1725,7 @@
 }
 .settingsModalCollapsed { grid-template-columns: 58px minmax(0, 1fr); }
 .settingsNavHead { min-height: 34px; display: flex; align-items: center; gap: 6px; }
-.settingsNavHead h2 { flex: 1; min-width: 0; margin: 0; color: var(--text-bright); font-size: 14px; }
+.settingsNavHead h2 { flex: 1; min-width: 0; margin: 0; color: var(--text-bright); font-size: 15px; }
 .settingsScrim { display: none; }
 .settingsPageTitleHidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .settingsNavToggle { width: 30px; height: 30px; min-width: 30px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); }
@@ -1842,7 +1842,7 @@
   box-shadow: var(--shadow-pop);
   border-radius: 8px;
   padding: 9px 14px;
-  font-size: 12.5px;
+  font-size: 13px;
   z-index: 60;
   color: var(--text-bright);
   max-width: min(560px, calc(100vw - 32px));
@@ -2171,25 +2171,25 @@
 .inspectorPanel { min-width: 0; }
 .turnChanges { min-width: 0; padding-bottom: 10px; }
 .turnEmpty { padding: 18px 14px; color: var(--text-3); font-size: 12px; line-height: 1.5; text-align: center; }
-.turnNotice { margin: 10px 12px 0; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); color: var(--warn); font-size: 11px; line-height: 1.45; }
-.turnStats { display: flex; align-items: center; gap: 8px; padding: 12px 14px 9px; color: var(--text-2); font-size: 11px; }
+.turnNotice { margin: 10px 12px 0; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); color: var(--warn); font-size: 12px; line-height: 1.45; }
+.turnStats { display: flex; align-items: center; gap: 8px; padding: 12px 14px 9px; color: var(--text-2); font-size: 12px; }
 .turnStats b { font-family: var(--mono); font-weight: 600; }
 .turnSpacer { flex: 1; }
-.turnUnavailable { color: var(--text-3); font-size: 10px; }
-.turnFileHeading { padding: 8px 14px 6px; color: var(--text-3); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.turnUnavailable { color: var(--text-3); font-size: 12px; }
+.turnFileHeading { padding: 8px 14px 6px; color: var(--text-3); font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .turnFiles { min-width: 0; border-top: 1px solid var(--border); }
 .turnFile { display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-2); text-align: left; cursor: pointer; }
 .turnFile:hover { background: var(--surface-hover); }
 .turnFileSelected { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); color: var(--text-bright); }
 .turnFile:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.turnFilePath { flex: 1; min-width: 0; overflow: hidden; color: inherit; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.turnFileDelta { display: flex; flex: 0 0 auto; gap: 5px; font: 10px var(--mono); }
-.turnFileUnavailable { color: var(--text-3); font: 11px var(--mono); }
+.turnFilePath { flex: 1; min-width: 0; overflow: hidden; color: inherit; font: 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.turnFileDelta { display: flex; flex: 0 0 auto; gap: 5px; font: 12px var(--mono); }
+.turnFileUnavailable { color: var(--text-3); font: 12px var(--mono); }
 .turnDiff { min-width: 0; margin: 0 10px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 /* The expanded block no longer repeats the file path, so this message must carry the inner
    padding the removed title used to provide; the stats counter keeps plain turnUnavailable. */
 .turnDiffMessage { composes: turnUnavailable; padding: 10px 12px; line-height: 1.5; }
-.turnDiffCode { max-height: min(52vh, 520px); overflow: auto; color: var(--text-2); font: 10px/1.55 var(--mono); }
+.turnDiffCode { max-height: min(52vh, 520px); overflow: auto; color: var(--text-2); font: 12px/1.55 var(--mono); }
 .turnDiffHunk { padding: 5px 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--accent); white-space: pre; }
 /* One line-number column: a context or added line shows the new line number and a removed
    line stays blank, so the gutter counts like the file after the change instead of jumping
@@ -2201,7 +2201,7 @@
 /* The rule between the sign gutter and the code, at the same x on every row. */
 .turnDiffSign { color: var(--text-3); text-align: center; user-select: none; box-shadow: inset -1px 0 0 var(--border-strong); }
 .turnDiffText { white-space: pre; }
-.turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 10px; text-align: right; }
+.turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 12px; text-align: right; }
 
 /* Sidebar update rail: one compact row above the account button. Interactive only when
    a release is ready to download; progress states render as a passive status row. */

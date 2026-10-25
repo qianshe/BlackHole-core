@@ -1,7 +1,7 @@
 /* New session page: one centred composer column (same width as the chat composer). */
 .wrap { height: 100%; min-height: 0; overflow: auto; display: flex; background: var(--surface); }
 .center { --gutter: clamp(20px, 6%, 40px); width: 100%; max-width: calc(828px + 2 * var(--gutter)); margin: auto; padding: var(--sp-4) var(--gutter) 12vh; display: flex; flex-direction: column; gap: var(--sp-2); }
-.title { margin: 0 0 var(--sp-2); font-size: 20px; font-weight: 650; color: var(--text-bright); text-align: center; }
+.title { margin: 0 0 var(--sp-2); font-size: 18px; font-weight: 650; color: var(--text-bright); text-align: center; }
 .folderRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .folder { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; height: 28px; padding: 0 10px; font: inherit; font-size: var(--fs-sm); color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-full); cursor: pointer; }
 .folder:hover { background: var(--surface-hover); }

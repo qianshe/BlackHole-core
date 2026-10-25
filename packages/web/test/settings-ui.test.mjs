@@ -81,7 +81,7 @@ test('shared sidebar toggles expose expanded state and pairing uses the shared s
 
 test('shared settings preserve Demo control dimensions and runtime installation layout', () => {
   assert.match(appearance, /height: 36px/);
-  assert.match(appearance, /min-height: 28px; padding: 3px 11px; font-size: 11px/);
+  assert.match(appearance, /min-height: 28px; padding: 3px 11px; font-size: 12px/);
   const switches = appearance.match(/\.settings-shell \.bhp button\[role='switch'\] \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(switches, 'one semantic rule must cover Home, Direct and MCP switches');
   assert.match(switches, /width: 30px/); assert.match(switches, /height: 16px/);
@@ -159,7 +159,7 @@ test('home account places remaining time in the heading, leaving identity and lo
   assert.match(appearance, /\.bhp \.ck-head \{/);
   assert.match(appearance, /\.bhp \.ck-summary \{/);
   assert.match(appearance, /\.bhp \.ck-summary[^\n]*text-overflow: ellipsis/);
-  assert.match(appearance, /home-account-remaining[^\n]*font-size: 10\.5px/);
+  assert.match(appearance, /home-account-remaining[^\n]*font-size: 12px/);
 });
 
 test('all three cockpit cells use the same heading rhythm and activity retains today summary', () => {
