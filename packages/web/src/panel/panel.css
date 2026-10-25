@@ -295,9 +295,9 @@
 /* Web-only pieces (not in the VS Code panel): in-page replacements for VS Code's native
  * notifications, confirmation dialogs and quick picks, reusing the panel's own look. */
 .bhp .bhp-toast { position: fixed; right: 18px; bottom: 18px; z-index: 90; max-width: min(440px, 90vw); display: grid; gap: 8px; }
-.bhp .bhp-toast > div { padding: 10px 14px; border: 1px solid var(--vscode-widget-border); border-left: 3px solid var(--vscode-charts-blue); border-radius: 6px; background: var(--vscode-editorHoverWidget-background); color: var(--vscode-editorHoverWidget-foreground); box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 13px; line-height: 1.6; display: flex; gap: 10px; align-items: flex-start; }
-.bhp .bhp-toast > div.warn { border-left-color: var(--vscode-charts-yellow); }
-.bhp .bhp-toast > div.bad { border-left-color: var(--vscode-charts-red); }
+.bhp .bhp-toast > div { padding: 10px 14px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editorHoverWidget-background); color: var(--vscode-editorHoverWidget-foreground); box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 13px; line-height: 1.6; display: flex; gap: 10px; align-items: flex-start; }
+.bhp .bhp-toast > div.warn { border-color: color-mix(in srgb, var(--vscode-charts-yellow) 45%, var(--vscode-widget-border)); }
+.bhp .bhp-toast > div.bad { border-color: color-mix(in srgb, var(--vscode-charts-red) 45%, var(--vscode-widget-border)); }
 .bhp .bhp-toast > div > span { flex: 1; overflow-wrap: anywhere; }
 .bhp .bhp-toast button { background: transparent; color: var(--vscode-descriptionForeground); padding: 0 4px; font-size: 12px; }
 .bhp .bhp-pick { display: grid; gap: 6px; max-height: 50vh; overflow: auto; }
