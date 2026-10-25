@@ -909,7 +909,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
         </div>
         <div className="bhp-danger">
           <div className="bhp-danger-row">
-            <div><b>重启后台服务</b><small>{server?.managed && !nativeMaintenanceHost ? '请在 VS Code 或 BlackHole Desktop 中重启后台服务，浏览器中无法执行此操作。' : '点击后会弹出确认窗口，确认后重启后台服务，让已保存的设置生效。服务会短暂断开。'}{server?.managed && nativeMaintenanceHost && '若其他窗口或 AI 仍在使用，请先结束任务并断开连接。'}</small></div>
+            <div><b>重启后台服务</b><small>{server?.managed && !nativeMaintenanceHost ? '请在 VS Code 或 BlackHole Desktop 中重启后台服务，浏览器中无法执行此操作。' : '确认后重启后台服务使设置生效，服务短暂断开。'}{server?.managed && nativeMaintenanceHost && '有在用的窗口或 AI 时会拒绝执行。'}</small></div>
             <button className="secondary" type="button" disabled={restarting || (server?.managed === true && !nativeMaintenanceHost)} onClick={() => void restart()}>{restarting ? (server?.managed ? '等待确认或重启完成…' : '正在重启…') : server?.managed && !nativeMaintenanceHost ? '请在应用中重启' : '重启 BlackHole'}</button>
           </div>
           <div className="bhp-service">{server && <ServiceCard managed={server.managed === true} nativeMaintenance={nativeMaintenanceHost} />}</div>
@@ -921,7 +921,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
       {nativeHost && (manualDirty.length > 0 || semanticDirty) && <div className="settings-page-save"><span className="hint">仅保存本页标有「需重启」的设置；其他页面的草稿不会提交。</span><button type="button" disabled={!server || manualPageKeys.some(k => fstate[k]?.state === 'saving')} onClick={() => void saveNativePage()}>保存本页</button></div>}
       {pending.length > 0 && (
         <div className="bhp-restartbar" role="status">
-          <span>{server?.managed ? `已保存配置版本 ${server.revision}，需原生确认应用：` : '需重启 daemon 生效：'}{[...new Set(pending.map(restartLabel))].join('、')}{server?.managed && !nativeMaintenanceHost ? '。请使用已更新的 VS Code「Apply Shared Core Settings」命令，或在 BlackHole Desktop 设置-高级页应用。' : ''}</span>
+          <span>{server?.managed ? `已保存配置版本 ${server.revision}，需原生确认应用：` : '需重启 daemon 生效：'}{[...new Set(pending.map(restartLabel))].join('、')}{server?.managed && !nativeMaintenanceHost ? '。请在 VS Code 运行「Apply Shared Core Settings」，或在 BlackHole Desktop 设置-高级页应用。' : ''}</span>
           <button type="button" disabled={restarting || (server?.managed === true && !nativeMaintenanceHost)} onClick={() => void restart()}>{restarting ? '等待维护结果…' : server?.managed ? (nativeMaintenanceHost ? '应用保存配置并重启' : '需要原生宿主') : '立即重启'}</button>
         </div>
       )}

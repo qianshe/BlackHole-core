@@ -35,7 +35,7 @@ export function DesktopUpdates({ coreVersion }: { coreVersion: string }) {
   const downloadLabel = download ? {
     downloading: `正在下载 v${download.version}：${(download.bytes / 1e6).toFixed(1)} / ${(download.totalBytes / 1e6).toFixed(1)} MB`,
     verifying: '下载完成，正在验证签名与完整性…', cancelling: '正在取消下载，当前任务继续运行…',
-    ready: `v${download.version} 已下载并校验，正在自动安装：即将停止共享 Core 并运行安装器，窗口会自动关闭。若有 AI 任务或其他客户端仍在使用，会被明确拒绝并提示，不会强制中断。`,
+    ready: `v${download.version} 已验证，正在停止共享 Core 并安装，窗口将自动关闭；有活跃任务或其他客户端时会拒绝并提示。`,
     cancelled: '下载已取消，未停止 Core，也未安装更新。', error: '下载或完整性验证失败，当前应用继续运行。',
     interrupted: '上次下载已中断，请重新检查更新。未自动运行安装器。',
   }[download.state] : '';
@@ -55,6 +55,6 @@ export function DesktopUpdates({ coreVersion }: { coreVersion: string }) {
       {canInstall && <button type="button" disabled={busy || status.state === 'checking'} onClick={() => { void act('download'); }}>下载并安装 v{status.availableVersion ?? ''}</button>}
       {!unavailable && !inDownload && !autoInstalling && <button type="button" className="secondary" disabled={busy || status.state === 'checking'} onClick={() => { void act('check'); }}>检查更新</button>}
     </div>
-    <p className="hint">版本信息与安装包均来自 GitHub Releases，安装包经签名清单校验。后台检查只读取版本信息，不会自动下载安装，也不会中断当前任务。</p>
+    <p className="hint">版本与安装包来自 GitHub Releases 签名清单；后台检查只读版本，不下载、不打断任务。</p>
   </details>;
 }

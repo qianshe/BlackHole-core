@@ -38,7 +38,7 @@ test('managed settings render saved and startup versions separately, without iss
 test('browser rendering explains native handoff and exposes no pretend maintenance button', async () => {
   const h = fixture('web');
   const html = renderToStaticMarkup(React.createElement(h.ManagedCoreSection, { settings: view, refresh: async () => {} }));
-  assert.match(html, /当前页面没有原生维护通道/); assert.match(html, /Apply Shared Core Settings/);
+  assert.match(html, /此页面无原生维护通道/); assert.match(html, /Apply Shared Core Settings/);
   assert.doesNotMatch(html, /<button/);
   await assert.rejects(h.runManagedCoreAction('apply-settings', 12), /native_maintenance_required/);
   assert.deepEqual(h.calls, []);

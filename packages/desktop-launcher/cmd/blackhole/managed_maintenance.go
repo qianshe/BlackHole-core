@@ -151,9 +151,9 @@ func (c *maintenanceCoordinator) run(ctx context.Context, operation string, revi
 	if operation == "restart" {
 		label = "重启"
 	}
-	text := fmt.Sprintf("确定要%s共享 Core 吗？\n\n版本：%s\n端口：%d\n\n本机 Desktop 的窗口将关闭；其他客户端或正在进行的工作会阻止操作，不会强制中断。确认期间目标发生变化会拒绝执行。", label, target.DaemonVersion, c.keeper.port)
+	text := fmt.Sprintf("确定要%s共享 Core 吗？（版本 %s）\n\n本机窗口将关闭；有其他客户端或进行中的任务会拒绝执行，不会强制中断。", label, target.DaemonVersion)
 	if revision != nil {
-		text = fmt.Sprintf("应用已保存的配置版本 %d 并重启共享 Core 吗？\n\n版本：%s\n端口：%d\n\n本机 Desktop 的窗口将关闭；其他客户端或正在进行的工作会阻止操作。确认期间配置或目标发生变化会拒绝执行。", *revision, target.DaemonVersion, c.keeper.port)
+		text = fmt.Sprintf("应用已保存的配置版本 %d 并重启共享 Core 吗？（版本 %s）\n\n本机窗口将关闭；有其他客户端或进行中的任务会拒绝执行。", *revision, target.DaemonVersion)
 	}
 	if !skipConfirm && !c.prompts.Confirm("BlackHole", text) {
 		return false
