@@ -9,8 +9,8 @@ const base = { on: false, state: 'off', running: [], next: 'quick', last: null, 
 test('悬停说明：关着时说会启动哪个渠道，开着时说会停止哪些', () => {
   assert.equal(switchTitle(base), '开启：临时渠道');
   assert.equal(switchTitle({ ...base, next: 'named', last: 'named' }), '开启：持久渠道（上次使用）');
-  assert.equal(switchTitle({ ...base, missing: 'cloudflared' }), '开启：临时渠道 · 需要先安装 cloudflared');
-  assert.equal(switchTitle({ ...base, state: 'error', reason: '连不上' }), '开启：临时渠道 · 上次失败：连不上');
+  assert.equal(switchTitle({ ...base, missing: 'cloudflared' }), '开启：临时渠道 需要先安装 cloudflared');
+  assert.equal(switchTitle({ ...base, state: 'error', reason: '连不上' }), '开启：临时渠道 上次失败：连不上');
   assert.equal(switchTitle({ ...base, on: true, state: 'on', running: ['quick', 'openai'] }), '关闭：停止临时渠道、OpenAI 渠道');
 });
 

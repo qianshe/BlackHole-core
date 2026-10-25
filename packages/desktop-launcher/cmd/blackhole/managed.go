@@ -25,7 +25,7 @@ var sharedTrayInstanceID string
 func configureManagedUI(bundle distribution.Bundle, port int) {
 	managedUserDataDir = filepath.Dir(bundle.Client.Store)
 	managedStateDir = filepath.Join(managedUserDataDir, "runtime-state", "desktop", strconv.Itoa(port))
-	windowTitle = "BlackHole · " + strconv.Itoa(port)
+	windowTitle = "BlackHole"
 }
 
 func main() {

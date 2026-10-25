@@ -239,7 +239,7 @@ func (c *maintenanceCoordinator) RunInspect(ctx context.Context) bool {
 	current, _ := c.client.InspectStart(ctx)
 	accept := record.Operation == "restart" && current != nil && current.Status == "ready" && current.StartFingerprint != "" && current.StartFingerprint != record.Target.StartFingerprint
 	if accept {
-		if !c.prompts.Confirm("BlackHole", fmt.Sprintf("事务 %s（%s · %s）有一个已就绪的新实例。\n\n仅接纳该已验证实例，不代表原配置申请已经生效；不会停止进程或修改配置。%s", record.RequestID, record.Operation, record.State, extra)) {
+		if !c.prompts.Confirm("BlackHole", fmt.Sprintf("事务 %s（%s，%s）有一个已就绪的新实例。\n\n仅接纳该已验证实例，不代表原配置申请已经生效；不会停止进程或修改配置。%s", record.RequestID, record.Operation, record.State, extra)) {
 			return false
 		}
 		if !c.prompts.Confirm("BlackHole", "再次确认：只接纳当前已验证的新实例。完成后请重新连接并核对设置。") {
@@ -253,7 +253,7 @@ func (c *maintenanceCoordinator) RunInspect(ctx context.Context) bool {
 		c.prompts.Info("BlackHole", "维护事务已按“接纳新实例”恢复，未启动或停止 Core。请重新连接并核对配置。")
 		return true
 	}
-	if !c.prompts.Confirm("BlackHole", fmt.Sprintf("检查事务 %s（%s · %s）？\n\n恢复只会在目标已退出且没有其他租约时归档事务。本机 Desktop 客户端将先解绑并关闭；不会强杀、自动重启或删除其他实例的记录。%s", record.RequestID, record.Operation, record.State, extra)) {
+	if !c.prompts.Confirm("BlackHole", fmt.Sprintf("检查事务 %s（%s，%s）？\n\n恢复只会在目标已退出且没有其他租约时归档事务。本机 Desktop 客户端将先解绑并关闭；不会强杀、自动重启或删除其他实例的记录。%s", record.RequestID, record.Operation, record.State, extra)) {
 		return false
 	}
 	c.keeper.pause()

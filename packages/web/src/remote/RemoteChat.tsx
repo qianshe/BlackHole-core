@@ -236,9 +236,9 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
   // Only current bound-target attribution; historical replies are not current identity.
   const model = courierModelLabel(target);
 
-  const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
-    : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'
-    : target ? `${siteLabel(target.site, sites)}${generating ? ' · 正在生成' : ''}` : '配对的网页会话不在浏览器 Courier 里';
+  const head = link === 'unpaired' ? '已解除配对 只接收；可在浏览器 Courier 里重新配对'
+    : link === 'direct' ? '提示词直连 只接收，对话在网页 AI 里进行'
+    : target ? `${siteLabel(target.site, sites)}${generating ? ' 正在生成' : ''}` : '配对的网页会话不在浏览器 Courier 里';
 
   return (
     <div className={s.chatPage}>
@@ -258,7 +258,7 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
       </div>
       <main className={s.chatBody}>
         {awaiting > 0 && (
-          <button type="button" className={s.bannerWarn} onClick={onApprovals}>{awaiting} 个待审批 · 去处理</button>
+          <button type="button" className={s.bannerWarn} onClick={onApprovals}>{awaiting} 个待审批 去处理</button>
         )}
         {snap.hasOlder && (
           <button type="button" className={s.older} disabled={snap.loadingOlder} onClick={older}>
@@ -287,7 +287,7 @@ export function SessionChat({ session, onBack, onApprovals, lost }: { session: S
               </li>
             ) : (
               <li key={e.m.id} data-feed-key={e.m.id} className={s.msgAgent}>
-                <div className={s.msgHead}>{siteLabel(e.m.site, sites)} · {hhmm(e.m.at)}</div>
+                <div className={s.msgHead}>{siteLabel(e.m.site, sites)} {hhmm(e.m.at)}</div>
                 <Markdown className={s.md} html={renderMarkdown(e.m.text ?? '')} />
               </li>
             )
@@ -350,7 +350,7 @@ function CallLine({ c, open, onToggle }: { c: CallView; open: boolean; onToggle:
           <pre className={s.args}>{shown.details}</pre>
           {body && <div className={s.blockHead}>结果</div>}
           {body && <pre className={s.args}>{body}</pre>}
-          <div className={s.callFoot}>{label} · {formatFull(c.created_at)}{dur ? ` · 耗时 ${dur}` : ''}</div>
+          <div className={s.callFoot}>{label} {formatFull(c.created_at)}{dur ? ` 耗时 ${dur}` : ''}</div>
         </div>
       )}
     </li>

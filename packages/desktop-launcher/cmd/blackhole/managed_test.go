@@ -4,7 +4,6 @@ import (
 	"blackhole/desktop-launcher/internal/coremanager"
 	"blackhole/desktop-launcher/internal/distribution"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -13,7 +12,8 @@ func TestManagedUIStateAndWindowFocusAreScoped(t *testing.T) {
 	defer func() { managedStateDir = oldDir; windowTitle = oldTitle; managedUserDataDir = oldData }()
 	root := filepath.Join(t.TempDir(), ".blackhole")
 	configureManagedUI(distribution.Bundle{Client: coremanager.Client{Store: filepath.Join(root, "core")}}, 18342)
-	if dataDir() != root || managedStateDir != filepath.Join(root, "runtime-state", "desktop", "18342") || !strings.Contains(windowTitle, "18342") {
+	// The window title intentionally carries no port; scoping is about the state dirs.
+	if dataDir() != root || managedStateDir != filepath.Join(root, "runtime-state", "desktop", "18342") {
 		t.Fatal("native cache and coordination escaped the sole user profile")
 	}
 }

@@ -21,9 +21,9 @@ export function openaiStatus(health: Health | null, reachable: boolean, clientPa
   const v = health?.openai_tunnel ?? null;
   if (!clientPath.trim() && !v?.run_id) return { text: '未安装 tunnel-client', cls: 'dim' };
   if (!v) return { text: 'tunnel-client 已就绪', cls: 'ok' };
-  if (v.proxy_pending_restart) return { text: 'OpenAI · 代理已更改，请停止后重新启动', cls: 'warn' };
+  if (v.proxy_pending_restart) return { text: 'OpenAI 代理已更改，请停止后重新启动', cls: 'warn' };
   const [tone, label] = OPENAI_STATUS_LABELS[v.status] ?? ['', v.status];
-  return { text: 'OpenAI · ' + label, cls: tone || 'dim' };
+  return { text: 'OpenAI ' + label, cls: tone || 'dim' };
 }
 
 export interface OpenAISectionProps {
@@ -127,7 +127,7 @@ export function OpenAISection({ health, reachable, clientPath, fields, confirm, 
 
   const keyState: Status = !v ? { text: reachable && health?.version ? '当前 daemon 不支持 OpenAI 渠道（请重启 daemon）' : 'daemon 未连接', cls: 'dim' }
     : v.credential_configured === null ? { text: '无法读取已保存的密钥', cls: 'bad' }
-    : v.credential_configured ? (v.pending_restart ? { text: '已保存 · 重新启动渠道后生效', cls: 'warn' } : { text: '已保存', cls: 'ok' })
+    : v.credential_configured ? (v.pending_restart ? { text: '已保存 重新启动渠道后生效', cls: 'warn' } : { text: '已保存', cls: 'ok' })
     : { text: '未保存', cls: 'dim' };
   const st = openaiStatus(health, reachable, clientPath);
   const reason = v?.reason ? { text: v.reason, cls: v.status === 'error' ? 'bad' : 'warn' } : null;

@@ -15,6 +15,6 @@ export const CHANNEL_SWITCH_HINT: Record<string, string> = {
 export function switchTitle(v: ChannelSwitchView): string {
   if (v.on) return '关闭：停止' + v.running.map((x) => NAMES[x] ?? x).join('、');
   return '开启：' + (NAMES[v.next] ?? v.next) + (v.last ? '（上次使用）' : '')
-    + (v.missing === 'cloudflared' ? ' · 需要先安装 cloudflared' : '')
-    + (v.state === 'error' && v.reason ? ' · 上次失败：' + v.reason : '');
+    + (v.missing === 'cloudflared' ? ' 需要先安装 cloudflared' : '')
+    + (v.state === 'error' && v.reason ? ' 上次失败：' + v.reason : '');
 }

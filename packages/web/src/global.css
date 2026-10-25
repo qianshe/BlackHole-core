@@ -256,3 +256,7 @@ div.md-code > pre[data-lang], div.md-code > pre { padding-right: 34px; }
 .md-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .md-copy.done { opacity: 1; color: var(--ok, #1a7f37); }
 
+
+/* Inline secondary text and hairline separator for metadata rows (replaces middle-dot copy). */
+.meta { color: var(--text-3); }
+.metaSep { display: inline-block; width: 1px; height: 10px; background: var(--border); vertical-align: -1px; margin: 0 6px; }

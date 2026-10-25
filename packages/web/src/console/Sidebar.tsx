@@ -91,12 +91,12 @@ function SessionItem({ x, current, pending, web, onSelect, actions }: { x: Sessi
   };
   return (
     <li className={c.sessionItem}>
-      <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} · ${state}`}>
+      <button type="button" className={c.sessionRow} aria-current={current ? 'true' : undefined} onClick={onSelect} title={`${sessionTitle(x)} ${state}`}>
         <span className={c.rowTitle}>
           <span className={c.rowLabel}>{sessionTitle(x)}</span>
         </span>
         {st && <span className={st.tone === 'warn' ? c.rowMetaWarn : st.tone === 'run' ? c.rowMetaRun : c.rowMeta} title={st.title}>{st.text}</span>}
-        {x.pending_handoff && <span className={c.rowHandoff} title="待接手的 Handoff · 打开会话可查看和复制">Handoff</span>}
+        {x.pending_handoff && <span className={c.rowHandoff} title="待接手的 Handoff 打开会话可查看和复制">Handoff</span>}
       </button>
       {/* sibling of the row button: a button inside a button is invalid */}
       <div ref={m.wrapRef} onKeyDown={m.onKeyDown}>
@@ -167,7 +167,7 @@ function AccountButton({ account, onAction }: { account: AccountView | null; onA
   const signedIn = summary.canSignOut;
   return (
     <div className={c.sideBottom} ref={m.wrapRef} onKeyDown={m.onKeyDown}>
-      <button type="button" className={c.accountBtn} aria-haspopup="menu" aria-expanded={m.open} onClick={m.toggle} title={`${a.name} · ${a.sub}`}>
+      <button type="button" className={c.accountBtn} aria-haspopup="menu" aria-expanded={m.open} onClick={m.toggle} title={`${a.name} ${a.sub}`}>
         <span className={c.avatar} aria-hidden="true">
           {a.name.slice(0, 1).toUpperCase()}
         </span>
@@ -184,7 +184,7 @@ function AccountButton({ account, onAction }: { account: AccountView | null; onA
           <div className={c.menuHead}>
             <div className={c.menuTitle}>{a.name}</div>
             <div className={c.menuMeta}>
-              {summary.email ? `${summary.email} · ` : ''}
+              {summary.email ? `${summary.email} ` : ''}
               {a.sub}
             </div>
           </div>
@@ -260,7 +260,7 @@ export function Sidebar(p: Props) {
         <span className={c.kbd}>Ctrl K</span>
       </button>
       <div className={c.navRow}>
-        <button type="button" className={p.channelSwitch ? `${c.navBtn} ${c.navBtnWithSwitch}` : c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 · ${p.channel.text}`}>
+        <button type="button" className={p.channelSwitch ? `${c.navBtn} ${c.navBtnWithSwitch}` : c.navBtn} aria-current={p.view === 'channels' ? 'page' : undefined} onClick={p.onChannels} title={`公网渠道 ${p.channel.text}`}>
           <span className={c.navIcon}>
             <Icon name="globe" />
           </span>

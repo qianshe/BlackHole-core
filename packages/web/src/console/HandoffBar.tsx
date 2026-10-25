@@ -50,10 +50,10 @@ export function HandoffBar({ session, connectorName, now }: { session: SessionVi
   const buttons = (
     <>
       <button type="button" className={c.btn} disabled={!!busy || !active} title={why} onClick={() => void copy('connector')}>
-        {busy === 'connector' ? '复制中…' : '复制 · 连接器'}
+        {busy === 'connector' ? '复制中…' : '复制 连接器'}
       </button>
       <button type="button" className={c.btn} disabled={!!busy || !active} title={why} onClick={() => void copy('sandbox')}>
-        {busy === 'sandbox' ? '复制中…' : '复制 · 沙箱直连'}
+        {busy === 'sandbox' ? '复制中…' : '复制 沙箱直连'}
       </button>
     </>
   );
@@ -63,7 +63,7 @@ export function HandoffBar({ session, connectorName, now }: { session: SessionVi
       <Icon name="link" size={14} className={h.icon} />
       <div className={h.text}>
         <b>待接手的 Handoff</b>
-        <span className={h.meta}>{relativeTime(pending.created_at, now)}生成 · 交给新的网页 AI 接着做</span>
+        <span className={h.meta}>{relativeTime(pending.created_at, now)}生成 交给新的网页 AI 接着做</span>
       </div>
       <div className={h.actions}>
         <button type="button" className={h.link} onClick={() => void open()} aria-haspopup="dialog">查看</button>
@@ -71,7 +71,7 @@ export function HandoffBar({ session, connectorName, now }: { session: SessionVi
       </div>
       {view && (
         <Modal label="Handoff" onClose={() => setView(null)} className={`${c.dialog} ${h.dialog}`}>
-          <DialogHead title="Handoff · 接力上下文" onClose={() => setView(null)} />
+          <DialogHead title="Handoff 接力上下文" onClose={() => setView(null)} />
           <p className={h.meta}>{relativeTime(pending.created_at, now)}生成</p>
           {view.error ? <p className={h.error}>{view.error}</p> : view.text === null ? <p className={h.meta}>正在读取…</p> : <pre className={h.body} tabIndex={0}>{view.text}</pre>}
           <p className={h.meta}>{why}</p>

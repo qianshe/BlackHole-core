@@ -126,7 +126,7 @@ function isEditorWriteCall(call: CallView): boolean {
 }
 
 /** Codex-style: the state is one glyph; the words are only its accessible name. */
-const STATUS_GLYPH: Record<string, string> = { ok: '✓', run: '●', warn: '▲', bad: '✕', muted: '·' };
+const STATUS_GLYPH: Record<string, string> = { ok: '✓', run: '●', warn: '▲', bad: '✕', muted: '○' };
 
 /** Output lines shown before a call's body collapses behind "… 还有 N 行". */
 const BODY_LINES = 14;
@@ -161,9 +161,9 @@ function CallItem({ x, open, fresh, onToggle, onNavigateToDiff, onApprove }: { x
     <li data-feed-key={x.id} className={`${c.call} ${open ? c.callOpen : ''} ${fresh ? c.fresh : ''}`}>
       <button type="button" className={c.callRow} aria-expanded={open} aria-controls={`call-${x.id}`} onClick={() => { onToggle(); onNavigateToDiff?.(); }}>
         <span className={c.bullet} data-tone={tone} role="img" aria-label={CALL_STATUS_LABEL[x.status] ?? x.status} title={CALL_STATUS_LABEL[x.status] ?? x.status}>
-          {STATUS_GLYPH[tone] ?? '·'}
+          {STATUS_GLYPH[tone] ?? '○'}
         </span>
-        <span className={c.callMain} title={`${head.label} · ${head.target}`}>
+        <span className={c.callMain} title={`${head.label} ${head.target}`}>
           <span className={c.tool}>{head.label}</span>
           <span className={c.desc}>{head.target}</span>
           {/* diff stats ride with the file they belong to, not in a far column */}
@@ -455,19 +455,19 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
           <span className={c.path} title={session.workspace_path}>
             {session.workspace_path}
           </span>
-          <span aria-hidden="true">·</span>
+          <span className={c.metaSep} aria-hidden="true" />
           <span>
             权限 <b>{PERMISSION_LABEL[session.permission_mode] ?? session.permission_mode}</b>
           </span>
-          <span aria-hidden="true">·</span>
+          <span className={c.metaSep} aria-hidden="true" />
           <span>
             最近活动 <b>{relativeTime(session.last_active_at, now)}</b>
           </span>
-          <span aria-hidden="true">·</span>
+          <span className={c.metaSep} aria-hidden="true" />
           <span>
             自动批准 <b>{session.auto_approve ? '开' : '关'}</b>
           </span>
-          <span aria-hidden="true">·</span>
+          <span className={c.metaSep} aria-hidden="true" />
           <span>
             调用 <b>{total}</b>
           </span>
@@ -495,8 +495,8 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
             <div className={c.feedNote}>
               <p><b>新会话还没有连上网页 AI</b></p>
               <p className={c.draftRow}>
-                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'connector')}>复制提示词 · 连接器</button>
-                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'sandbox')}>复制提示词 · 沙箱直连</button>
+                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'connector')}>复制提示词 连接器</button>
+                <button type="button" className={c.btn} onClick={() => void actions.copyPrompt(session, 'sandbox')}>复制提示词 沙箱直连</button>
               </p>
               <p>复制提示词交给网页 AI 自行使用；或在下方输入并发送，新开网页 AI 会话并配对。都没做就离开，会话会被丢弃。</p>
             </div>
@@ -508,7 +508,7 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
                 {more ? (
                   tl.olderBusy ? <span>正在加载…</span> : <button type="button" className={c.mini} onClick={older}>加载更早的记录</button>
                 ) : (
-                  <span>会话开始 · 共 {total} 次调用</span>
+                  <span>会话开始 共 {total} 次调用</span>
                 )}
               </li>
               {entries.map((e) => {

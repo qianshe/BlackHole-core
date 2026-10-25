@@ -17,12 +17,12 @@ export function phoneStatus(entry: PhoneEndpoint | undefined): { cls: string; te
   if (!entry) return { cls: 'warn', text: '所选入口不可用', note: '请选择仍在配置中的公网入口；不会自动切换渠道。' };
   const prefix = entry.kind === 'quick' ? '临时渠道' : '固定入口';
   const state = entry.verification.state;
-  const text = state === 'passed' ? '本机检测通过' : state === 'failed' ? '本机检测失败' : state === 'checking' ? '本机检测中…' : '已配置 · 未验证';
+  const text = state === 'passed' ? '本机检测通过' : state === 'failed' ? '本机检测失败' : state === 'checking' ? '本机检测中…' : '已配置 未验证';
   const error = { timeout: '检测超时', tls: '证书或 TLS 校验失败', unreachable: '本机无法到达此入口', unexpected_response: '没有返回预期的手机接口' };
   const note = state === 'passed' ? '仅代表本机已验证手机接口；手机仍需能访问这个网络和对应的 HTTP(S) 地址。'
     : state === 'failed' ? (error[entry.verification.reason ?? 'unreachable'] + '。本机检测失败不代表所有设备不可达。')
       : '尚未确认该入口的证书、转发与手机接口；生成配对码不代表已连通。';
-  return { cls: state === 'passed' ? 'ok' : 'warn', text: prefix + ' · ' + text, note };
+  return { cls: state === 'passed' ? 'ok' : 'warn', text: prefix + ' ' + text, note };
 }
 
 /** Compact, neutral entry identity. Configuration is not proof that a phone can reach it. */
@@ -32,5 +32,5 @@ export function phoneEndpointLabel(entry: PhoneEndpoint): string {
     : entry.scope === 'loopback' ? '本机' : '固定入口';
   let host: string;
   try { host = new URL(entry.origin).host; } catch { host = entry.origin; }
-  return kind + ' · ' + host;
+  return kind + ' ' + host;
 }

@@ -200,7 +200,7 @@ function Ready({ me, lost }: { me: Me; lost: (e: unknown) => void }) {
           <main className={s.body}>
             {tab === 'approvals' && <Approvals list={pending} sessions={sessions} onDone={refresh} lost={lost} />}
             {tab === 'sessions' && pending.length > 0 && (
-              <button type="button" className={s.bannerWarn} onClick={() => setTab('approvals')}>{pending.length} 个待审批 · 去处理</button>
+              <button type="button" className={s.bannerWarn} onClick={() => setTab('approvals')}>{pending.length} 个待审批 去处理</button>
             )}
             {tab === 'sessions' && (
               listed.length === 0 ? (
@@ -222,7 +222,7 @@ function Ready({ me, lost }: { me: Me; lost: (e: unknown) => void }) {
                           <span className={s.itemMain}>
                             <span className={s.rowTitle}>{sessionTitle(x)}</span>
                             <span className={s.rowMeta}>
-                              <span className={s[tone]}>{running ? '运行中' : SESSION_STATUS_LABEL[x.status] ?? x.status}</span> · {project} · {relativeTime(x.last_active_at)}
+                              <span className={s[tone]}>{running ? '运行中' : SESSION_STATUS_LABEL[x.status] ?? x.status}</span> {project} {relativeTime(x.last_active_at)}
                             </span>
                           </span>
                           <span className={s.chev} aria-hidden="true">{'\u203A'}</span>
@@ -259,7 +259,7 @@ function Approvals({ list, sessions, onDone, lost }: { list: Confirmation[]; ses
         const session = sessions.find((x) => x.id === c.session_id);
         return (
           <li key={c.id} className={s.card}>
-            <div className={s.cardHead}><span className={s.tool}>{c.tool}</span><span className={s.rowMeta}>{session ? sessionTitle(session) : c.session_id} · {relativeTime(c.created_at)}</span></div>
+            <div className={s.cardHead}><span className={s.tool}>{c.tool}</span><span className={s.rowMeta}>{session ? sessionTitle(session) : c.session_id} {relativeTime(c.created_at)}</span></div>
             <pre className={s.args}>{argsPreview(c.args, 300)}</pre>
             <div className={s.actions}>
               <button type="button" className={s.btnDanger} disabled={busy === c.id} onClick={() => void act(c, 'deny')}>拒绝</button>

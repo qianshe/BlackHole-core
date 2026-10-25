@@ -31,7 +31,7 @@ export function SidebarUpdate({ collapsed }: { collapsed: boolean }) {
   const label = installing ? '正在安装更新…'
     : download?.state === 'verifying' ? '正在验证更新…'
     : download?.state === 'cancelling' ? '正在取消下载…'
-    : pct !== undefined ? `正在下载 v${download!.version} · ${pct}%`
+    : pct !== undefined ? `正在下载 v${download!.version} ${pct}%`
     : `下载更新 v${status.availableVersion ?? ''}`;
   const start = (): void => {
     if (busy || inDownload || installing) return;

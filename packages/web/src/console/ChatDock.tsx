@@ -140,7 +140,7 @@ function state(t: Target): [string, string] {
 const hhmm = (t: number): string => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 /** Where the message goes: Arena, ChatGPT, or whatever site the extension binds. */
 const sourceOf = (t: Target): string => SITE[t.site] ?? t.site;
-const targetName = (t: Target): string => `${sourceOf(t)} · ${t.label || '新会话'}`;
+const targetName = (t: Target): string => `${sourceOf(t)} ${t.label || '新会话'}`;
 
 /**
  * One chat message in the session timeline: yours as a light block on the right, the agent's
@@ -361,8 +361,8 @@ export function ChatDock({ session, question }: { session: SessionView; question
   // 发送中 is a send state, not a channel state: it outranks 可发送 while a send is in flight.
   const pill: [string, string] | null = busy ? ['warn', '发送中'] : flash ? [flash.cls, flash.text] : label ? [cls, label] : null;
   const model = courierModelLabel(target);
-  const head = link === 'unpaired' ? '已解除配对 · 只接收；可在浏览器 Courier 里重新配对'
-    : link === 'direct' ? '提示词直连 · 只接收，对话在网页 AI 里进行'
+  const head = link === 'unpaired' ? '已解除配对 只接收；可在浏览器 Courier 里重新配对'
+    : link === 'direct' ? '提示词直连 只接收，对话在网页 AI 里进行'
     : connected === false ? '浏览器里的 Courier 未连接，打开浏览器后会自动连上'
     : !target && link === 'new' ? '第一条消息会新开 ChatGPT 会话并配对，附上连接器提示词'
     : !target ? '配对的网页会话不在 Courier 里' : null;

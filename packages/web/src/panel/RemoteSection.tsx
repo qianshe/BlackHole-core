@@ -149,7 +149,7 @@ export function RemoteSection({ toast, confirm, part, onConfigure }: { toast: To
         {!view?.devices.length ? <div className="hint" style={{ margin: 0 }}>还没有配对的手机。</div> : view.devices.map((d) => (
           <div className="ag-row" key={d.id}>
             <span className="nm">{d.name}</span>
-            <span className="u">配对 {when(d.created_at)} · 最近访问 {when(d.last_seen_at)}</span>
+            <span className="u">配对 {when(d.created_at)} 最近访问 {when(d.last_seen_at)}</span>
             <button className="del" type="button" aria-label={`撤销 ${d.name} 的手机配对`} onClick={() => void revoke(d.id, d.name)}>撤销</button>
           </div>
         ))}
@@ -204,7 +204,7 @@ export function RemoteSection({ toast, confirm, part, onConfigure }: { toast: To
               {left > 0 ? <QrCode text={pair.url} size={176} /> : <div className="bhp-qr-expired">二维码已过期</div>}
               <div className="pair-dialog-status" aria-live="off">{left > 0 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} 后过期` : '请重新生成'}</div>
               <div className="pair-dialog-instruction">扫码后在电脑上确认连接</div>
-              {pair.kind === 'quick' && <div className="pair-dialog-meta">临时入口 · 地址变化后需要重新配对</div>}
+              {pair.kind === 'quick' && <div className="pair-dialog-meta">临时入口 地址变化后需要重新配对</div>}
             </div>
             {left <= 0 && (
               <div className="pair-dialog-actions"><button type="button" disabled={qrBusy || !selected || loadError} onClick={() => void showQr()}>{qrBusy ? '生成中…' : '重新生成'}</button></div>

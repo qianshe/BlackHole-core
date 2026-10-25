@@ -196,8 +196,8 @@ export function NewChatPane({ initialPath, projects, sessions, actions, onOpen, 
         </div>
         <div className={n.foot}>
           <span className={s.hint}>{hint}</span>
-          <button type="button" className={n.link} disabled={busy || !path.trim()} onClick={() => void copy('connector')}>复制提示词 · 连接器</button>
-          <button type="button" className={n.link} disabled={busy || !path.trim()} onClick={() => void copy('sandbox')}>复制提示词 · 沙箱直连</button>
+          <button type="button" className={n.link} disabled={busy || !path.trim()} onClick={() => void copy('connector')}>复制提示词 连接器</button>
+          <button type="button" className={n.link} disabled={busy || !path.trim()} onClick={() => void copy('sandbox')}>复制提示词 沙箱直连</button>
         </div>
       </div>
     </div>

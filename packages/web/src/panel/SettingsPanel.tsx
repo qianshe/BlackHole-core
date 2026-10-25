@@ -63,7 +63,7 @@ const days = (s: number) => Math.max(1, Math.round(s / 86400));
 const price = (m: number) => '¥' + (m / 100).toFixed(2);
 const durationLabel = (s: number) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.ceil((s % 3600) / 60); return [d ? d + ' 天' : '', h ? h + ' 小时' : '', m ? m + ' 分钟' : ''].filter(Boolean).join(' ') || '不足 1 分钟'; };
 // Historical order duration remains fixed seconds; new membership labels use calendar periods.
-const orderLabel = (o: BillingOrder) => `${days(o.durationSeconds)} 天 · ${price(o.amountMinor)} · ${STATUS_NAMES[o.status]}`;
+const orderLabel = (o: BillingOrder) => `${days(o.durationSeconds)} 天 ${price(o.amountMinor)} ${STATUS_NAMES[o.status]}`;
 // New-sale plans are loaded from Cloud; no baked-in prices or fixed-day fallback.
 const errText = (e: unknown) => (e instanceof ApiError ? e.detail || e.message || e.code : e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -154,7 +154,7 @@ function Activity({ health }: { health: Health | null }) {
   const unique = new Map<number, { start: number; total: number; added: number; removed: number }>();
   for (const d of health?.activity_days ?? []) if (d && Number.isFinite(d.start)) unique.set(d.start, { start: d.start, total: n(d.total), added: n(d.diff_added), removed: n(d.diff_removed) });
   const list = [...unique.values()].sort((a, b) => a.start - b.start).slice(-7);
-  const today = stats ? '今日 ' + n(stats.total) + ' 次 · +' + n(stats.diff_added) + ' −' + n(stats.diff_removed) + ' 行' : '等待本地服务';
+  const today = stats ? '今日 ' + n(stats.total) + ' 次 +' + n(stats.diff_added) + ' −' + n(stats.diff_removed) + ' 行' : '等待本地服务';
   const show = (el: HTMLElement, text: string) => { const r = el.getBoundingClientRect(); setTip({ text, left: Math.max(8, Math.min(r.left, window.innerWidth - 300)), top: r.bottom + 6 }); };
   useEffect(() => { const hide = () => setTip(null); window.addEventListener('scroll', hide, true); return () => window.removeEventListener('scroll', hide, true); }, []);
   return (
@@ -381,7 +381,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   // ── status (renderStatus) ──
   const o = health;
   const t = reachable ? o?.tunnel : 'unreachable';
-  const dm: [string, string] = reachable ? ['ok', '运行中' + (o?.version ? ' · v' + o.version : '')] : ['', '未运行'];
+  const dm: [string, string] = reachable ? ['ok', '运行中' + (o?.version ? ' v' + o.version : '')] : ['', '未运行'];
   const aiDefaultRoute = server?.values.aiDefaultRoute ?? 'auto';
   const directEnabled = server?.values.directAccessEnabled === true;
   const routes = reachable ? o?.connection_routes : null;
@@ -394,11 +394,11 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   let showQ = true, showN = true, showS = false, showC = false;
   if (channelMode === 'custom') {
     showQ = showN = false;
-    const s = customProbe.state === 'online' ? ['自定义 · 在线', 'ok'] : customProbe.state === 'probing' ? ['检测中…', 'warn'] : customProbe.state === 'error' ? ['自定义 · 不可达', 'bad'] : ['待检测', 'dim'];
+    const s = customProbe.state === 'online' ? ['自定义 在线', 'ok'] : customProbe.state === 'probing' ? ['检测中…', 'warn'] : customProbe.state === 'error' ? ['自定义 不可达', 'bad'] : ['待检测', 'dim'];
     chst = { text: s[0]!, cls: s[1]! };
     if (customProbe.detail) cnerr = { text: customProbe.detail, cls: customProbe.state === 'error' ? 'bad' : '' };
   } else if (t === 'online' || t === 'unverified') {
-    chst = { text: (t === 'online' ? '在线 · ' : '未验证 · ') + (o?.tunnel_mode === 'named' ? '持久' : '临时'), cls: t === 'online' ? 'ok' : 'warn' };
+    chst = { text: (t === 'online' ? '在线 ' : '未验证 ') + (o?.tunnel_mode === 'named' ? '持久' : '临时'), cls: t === 'online' ? 'ok' : 'warn' };
     if (o?.tunnel_reason) cnerr = { text: o.tunnel_reason, cls: 'warn' };
     showS = showC = true; showQ = showN = false;
   } else if (t === 'starting') {
@@ -689,8 +689,8 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
   );
   const semStatus: { text: string; cls: string; clear: boolean } = semantic === undefined ? { text: '…', cls: 'dim', clear: false }
     : !semantic ? { text: '（daemon 未运行）', cls: 'dim', clear: false }
-    : semantic.registered ? { text: '已生效' + (semantic.registered_source === 'env' ? ' · 来自环境变量' : ' · ' + (semantic.registered_preview || '已配置')), cls: 'ok', clear: semantic.registered_source === 'file' }
-    : semantic.would_resolve ? { text: '已保存 key · 重启 daemon 后生效', cls: 'warn', clear: true }
+    : semantic.registered ? { text: '已生效' + (semantic.registered_source === 'env' ? ' 来自环境变量' : ' ' + (semantic.registered_preview || '已配置')), cls: 'ok', clear: semantic.registered_source === 'file' }
+    : semantic.would_resolve ? { text: '已保存 key 重启 daemon 后生效', cls: 'warn', clear: true }
     : { text: '未配置', cls: 'dim', clear: false };
   const hasCfPath = (draft?.cloudflaredPath.trim() ?? '') !== '';
   const port = window.location.port || '7306';
@@ -952,7 +952,7 @@ function DirectAccessCard({ on, port, view, busy, status, error, onToggle, onPor
   const ready = on && view?.enabled && view.state === 'listening' && view.mode === 'direct' && view.port === port;
   const [tone, text] = busy || view?.state === 'applying' ? ['warn', '正在应用…']
     : !on ? ['', view?.mode === 'proxy' && view.listening ? '直连未开启；反向代理目标可用' : '未开启']
-      : view?.error ? ['bad', view.error] : ready ? ['ok', `监听中 · 0.0.0.0:${port}`] : ['warn', '直连尚未就绪'];
+      : view?.error ? ['bad', view.error] : ready ? ['ok', `监听中 0.0.0.0:${port}`] : ['warn', '直连尚未就绪'];
   return (
     <div className="card network-entry">
       <div className="row-setting">
@@ -1008,11 +1008,11 @@ function Grants({ info, onRemove }: { info: GrantsInfo | null; onRemove: (scope:
   };
   return (
     <div style={{ display: 'grid', gap: 8 }}>
-      {always.length > 0 && <div className="hint" style={{ margin: '2px 0 0' }}><b>全局授权</b> · 重启后仍保留</div>}
+      {always.length > 0 && <div className="hint" style={{ margin: '2px 0 0' }}><b>全局授权</b> 重启后仍保留</div>}
       {always.map((k) => <div className="ag-row" key={'a' + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该全局授权" aria-label={`删除全局授权 ${k}`} onClick={() => onRemove('always', k)}>删除</button></div>)}
       {sessions.map((s) => (
         <div key={s.session_id} style={{ display: 'contents' }}>
-          <div className="hint" style={{ margin: '4px 0 0' }}><b>会话授权</b> · {s.session_name || s.workspace_path || s.session_id || '未知会话'} · daemon 重启后失效</div>
+          <div className="hint" style={{ margin: '4px 0 0' }}><b>会话授权</b> {s.session_name || s.workspace_path || s.session_id || '未知会话'} daemon 重启后失效</div>
           {s.grants.map((k) => <div className="ag-row" key={s.session_id + k}><span className="nm" style={{ flex: 1 }}>{pretty(k)}</span><button className="del" type="button" title="删除该会话授权" aria-label={`删除会话授权 ${k}`} onClick={() => onRemove('session', k, s.session_id)}>删除</button></div>)}
         </div>
       ))}
@@ -1061,7 +1061,7 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
   const summary = accountSummary(view);
   const identity = !view ? '读取账号状态…'
     : summary.authState === 'logged_out' ? '尚未登录'
-      : summary.email && summary.displayName !== summary.email ? `${summary.displayName} · ${summary.email}` : summary.displayName;
+      : summary.email && summary.displayName !== summary.email ? `${summary.displayName} ${summary.email}` : summary.displayName;
   const subscription = !view ? '订阅状态尚未获取'
     : summary.accountStatus === 'suspended' ? '账号已停用'
       : summary.accountStatus === 'pending' ? '订阅准备中'
@@ -1226,7 +1226,7 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
       {buyOpen && (
         <div className="buy-modal" role="dialog" aria-modal="true" aria-labelledby="cloudBuyTitle" onClick={(e) => { if (e.target === e.currentTarget) setBuyOpen(false); }} onKeyDown={(e) => { if (e.key === 'Escape') setBuyOpen(false); }}>
           <div className="buy-dialog">
-            <div className="buy-dialog-head"><div className="buy-dialog-eyebrow">BLACKHOLE · 单次订阅购买</div><div className="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
+            <div className="buy-dialog-head"><div className="buy-dialog-eyebrow">BLACKHOLE 单次订阅购买</div><div className="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
             <div className="buy-dialog-body">
               <fieldset><legend>选择时长套餐</legend>{catalogue?.plans.map(p => <label key={p.sku} className="account-note" style={{ display: 'block', padding: '8px 0' }}><input type="radio" name="membership-sku" value={p.sku} checked={selectedMembershipSku === p.sku} onChange={() => setSelectedMembershipSku(p.sku)} /> {membershipPlanLabel(p)}</label>)}</fieldset>
               <div className="buy-summary"><span className="k">已选方案</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{view?.userId ? view.userId.slice(0, 8) + '…' + view.userId.slice(-4) : '—'}</span><span className="k">到账方式</span><span className="v">服务端确认会员有效期后生效，不叠加旧时长</span></div>
@@ -1334,7 +1334,7 @@ function Proxies({ ui }: { ui: Ui }) {
           {s.status === 'crashed' && s.reason && <div className="pxkv bad">崩溃原因：{s.reason}</div>}
           {s.status === 'degraded' && (s.missingTools || []).length > 0 && <div className="pxkv warn">缺失工具：{(s.missingTools || []).join('、')}</div>}
           {(c.warnings || []).map((w) => <div className="pxkv warn" key={w}>警告：{w}</div>)}
-          {tgt && <div className="pxtarget">{(c.transport || 'stdio') + ' · ' + tgt}</div>}
+          {tgt && <div className="pxtarget">{(c.transport || 'stdio') + ' ' + tgt}</div>}
           {editing === s.name && <ProxyEdit c={c} onCancel={() => setEditing(null)} onSave={async (fields) => { if (await saveFields(s.name, fields)) setEditing(null); }} />}
         </div>
       );
@@ -1353,7 +1353,7 @@ function Proxies({ ui }: { ui: Ui }) {
       <div className={'pxkv ' + (msg?.cls ?? '')} id="pxMsg">{msg?.text}</div>
       {report && (
         <div>
-          <div className="pxkv">重新校验 · <b>{(report.servers || []).filter((x) => x.ok).length}/{(report.servers || []).length}</b> 个 server 配置有效</div>
+          <div className="pxkv">重新校验 <b>{(report.servers || []).filter((x) => x.ok).length}/{(report.servers || []).length}</b> 个 server 配置有效</div>
           {(report.quarantined || []).map((q) => <div className="pxkv bad" key={'q' + q.name}>已隔离：{q.name} — {q.reason}</div>)}
           {(report.warnings || []).map((w, i) => <div className="pxkv warn" key={'w' + i}>警告：{w.name} — {w.reason}</div>)}
         </div>
@@ -1389,7 +1389,7 @@ function ToolList({ name, data, cfg, busy, onRefresh, onToggle }: { name: string
   const expose = cfg?.surface?.expose;
   return (
     <>
-      <div className="pxthr"><span className="pxth">{'工具 ' + list.length + (dupN > 0 ? ' · 重名 ' + dupN : '') + (r.cachedOnly ? ' · 缓存' : ' · 实时') + (r.ageMs != null ? ' · ' + Math.round(r.ageMs / 1000) + 's 前' : '')}</span><span className="sp" /><button type="button" className="pxe" disabled={!!r.disabled || data.loading} onClick={onRefresh}>刷新</button></div>
+      <div className="pxthr"><span className="pxth">{'工具 ' + list.length + (dupN > 0 ? ' 重名 ' + dupN : '') + (r.cachedOnly ? ' 缓存' : ' 实时') + (r.ageMs != null ? ' ' + Math.round(r.ageMs / 1000) + 's 前' : '')}</span><span className="sp" /><button type="button" className="pxe" disabled={!!r.disabled || data.loading} onClick={onRefresh}>刷新</button></div>
       {r.disabled && <div className="pxkv dim">已停用</div>}
       {r.error && <div className="pxkv bad">{r.error}</div>}
       {!list.length ? <div className="pxkv dim">{r.disabled ? '无缓存' : '无工具'}</div> : (
@@ -1402,7 +1402,7 @@ function ToolList({ name, data, cfg, busy, onRefresh, onToggle }: { name: string
               <div className={'pxrow' + (enabled ? '' : ' muted')} key={name + canonical}>
                 <div className="pxrn">
                   <label className="pxtool-toggle"><input name="px-tool-enabled" type="checkbox" checked={enabled} disabled={busy} onChange={(e) => onToggle(canonical, e.target.checked)} /><span>{t.name}</span></label>
-                  {conflicts.length > 1 && <span className="pchip dup">名称冲突 · {conflicts.join(', ')}</span>}
+                  {conflicts.length > 1 && <span className="pchip dup">名称冲突 {conflicts.join(', ')}</span>}
                   {!enabled && <span className="pchip">已屏蔽</span>}
                   {t.upstreamTool && t.upstreamTool !== t.name && <span className="pchip">upstream: {t.upstreamTool}</span>}
                 </div>

@@ -11,5 +11,5 @@ export function HostNotice() {
     return () => { active = false; };
   }, []);
   if (!info) return null;
-  return <div className="host-notice" role="note">VS Code · {info.version}{info.environment === 'test' ? ` · 测试构建 · ${info.cloudOrigin}（账号与支付不代表正式环境）` : ''}</div>;
+  return <div className="host-notice" role="note">VS Code {info.version}{info.environment === 'test' ? ` 测试构建 ${info.cloudOrigin}（账号与支付不代表正式环境）` : ''}</div>;
 }

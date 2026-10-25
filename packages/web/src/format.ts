@@ -382,7 +382,7 @@ export function resultBody(summary: string | null): string {
     if (typeof o.message === 'string') return stripAnsi(o.message);
     if (typeof o.status === 'string') {
       const parts = [o.status, typeof o.state === 'string' ? o.state : '', typeof o.processId === 'string' ? o.processId : '', typeof o.exitCode === 'number' ? `exit ${o.exitCode}` : ''].filter(Boolean);
-      return stripAnsi(parts.join(' · '));
+      return stripAnsi(parts.join(' '));
     }
   }
   return stripAnsi(summary);

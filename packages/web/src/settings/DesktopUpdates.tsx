@@ -40,8 +40,8 @@ export function DesktopUpdates({ coreVersion }: { coreVersion: string }) {
     interrupted: '上次下载已中断，请重新检查更新。未自动运行安装器。',
   }[download.state] : '';
   return <details className="card" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>关于 BlackHole · 更新</summary>
-    <p className="hint">Desktop v{status.currentVersion} · Core v{coreVersion}</p>
+    <summary>关于 BlackHole 更新</summary>
+    <p className="hint">Desktop v{status.currentVersion} <span className="meta">Core v{coreVersion}</span></p>
     <p role="status" aria-live="polite">{messages[status.state]}</p>
     {download && <p role="status" aria-live="polite">{downloadLabel}</p>}
     {inDownload && <div className="bh-update-row">

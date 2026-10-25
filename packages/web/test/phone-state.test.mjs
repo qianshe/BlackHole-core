@@ -27,8 +27,8 @@ test('a removed selection never silently falls back to another available channel
 });
 
 test('compact endpoint labels distinguish temporary, private and public without claiming reachability', () => {
-  assert.equal(phoneEndpointLabel(entry('http://192.168.1.8:7307', 'fixed', 'unverified')), '内网 · 192.168.1.8:7307');
-  assert.equal(phoneEndpointLabel({ ...entry('https://quick.example.test', 'quick', 'passed'), scope: 'public' }), '临时渠道 · quick.example.test');
-  assert.equal(phoneEndpointLabel({ ...entry('https://example.test', 'fixed', 'unverified'), scope: 'public' }), '固定入口 · example.test');
-  assert.equal(phoneEndpointLabel({ ...entry('http://127.0.0.1:7307', 'fixed', 'unverified'), scope: 'loopback' }), '本机 · 127.0.0.1:7307');
+  assert.equal(phoneEndpointLabel(entry('http://192.168.1.8:7307', 'fixed', 'unverified')), '内网 192.168.1.8:7307');
+  assert.equal(phoneEndpointLabel({ ...entry('https://quick.example.test', 'quick', 'passed'), scope: 'public' }), '临时渠道 quick.example.test');
+  assert.equal(phoneEndpointLabel({ ...entry('https://example.test', 'fixed', 'unverified'), scope: 'public' }), '固定入口 example.test');
+  assert.equal(phoneEndpointLabel({ ...entry('http://127.0.0.1:7307', 'fixed', 'unverified'), scope: 'loopback' }), '本机 127.0.0.1:7307');
 });

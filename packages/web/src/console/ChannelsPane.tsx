@@ -51,7 +51,7 @@ export function channelSummary(h: Health | null, mode: SettingsValues['channelMo
   if (!parts.length) return { tone: 'muted', text: '未启动' };
   const tones = new Set(parts.map((p) => p[0]));
   const tone: Tone = tones.size === 1 ? parts[0]![0] : 'warn';
-  return { tone, text: parts.map((p) => p[1]).join(' · ') };
+  return { tone, text: parts.map((p) => p[1]).join(' ') };
 }
 
 const MODE_LABEL: Record<SettingsValues['channelMode'], [string, string]> = {
@@ -141,7 +141,7 @@ export function ChannelsPane({
             默认 <b>{MODE_LABEL[mode][0]}</b>
           </span>
           <span>
-            手机访问 <b>{remote?.enabled ? `已开启 · ${remote.devices.length} 台设备` : '未开启'}</b>
+            手机访问 <b>{remote?.enabled ? `已开启 ${remote.devices.length} 台设备` : '未开启'}</b>
           </span>
         </div>
 

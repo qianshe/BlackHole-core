@@ -62,8 +62,8 @@ export function AccountCard() {
       {status && (
         <p className={status.tone} role="status">
           <strong>{status.text}</strong>
-          {signedIn && view.account && <> · {view.account.name || view.account.email}</>}
-          {signedIn && remaining(view.remainingSeconds) && <> · {remaining(view.remainingSeconds)}</>}
+          {signedIn && view.account && <> {view.account.name || view.account.email}</>}
+          {signedIn && remaining(view.remainingSeconds) && <> {remaining(view.remainingSeconds)}</>}
         </p>
       )}
       {status?.hint && <p className={f.hint}>{status.hint}</p>}

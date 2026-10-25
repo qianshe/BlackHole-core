@@ -38,7 +38,7 @@ export function pickDirectAddress(candidates: readonly McpRouteCandidate[]): Pro
       button.style.textAlign = 'left'; button.style.whiteSpace = 'normal'; button.style.overflowWrap = 'anywhere';
       button.dataset.directCandidate = item.id;
       const parsed = new URL(item.url);
-      button.textContent = `${parsed.origin} · ${item.scope === 'public' ? '对外地址' : item.scope === 'loopback' ? '仅本机' : '局域网 / 组网'}`;
+      button.textContent = `${parsed.origin} ${item.scope === 'public' ? '对外地址' : item.scope === 'loopback' ? '仅本机' : '局域网 / 组网'}`;
       button.addEventListener('click', () => finish(item.url));
       list.append(button);
     }

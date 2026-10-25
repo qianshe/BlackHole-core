@@ -368,7 +368,7 @@ function ConnectionSetup({ onDone, onAuthChanged }: { onDone: () => void; onAuth
         <div className={s.setupGrid} role="group" aria-label="选择连接渠道">
           <button type="button" className={s.channelOption} disabled={busy} onClick={() => void proceed('cloudflare')}>
             <span className={s.optionIcon}><Icon name="globe" size={19} /></span>
-            <span className={s.optionCopy}><strong>临时公网连接 · Cloudflare</strong><span>准备 cloudflared；由你决定何时启动公网渠道。</span></span>
+            <span className={s.optionCopy}><strong>临时公网连接 Cloudflare</strong><span>准备 cloudflared；由你决定何时启动公网渠道。</span></span>
             <Icon name="chevron" size={17} />
           </button>
           <button type="button" className={s.channelOption} disabled={busy} onClick={() => void proceed('openai')}>
