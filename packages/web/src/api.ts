@@ -76,6 +76,10 @@ export interface ProjectView {
   saved: boolean;
 }
 
+export interface WorkspaceEntry { name: string; path: string; type: 'dir' | 'file' }
+export interface WorkspaceEntries { path: string; entries: WorkspaceEntry[]; truncated: boolean }
+export interface WorkspaceFilePreview { path: string; content: string }
+
 export interface DirListing {
   path: string | null;
   parent: string | null;
@@ -226,6 +230,10 @@ export const api = {
     request<CallsPage>(`/sessions/${encodeURIComponent(id)}/calls?page=${page}&limit=${limit}${anchor > 0 ? `&anchor=${anchor}` : ''}`, { signal }),
   currentTurnDiff: (id: string, signal?: AbortSignal) =>
     request<TurnDiffResponse>(`/sessions/${encodeURIComponent(id)}/current-turn-diff`, { signal }),
+  workspaceEntries: (id: string, relative = '', signal?: AbortSignal) =>
+    request<WorkspaceEntries>(`/sessions/${encodeURIComponent(id)}/workspace/entries?path=${encodeURIComponent(relative)}`, { signal }),
+  workspaceFile: (id: string, relative: string, signal?: AbortSignal) =>
+    request<WorkspaceFilePreview>(`/sessions/${encodeURIComponent(id)}/workspace/file?path=${encodeURIComponent(relative)}`, { signal }),
   todos: (id: string, signal?: AbortSignal) => request<TodoBoard>(`/sessions/${encodeURIComponent(id)}/todos`, { signal }),
   createSession: (input: NewSessionInput) => request<CreatedSession>('/sessions', json('POST', input)),
   dirs: (path: string, signal?: AbortSignal) => request<DirListing>(`/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { signal }),

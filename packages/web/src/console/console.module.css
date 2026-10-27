@@ -5,7 +5,8 @@
   --sidebar-w: 284px;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) 5px minmax(0, 1fr);
+  padding: 6px;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -16,10 +17,52 @@
   --sidebar-w: 48px;
 }
 
+/* VS Code Sash pattern: a generous invisible grab area and a single hairline
+   on hover/focus/drag. The 5px gutter separates rounded workbench surfaces. */
+.sidebarSplitter {
+  position: relative;
+  z-index: 12;
+  min-width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.sidebarSplitter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 12px;
+  transform: translateX(-50%);
+}
+.sidebarSplitter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  pointer-events: none;
+  transition: background-color .12s ease;
+}
+.sidebarSplitter:hover::after,
+.sidebarSplitter:focus-visible::after,
+.sidebarResizing .sidebarSplitter::after { background: var(--accent); }
+.sidebarSplitter:focus-visible { outline: none !important; }
+.sidebarResizing { cursor: col-resize; user-select: none; }
+.app.collapsed .sidebarSplitter { pointer-events: none; }
+@media(max-width:760px) {
+  .sidebarSplitter { pointer-events: none; }
+}
+
 /* ── sidebar ─────────────────────────────────────────────── */
 .sidebar {
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -618,8 +661,15 @@
   min-width: 0;
   min-height: 0;
   background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+.mainSession {
+  background: var(--bg);
+  border: 0;
 }
 .mainBody {
   flex: 1;
@@ -628,29 +678,38 @@
 .sessionView {
   height: 100%;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
 }
 .sessionHead {
-  padding: 16px 26px 13px;
-  border-bottom: 1px solid var(--border);
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  padding: 6px 14px;
+  border-bottom: 0.5px solid var(--border);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--surface);
 }
+.sessionHead .btn { min-height: 28px; border-radius: var(--r-md); }
 .sessionTop {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 8px;
+  min-height: 30px;
 }
 .sessionTitle {
   min-width: 0;
+  flex: 1 1 auto;
 }
 .title {
   margin: 0;
   color: var(--text-bright);
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1.3;
   font-weight: 620;
   letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .path {
   font: 12px var(--mono);
@@ -690,7 +749,7 @@
   color: var(--text-3);
 }
 .facts {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 7px;
@@ -756,62 +815,80 @@
   color: var(--text-2);
 }
 
-/* workspace = feed | splitter | inspector. --inspector-w comes from the drag
-   handle (SessionPane); the inspector never squeezes the feed below 360px.
-   Row 2 is the composer slot: it belongs to the feed column, so it can never
-   reach under the session-detail inspector. */
+/* Three rounded workbench surfaces. The feed and the existing ChatDock remain
+   unchanged in their own column; only the surrounding grid layout differs. */
 .workspace {
+  height: 100%;
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0 min(var(--inspector-w, 300px), max(240px, calc(100% - 360px)));
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 5px min(var(--inspector-w, 300px), max(230px, calc(100% - 365px)));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--bg);
+}
+.workspace::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1 / -1;
+  z-index: 4;
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
+  pointer-events: none;
 }
 .workspace.resizing {
   cursor: col-resize;
   user-select: none;
 }
-/* zero-width grid track; the hit area and the highlight overflow it */
 .splitter {
   grid-column: 2;
   grid-row: 1 / -1;
   position: relative;
-  width: 0;
+  width: 5px;
   z-index: 6;
   cursor: col-resize;
   touch-action: none;
   outline: none;
+  background: transparent;
 }
 .splitter::before {
   content: '';
   position: absolute;
-  inset: 0 -6px 0 -3px;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 12px;
+  transform: translateX(-50%);
 }
 .splitter::after {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -1px;
-  width: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
   background: transparent;
+  pointer-events: none;
   transition: background-color 0.12s ease;
 }
 .splitter:hover::after,
 .splitter:focus-visible::after,
-.resizing .splitter::after {
-  background: var(--accent);
-}
+.resizing .splitter::after { background: var(--accent); }
+.splitter:focus-visible { outline: none !important; }
 .feed {
-  grid-column: 1;
-  grid-row: 1;
-  min-width: 0;
-  overflow: auto;
-}
-/* Composer slot: same grid column as the feed. */
-.dockCell {
   grid-column: 1;
   grid-row: 2;
   min-width: 0;
+  overflow: auto;
+  background: var(--surface);
+}
+/* The original composer stays in column 1, directly under its feed. */
+.dockCell {
+  grid-column: 1;
+  grid-row: 3;
+  min-width: 0;
+  background: var(--surface);
+  border-radius: 0 0 var(--r-md) var(--r-md);
 }
 .feedHead {
   min-height: 44px;
@@ -1183,7 +1260,8 @@
 .inspector {
   grid-column: 3;
   grid-row: 1 / -1;
-  border-left: 1px solid var(--border);
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--surface-2);
   overflow: auto;
   min-width: 0;
@@ -1861,7 +1939,7 @@
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     overflow: auto;
   }
   .splitter {
@@ -1869,7 +1947,7 @@
   }
   .feed {
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 2;
     overflow: visible;
   }
   /* No room for the side column: the details never stack under the replies.
@@ -1878,7 +1956,7 @@
   .inspectorDock {
     display: block;
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 2;
     justify-self: end;
     align-self: start;
     position: sticky;
@@ -1910,7 +1988,7 @@
      of the scrolling workspace, as it was before the grid slot */
   .dockCell {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
     position: sticky;
     bottom: 0;
     z-index: 4;
@@ -1922,12 +2000,12 @@
 @media (max-width: 760px) {
   .app,
   .app.collapsed {
-    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-columns: 48px 5px minmax(0, 1fr);
   }
   /* expanded on a narrow screen: the sidebar floats over the content as a drawer */
   .app:not(.collapsed) .sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: 6px auto 6px 6px;
     width: 284px;
     z-index: 45;
     box-shadow: var(--shadow-pop);
@@ -2144,12 +2222,73 @@
 
 /* Session inspector tabs and the current-turn review. */
 .inspectorTabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
-  padding: 6px 10px 0;
-  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  gap: 0;
+  padding: 0 4px;
+  border-bottom: 0.5px solid var(--border);
   background: var(--surface-2);
+  overflow: hidden;
+}
+.inspectorPinnedTabs {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.inspectorFileTabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.inspectorFileTabs::-webkit-scrollbar { display: none; }
+.inspectorFileTab {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-items: center;
+  border-right: 0.5px solid var(--border);
+}
+.inspectorFileTab:has([aria-selected='true']) { background: var(--surface); }
+.inspectorFileTabName {
+  min-width: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px 0 9px;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font: 12px var(--sans);
+}
+.inspectorFileTabName[aria-selected='true'] { color: var(--text-bright); }
+.inspectorFileClose {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+}
+.inspectorFileClose:hover { background: var(--surface-hover); color: var(--text); }
+.inspectorPending {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
 }
 .inspectorTab {
   min-width: 0;
@@ -2202,6 +2341,56 @@
 .turnDiffSign { color: var(--text-3); text-align: center; user-select: none; box-shadow: inset -1px 0 0 var(--border-strong); }
 .turnDiffText { white-space: pre; }
 .turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 12px; text-align: right; }
+
+
+/* Read-only workspace tree and editor-like file tabs. */
+.workspaceExplorer { min-width: 0; padding: 8px 4px 14px; }
+.workspaceRoot {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px; color: var(--text-2);
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.workspaceFolder { min-width: 0; }
+.workspaceRow {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; height: 30px; min-width: 0;
+  border: 0; padding-right: 10px; background: transparent;
+  color: var(--text-2); font: 12px var(--sans);
+  text-align: left; cursor: pointer;
+}
+.workspaceRow:hover { background: var(--surface-hover); color: var(--text-bright); }
+.workspaceName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceChevron { display: grid; place-items: center; transition: transform .12s ease; }
+.workspaceChevron[data-expanded='true'] { transform: rotate(90deg); }
+.workspaceFileGlyph { width: 17px; flex: 0 0 17px; color: var(--text-3); text-align: center; }
+.workspaceNote { margin: 6px 10px 12px; color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; }
+.workspaceNote button { color: var(--accent); border: 0; background: transparent; text-decoration: underline; }
+.workspacePreview { min-width: 0; padding: 8px 10px; }
+.workspacePreviewHeading {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  color: var(--text-2); font: 12px var(--mono); overflow-wrap: anywhere;
+}
+.workspacePreviewHeading span { min-width: 0; flex: 1; }
+.workspacePreviewHeading small { flex: 0 0 auto; font-size: 12px; color: var(--text-3); }
+.workspaceCode {
+  display: flex; max-width: 100%; min-width: 0;
+  overflow: auto; background: var(--surface);
+  border: 0.5px solid var(--border); border-radius: var(--r-sm);
+}
+.workspaceLineNumbers {
+  position: sticky; left: 0;
+  flex: 0 0 auto; min-width: 32px; margin: 0;
+  padding: 8px 7px; text-align: right;
+  background: var(--surface-2); border-right: 0.5px solid var(--border);
+  user-select: none; color: var(--text-3); font: 12px/1.6 var(--mono);
+}
+.workspaceCodeText {
+  width: max-content; flex: 0 0 auto; margin: 0;
+  padding: 8px 10px; color: var(--text-2);
+  white-space: pre; font: 12px/1.6 var(--mono);
+}
+@media (prefers-reduced-motion:reduce) { .workspaceChevron { transition:none; } }
 
 /* Sidebar update rail: one compact row above the account button. Ready state
    is a quiet accent call-to-action; download/install progress fills the row

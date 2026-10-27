@@ -89,6 +89,22 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal(created.status, 201, created.text);
     const sid = created.json.session.id;
 
+    // Authenticated workspace explorer: current session only, no path escape or binary preview.
+    fs.mkdirSync(path.join(work, 'src'));
+    fs.writeFileSync(path.join(work, 'src', 'sample.ts'), 'export const value = 1;\n');
+    const listing = await web(`/sessions/${sid}/workspace/entries`);
+    assert.equal(listing.status, 200, listing.text);
+    assert.ok(listing.json.entries.some((item) => item.path === 'src' && item.type === 'dir'));
+    const dirFiles = await web(`/sessions/${sid}/workspace/entries?path=src`);
+    assert.equal(dirFiles.status, 200, dirFiles.text);
+    assert.ok(dirFiles.json.entries.some((item) => item.path === 'src/sample.ts'));
+    const preview = await web(`/sessions/${sid}/workspace/file?path=src%2Fsample.ts`);
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.json.content, 'export const value = 1;\n');
+    assert.equal((await req(`/web-api/v1/sessions/${sid}/workspace/entries`, { headers: { 'x-blackhole-web': '1' } })).status, 401);
+    assert.equal((await web(`/sessions/${sid}/workspace/file?path=..%2Foutside.txt`)).status, 403);
+    assert.equal((await web(`/sessions/${sid}/workspace/file?path=missing.ts`)).status, 404);
+
     // Approvals: listed with risk tags, never with the approval pin.
     const c1 = await seed(sid);
     const list = await web(`/confirmations?session_id=${encodeURIComponent(sid)}`);

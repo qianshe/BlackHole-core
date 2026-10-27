@@ -9,7 +9,9 @@ import (
 	"strings"
 )
 
-var releaseFilename = regexp.MustCompile(`^BlackHole-[A-Za-z0-9._-]+\.exe\z`)
+var releaseFilenameWindows = regexp.MustCompile(`^BlackHole-[A-Za-z0-9._-]+\.exe\z`)
+var releaseFilenameMacOS = regexp.MustCompile(`^BlackHole-[A-Za-z0-9._-]+\.(dmg|zip)\z`)
+var releaseFilenameLinux = regexp.MustCompile(`^BlackHole-[A-Za-z0-9._-]+\.(AppImage|deb|rpm)\z`)
 var productionVersion = regexp.MustCompile(`^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\z`)
 
 // Production downloads are version-addressed assets from our public release
@@ -26,7 +28,18 @@ func productionInstallerURL(m Manifest) bool {
 	}
 	name := strings.TrimPrefix(u.Path, prefix)
 	lower := strings.ToLower(name)
-	return releaseFilename.MatchString(name) && !strings.Contains(lower, "unsigned") && !strings.Contains(lower, "test") && !strings.Contains(lower, "candidate")
+	pattern := releaseFilenameWindows
+	switch m.Platform {
+	case "", "windows":
+		pattern = releaseFilenameWindows
+	case "macos":
+		pattern = releaseFilenameMacOS
+	case "linux":
+		pattern = releaseFilenameLinux
+	default:
+		return false
+	}
+	return pattern.MatchString(name) && !strings.Contains(lower, "unsigned") && !strings.Contains(lower, "test") && !strings.Contains(lower, "candidate")
 }
 
 // A CDN redirect may contain a short-lived signed query. That query belongs to

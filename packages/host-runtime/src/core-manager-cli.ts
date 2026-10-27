@@ -89,7 +89,7 @@ try {
     case 'provision': {
       if (typeof request.archive !== 'string' || (request.source !== 'seed' && request.source !== 'download')) fail('request_invalid', 'archive and source are required.');
       const config = trust();
-      result = await manager.provision(path.resolve(request.archive), request.source, (archive, destination) => extractVerifiedCoreArchive(archive, destination, { publicKeys: config.publicKeys, platform: 'win32', arch: 'x64', environment: config.environment }), request.source === 'seed' ? 15_000 : 0);
+      result = await manager.provision(path.resolve(request.archive), request.source, (archive, destination) => extractVerifiedCoreArchive(archive, destination, { publicKeys: config.publicKeys, platform: process.platform, arch: process.arch, environment: config.environment }), request.source === 'seed' ? 15_000 : 0);
       break;
     }
     default: fail('command_unknown', `Unsupported Manager command: ${request.command}`);

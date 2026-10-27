@@ -24,13 +24,14 @@ import { POLL_MS, usePoll } from '../usePoll';
 import { CopyButton, Icon } from '../ui';
 import { ApprovalCard } from './Approval';
 import { TurnChanges } from './TurnChanges';
+import { WorkspaceExplorer, WorkspaceFileView } from './WorkspaceFiles';
 import { failText, useMenu } from './common';
 import { SessionMenuItems, type SessionActions } from './sessionActions';
 import c from './console.module.css';
 import { HandoffBar } from './HandoffBar';
 
 /** Inspector width limits; the feed always keeps at least FEED_MIN pixels. */
-const INSPECTOR = { min: 240, max: 640, initial: 300, feedMin: 360, key: 'bh.web.inspectorWidth' } as const;
+const INSPECTOR = { min: 230, max: 760, initial: 300, feedMin: 360, gutter: 5, key: 'bh.web.inspectorWidth' } as const;
 
 function savedWidth(): number {
   try {
@@ -51,7 +52,7 @@ function useInspectorResize() {
   const [dragging, setDragging] = useState(false);
   const clamp = (w: number): number => {
     const box = ref.current?.getBoundingClientRect().width ?? 0;
-    const max = box ? Math.max(INSPECTOR.min, Math.min(INSPECTOR.max, box - INSPECTOR.feedMin)) : INSPECTOR.max;
+    const max = box ? Math.max(INSPECTOR.min, Math.min(INSPECTOR.max, box - INSPECTOR.feedMin - INSPECTOR.gutter)) : INSPECTOR.max;
     return Math.round(Math.max(INSPECTOR.min, Math.min(max, w)));
   };
   const commit = (w: number): void => {
@@ -247,17 +248,23 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
   const split = useInspectorResize();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<'overview' | 'changes'>('overview');
+  const [inspectorTab, setInspectorTab] = useState<string>('overview');
+  const [fileTabs, setFileTabs] = useState<string[]>([]);
+  const [filesVisited, setFilesVisited] = useState(false);
+  const inspectorTabBarRef = useRef<HTMLDivElement>(null);
   const [focusRequest, setFocusRequest] = useState<{ callId: string; sequence: number } | null>(null);
   const focusSequence = useRef(0);
   const overviewTabRef = useRef<HTMLButtonElement>(null);
   const changesTabRef = useRef<HTMLButtonElement>(null);
+  const filesTabRef = useRef<HTMLButtonElement>(null);
   const inspectorToggleRef = useRef<HTMLButtonElement>(null);
   const seen = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     setOpen(new Set());
     setInspectorTab('overview');
+    setFileTabs([]);
+    setFilesVisited(false);
     setFocusRequest(null);
     seen.current = null;
   }, [session.id]);
@@ -300,12 +307,30 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
     return guideAt !== null && (userAt === null || (tl.state?.link !== 'paired' && guideAt >= userAt)) ? guideAt : userAt;
   }, [tl.messages, tl.calls, tl.state?.link]);
   useEffect(() => { setFocusRequest(null); }, [session.id, turnAt]);
+  const openWorkspaceFile = (relative: string): void => {
+    setFileTabs((tabs) => tabs.includes(relative) ? tabs : [...tabs, relative]);
+    setInspectorTab('file:' + relative);
+  };
+  const closeWorkspaceFile = (relative: string): void => {
+    const remaining = fileTabs.filter((file) => file !== relative);
+    setFileTabs(remaining);
+    if (inspectorTab === 'file:' + relative) setInspectorTab(remaining.length ? 'file:' + remaining[remaining.length - 1] : 'files');
+    requestAnimationFrame(() => {
+      const selected = inspectorTabBarRef.current?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]');
+      selected?.focus();
+    });
+  };
+  const activeFile = inspectorTab.startsWith('file:') ? inspectorTab.slice(5) : null;
   const onInspectorTabKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0 || !tabs.length) return;
     e.preventDefault();
-    const next = inspectorTab === 'overview' ? 'changes' : 'overview';
-    setInspectorTab(next);
-    (next === 'overview' ? overviewTabRef.current : changesTabRef.current)?.focus();
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 :
+      (current + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next]?.focus();
+    tabs[next]?.click();
   };
   // The final reply of each turn: the last agent message before your next message (calls between
   // don't count). Only these get a copy button; the segments between tool calls do not.
@@ -425,6 +450,7 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
 
   return (
     <section className={c.sessionView} aria-label={sessionTitle(session)}>
+      <div ref={split.ref} className={`${c.workspace} ${split.dragging ? c.resizing : ''}`} style={{ '--inspector-w': `${split.width}px` } as CSSProperties}>
       <header className={c.sessionHead}>
         <div className={c.sessionTop}>
           <div className={c.sessionTitle}>
@@ -445,9 +471,6 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
                   <Icon name="pause" size={14} /> 暂停
                 </button>
               ))}
-            <button type="button" className={c.btn} disabled={ended} onClick={() => void actions.copyConnection()}>
-              <Icon name="link" size={14} /> 复制连接
-            </button>
             <SessionMenu session={session} actions={actions} goal={todos.data?.contract?.goal ?? null} />
           </div>
         </div>
@@ -476,7 +499,6 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
         <HandoffBar key={`${session.id}:${session.pending_handoff?.id ?? ''}`} session={session} connectorName={connectorName} now={now} />
       </header>
 
-      <div ref={split.ref} className={`${c.workspace} ${split.dragging ? c.resizing : ''}`} style={{ '--inspector-w': `${split.width}px` } as CSSProperties}>
         <section className={c.feed} aria-label="调用记录" ref={feedRef} onScroll={onFeedScroll}>
           {approvals.length > 0 && (
             <button type="button" className={c.narrowApprovals} onClick={() => onApprove(approvals[0]!)}>
@@ -582,6 +604,32 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
           {approvals.length > 0 && <span className={c.inspectorBadge} aria-hidden="true" />}
         </button>
         <aside id="session-inspector" className={c.inspector} aria-label="会话详情">
+          <div ref={inspectorTabBarRef} className={c.inspectorTabs} role="tablist" aria-label="会话详情和打开的文件" onKeyDown={onInspectorTabKeyDown}>
+            <div className={c.inspectorPinnedTabs} role="presentation">
+              <button ref={overviewTabRef} id="inspector-tab-overview" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'overview'} aria-controls="inspector-panel-overview" tabIndex={inspectorTab === 'overview' ? 0 : -1} onClick={() => setInspectorTab('overview')}>
+                概览{approvals.length > 0 && <span className={c.inspectorPending} aria-label={`${approvals.length} 项待审批`} />}
+              </button>
+              <button ref={changesTabRef} id="inspector-tab-changes" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'changes'} aria-controls="inspector-panel-changes" tabIndex={inspectorTab === 'changes' ? 0 : -1} onClick={() => setInspectorTab('changes')}>
+                本轮修改
+              </button>
+              <button ref={filesTabRef} id="inspector-tab-files" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'files'} aria-controls="inspector-panel-files" tabIndex={inspectorTab === 'files' ? 0 : -1} onClick={() => { setFilesVisited(true); setInspectorTab('files'); }}>
+                工作区文件
+              </button>
+            </div>
+            <div className={c.inspectorFileTabs} role="presentation">
+              {fileTabs.map((file) => (
+                <div key={file} className={c.inspectorFileTab}>
+                  <button type="button" role="tab" className={c.inspectorFileTabName}
+                    title={file} aria-label={file} aria-selected={activeFile === file}
+                    aria-controls="inspector-panel-file" tabIndex={activeFile === file ? 0 : -1}
+                    onClick={() => setInspectorTab('file:' + file)}>{file.split('/').pop()}</button>
+                  <button type="button" className={c.inspectorFileClose} aria-label={`关闭 ${file}`} title={`关闭 ${file}`}
+                    onClick={() => closeWorkspaceFile(file)}><Icon name="close" size={12} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div id="inspector-panel-overview" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-overview" tabIndex={0} hidden={inspectorTab !== 'overview'}>
           {approvals.length > 0 && (
             <div className={c.group}>
               <h3 className={c.groupTitle}>
@@ -599,15 +647,6 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               )}
             </div>
           )}
-          <div className={c.inspectorTabs} role="tablist" aria-label="会话详情" onKeyDown={onInspectorTabKeyDown}>
-            <button ref={overviewTabRef} id="inspector-tab-overview" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'overview'} aria-controls="inspector-panel-overview" tabIndex={inspectorTab === 'overview' ? 0 : -1} onClick={() => setInspectorTab('overview')}>
-              概览
-            </button>
-            <button ref={changesTabRef} id="inspector-tab-changes" type="button" role="tab" className={c.inspectorTab} aria-selected={inspectorTab === 'changes'} aria-controls="inspector-panel-changes" tabIndex={inspectorTab === 'changes' ? 0 : -1} onClick={() => setInspectorTab('changes')}>
-              本轮修改
-            </button>
-          </div>
-          <div id="inspector-panel-overview" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-overview" tabIndex={0} hidden={inspectorTab !== 'overview'}>
           <div className={c.group}>
             <h3 className={c.groupTitle}>任务</h3>
             {board?.contract ? (
@@ -675,11 +714,27 @@ export function SessionPane({ session, approvals, now, actions, onApprove, onApp
               <dd>{SESSION_STATUS_LABEL[session.status] ?? session.status}</dd>
               <dt>创建</dt>
               <dd>{formatFull(session.created_at)}</dd>
+              <dt>工作区</dt>
+              <dd title={session.workspace_path}>{session.workspace_path}</dd>
+              <dt>权限</dt>
+              <dd>{PERMISSION_LABEL[session.permission_mode] ?? session.permission_mode}</dd>
+              <dt>最近活动</dt>
+              <dd>{relativeTime(session.last_active_at, now)}</dd>
+              <dt>调用</dt>
+              <dd>{total}</dd>
+              <dt>自动批准</dt>
+              <dd>{session.auto_approve ? '开' : '关'}</dd>
             </dl>
           </div>
           </div>
           <div id="inspector-panel-changes" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-changes" tabIndex={0} hidden={inspectorTab !== 'changes'}>
             <TurnChanges sessionId={session.id} active={inspectorTab === 'changes'} turnAt={turnAt} focusRequest={focusRequest} />
+          </div>
+          <div id="inspector-panel-files" className={c.inspectorPanel} role="tabpanel" aria-labelledby="inspector-tab-files" tabIndex={0} hidden={inspectorTab !== 'files'}>
+            {filesVisited && <WorkspaceExplorer key={session.id} sessionId={session.id} workspacePath={session.workspace_path} onFile={openWorkspaceFile} />}
+          </div>
+          <div id="inspector-panel-file" className={c.inspectorPanel} role="tabpanel" aria-label={activeFile ?? '文件预览'} tabIndex={0} hidden={!activeFile}>
+            {activeFile && <WorkspaceFileView key={session.id + ':' + activeFile} sessionId={session.id} path={activeFile} />}
           </div>
         </aside>
         </div>

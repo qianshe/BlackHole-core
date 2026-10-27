@@ -68,9 +68,13 @@ export async function verifyCandidate(manifestPath, environment) {
   const manifest = readJson(absolute, 256 * 1024);
   if (!object(manifest) || !object(manifest.seed) || !object(manifest.vsix) || !object(manifest.desktop)) fail('manifest_invalid');
   if (manifest.environment !== environment) fail('candidate_environment_mismatch');
-  if (!text(manifest.version) || !hash(manifest.seed.descriptorSha256)) fail('manifest_identity_invalid');
-  if (manifest.vsix.bridgeNotThin !== true) fail('bridge_candidate_required');
-  if (environment === 'production' && /^test[-_]/i.test(manifest.seed.signingKeyId ?? '')) fail('production_test_key_rejected');
+  if (!text(manifest.version) || manifest.platform !== 'win32' || manifest.arch !== 'x64'
+    || typeof manifest.sourceHead !== 'string' || !/^[a-f0-9]{40}$/.test(manifest.sourceHead)
+    || !text(manifest.buildId) || manifest.seed.version !== manifest.version
+    || !hash(manifest.seed.descriptorSha256) || !text(manifest.seed.signingKeyId)
+    || manifest.vsix.version !== manifest.version) fail('manifest_identity_invalid');
+  if (manifest.vsix.bridgeNotThin !== true || !['offline-code', 'bridge'].includes(manifest.vsix.corePackage)) fail('bridge_candidate_required');
+  if (environment === 'production' && /^test[-_]/i.test(manifest.seed.signingKeyId)) fail('production_test_key_rejected');
   const entries = [
     ['core-seed', manifest.seed.archive, manifest.seed.bytes, manifest.seed.archiveSha256],
     ['vsix-bridge', manifest.vsix.file, manifest.vsix.bytes, manifest.vsix.sha256],
@@ -88,7 +92,17 @@ export async function verifyCandidate(manifestPath, environment) {
     if (actual !== sha256) fail('artifact_hash_mismatch');
     artifacts.push({ role, file, bytes, sha256: actual });
   }
-  return { environment, version: manifest.version, descriptorHash: manifest.seed.descriptorSha256, artifacts };
+  return {
+    environment,
+    version: manifest.version,
+    platform: manifest.platform,
+    arch: manifest.arch,
+    sourceHead: manifest.sourceHead,
+    buildId: manifest.buildId,
+    signingKeyId: manifest.seed.signingKeyId,
+    descriptorHash: manifest.seed.descriptorSha256,
+    artifacts,
+  };
 }
 
 function windowsPath(value) {

@@ -92,9 +92,13 @@ export class ManagedCoreSession {
     if (this.attachment && this.port !== undefined && this.port !== port) return Promise.reject(new Error('managed_port_change_requires_coordinated_restart'));
     if (this.starting) return this.starting;
     if (this.attachment && Date.parse(this.attachment.lease.expiresAt) > Date.now()) return Promise.resolve(this.attachment.receipt);
-    if (this.attachment) return Promise.reject(new Error('lease_expired'));
     this.port = port;
     const task = (async () => {
+      if (this.attachment) {
+        await this.renew();
+        if (this.attachment && Date.parse(this.attachment.lease.expiresAt) > Date.now()) return this.attachment.receipt;
+        if (this.attachment) throw new Error('lease_expired');
+      }
       const { invoke, client, seedArchive } = this.options;
       if (this.options.resolvePort) port = await this.options.resolvePort(port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('port_invalid');

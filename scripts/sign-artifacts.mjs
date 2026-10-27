@@ -22,18 +22,29 @@ const manifest = JSON.parse(fs.readFileSync(path.resolve(args.manifest), 'utf8')
 const artifactsDir = path.resolve(args['artifacts-dir']);
 function artifactFiles() {
   const entries = [];
-  const add = (id, relative) => { const file = path.join(artifactsDir, relative); if (!fs.existsSync(file)) throw new Error(`artifact_missing:${relative}`); const bytes = fs.readFileSync(file); entries.push({ id, file: relative.split(path.sep).join('/'), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), data: bytes }); };
-  add('core-seed', manifest.seed.archive);
-  add('vsix', manifest.vsix.file);
+  const add = (id, relative, expectedSha256, expectedBytes) => {
+    const file = path.join(artifactsDir, relative);
+    if (!fs.existsSync(file)) throw new Error(`artifact_missing:${relative}`);
+    const bytes = fs.readFileSync(file);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (expectedSha256 !== undefined && sha256 !== expectedSha256) throw new Error(`artifact_manifest_hash_mismatch:${id}`);
+    if (expectedBytes !== undefined && bytes.length !== expectedBytes) throw new Error(`artifact_manifest_size_mismatch:${id}`);
+    entries.push({ id, file: relative.split(path.sep).join('/'), bytes: bytes.length, sha256, data: bytes });
+  };
+  add('core-seed', manifest.seed.archive, manifest.seed.archiveSha256, manifest.seed.bytes);
+  add('vsix', manifest.vsix.file, manifest.vsix.sha256, manifest.vsix.bytes);
   // The installer is optional in preparation manifests (e.g. CI candidates
   // that do not compile Inno); every other entry is mandatory.
-  if (manifest.desktop.installer && fs.existsSync(path.join(artifactsDir, manifest.desktop.installer))) add('desktop-installer', manifest.desktop.installer);
-  add('desktop-launcher', manifest.desktop.launcher);
+  if (manifest.desktop.installer && fs.existsSync(path.join(artifactsDir, manifest.desktop.installer))) {
+    add('desktop-installer', manifest.desktop.installer, manifest.desktop.installerSha256, manifest.desktop.installerBytes);
+  }
+  add('desktop-launcher', manifest.desktop.launcher, manifest.desktop.launcherSha256, manifest.desktop.launcherBytes);
   return entries;
 }
 if (command === 'sign') {
   if (!args['private-key'] || !args['key-id'] || !args.environment) throw new Error('missing signing arguments');
   if (!['test', 'production'].includes(args.environment)) throw new Error('environment_invalid');
+  if (manifest.environment && args.environment !== manifest.environment) throw new Error('environment_mismatch');
   if (args.environment === 'production') {
     if (/^test(?:[-_]|$)/i.test(args['key-id'])) throw new Error('production_rejects_test_key');
     if (!('confirm-production-signing' in args)) throw new Error('production_signing_requires_explicit_confirmation');
@@ -41,18 +52,24 @@ if (command === 'sign') {
   const key = createPrivateKey(fs.readFileSync(path.resolve(args['private-key'])));
   const signedAt = new Date().toISOString();
   const signatures = artifactFiles().map(({ data, ...entry }) => ({ ...entry, signature: sign(null, Buffer.from(`${entry.sha256}\n${entry.file}\n`, 'utf8'), key).toString('base64') }));
-  const out = { formatVersion: 1, algorithm: 'ed25519', keyId: args['key-id'], environment: args.environment, signedAt, sourceHead: manifest.sourceHead, version: manifest.version, signatures };
+  const out = { formatVersion: 1, algorithm: 'ed25519', keyId: args['key-id'], environment: args.environment, signedAt, sourceHead: manifest.sourceHead, version: manifest.version, buildId: manifest.buildId, signatures };
   fs.writeFileSync(path.resolve(args.output), JSON.stringify(out, null, 2) + '\n', { flag: 'w' });
   console.log(JSON.stringify({ ok: true, output: path.resolve(args.output), keyId: args['key-id'], environment: args.environment, signed: signatures.length }));
 } else {
   if (!args.signatures || !args['public-key']) throw new Error('missing verify arguments');
   const recorded = JSON.parse(fs.readFileSync(path.resolve(args.signatures), 'utf8'));
-  if (recorded.algorithm !== 'ed25519' || recorded.version !== manifest.version) throw new Error('signature_manifest_mismatch');
+  if (recorded.algorithm !== 'ed25519' || recorded.version !== manifest.version
+    || (manifest.environment && recorded.environment !== manifest.environment)
+    || (manifest.sourceHead && recorded.sourceHead !== manifest.sourceHead)) throw new Error('signature_manifest_mismatch');
   const key = createPublicKey(fs.readFileSync(path.resolve(args['public-key'])));
   const current = new Map(artifactFiles().map((entry) => [entry.id, entry]));
+  if (!Array.isArray(recorded.signatures) || recorded.signatures.length !== current.size) throw new Error('signature_records_incomplete');
+  const seen = new Set();
   for (const entry of recorded.signatures) {
+    if (seen.has(entry.id)) throw new Error(`signature_duplicate:${entry.id}`);
+    seen.add(entry.id);
     const now = current.get(entry.id);
-    if (!now || now.sha256 !== entry.sha256 || now.file !== entry.file) throw new Error(`signature_hash_mismatch:${entry.id}`);
+    if (!now || now.sha256 !== entry.sha256 || now.bytes !== entry.bytes || now.file !== entry.file) throw new Error(`signature_hash_mismatch:${entry.id}`);
     if (!verify(null, Buffer.from(`${entry.sha256}\n${entry.file}\n`, 'utf8'), key, Buffer.from(entry.signature, 'base64'))) throw new Error(`signature_invalid:${entry.id}`);
   }
   console.log(JSON.stringify({ ok: true, keyId: recorded.keyId, environment: recorded.environment, verified: recorded.signatures.length }));

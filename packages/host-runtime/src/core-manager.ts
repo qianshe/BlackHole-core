@@ -100,18 +100,32 @@ export class CoreManager {
     try { fs.mkdirSync(lock); this.atomicWrite(path.join(lock, 'owner.json'), claim); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const owner = this.readJson(path.join(lock, 'owner.json')) as { createdAt?: string };
-      const created = typeof owner.createdAt === 'string' ? Date.parse(owner.createdAt) : Number.NaN;
-      if (!Number.isFinite(created)) throw new StoreLockError('lock_state_unknown', `${name} lock owner is invalid`);
-      if (this.clock().getTime() - created <= staleAfterMs) throw new StoreLockError('lock_busy', `${name} lock is held`);
-      const pid = (owner as { pid?: unknown }).pid;
-      if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
-        try { process.kill(pid, 0); throw new StoreLockError('lock_busy', `${name} lock owner is still alive`); }
-        catch (probe) { if (probe instanceof StoreLockError || (probe as NodeJS.ErrnoException).code === 'EPERM') throw probe; }
+      const ownerFile = path.join(lock, 'owner.json');
+      if (!fs.existsSync(ownerFile)) {
+        let mtimeMs = this.clock().getTime();
+        try { mtimeMs = fs.statSync(lock).mtimeMs; }
+        catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code === 'ENOENT') throw new StoreLockError('lock_busy', `${name} lock is in transition`);
+          throw statError;
+        }
+        if (this.clock().getTime() - mtimeMs <= staleAfterMs) throw new StoreLockError('lock_busy', `${name} lock is held`);
+        const quarantine = `${lock}.stale.${randomUUID()}`;
+        try { fs.renameSync(lock, quarantine); fs.rmSync(quarantine, { recursive: true, force: true }); fs.mkdirSync(lock); this.atomicWrite(ownerFile, claim); }
+        catch (replaceError) { throw new StoreLockError('lock_busy', `${name} stale lock could not be replaced: ${String(replaceError)}`); }
+      } else {
+        const owner = this.readJson(ownerFile) as { createdAt?: string };
+        const created = typeof owner.createdAt === 'string' ? Date.parse(owner.createdAt) : Number.NaN;
+        if (!Number.isFinite(created)) throw new StoreLockError('lock_state_unknown', `${name} lock owner is invalid`);
+        if (this.clock().getTime() - created <= staleAfterMs) throw new StoreLockError('lock_busy', `${name} lock is held`);
+        const pid = (owner as { pid?: unknown }).pid;
+        if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 0); throw new StoreLockError('lock_busy', `${name} lock owner is still alive`); }
+          catch (probe) { if (probe instanceof StoreLockError || (probe as NodeJS.ErrnoException).code === 'EPERM') throw probe; }
+        }
+        const quarantine = `${lock}.stale.${randomUUID()}`;
+        try { fs.renameSync(lock, quarantine); fs.rmSync(quarantine, { recursive: true, force: true }); fs.mkdirSync(lock); this.atomicWrite(ownerFile, claim); }
+        catch (replaceError) { throw new StoreLockError('lock_busy', `${name} stale lock could not be replaced: ${String(replaceError)}`); }
       }
-      const quarantine = `${lock}.stale.${randomUUID()}`;
-      try { fs.renameSync(lock, quarantine); fs.rmSync(quarantine, { recursive: true, force: true }); fs.mkdirSync(lock); this.atomicWrite(path.join(lock, 'owner.json'), claim); }
-      catch (replaceError) { throw new StoreLockError('lock_busy', `${name} stale lock could not be replaced: ${String(replaceError)}`); }
     }
     if (name === 'lifecycle') this.lifecycleHeld = true;
     try { return await action(); }
@@ -119,7 +133,11 @@ export class CoreManager {
       if (name === 'lifecycle') this.lifecycleHeld = false;
       try {
         const owner = this.readJson(path.join(lock, 'owner.json')) as { lockId?: string };
-        if (owner.lockId === claim.lockId) fs.rmSync(lock, { recursive: true, force: true });
+        if (owner.lockId === claim.lockId) {
+          const releasing = `${lock}.releasing.${claim.lockId}`;
+          try { fs.renameSync(lock, releasing); fs.rmSync(releasing, { recursive: true, force: true }); }
+          catch { fs.rmSync(lock, { recursive: true, force: true }); }
+        }
       } catch { /* Never delete a lock whose ownership cannot be proven. */ }
     }
   }

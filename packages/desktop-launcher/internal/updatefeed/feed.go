@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -136,8 +137,33 @@ func compareVersion(a, b string) (int, error) {
 	}
 	return 0, nil
 }
+func runtimePlatform() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "windows"
+	case "darwin":
+		return "macos"
+	case "linux":
+		return "linux"
+	default:
+		return runtime.GOOS
+	}
+}
+func runtimeArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "arm64":
+		return "arm64"
+	default:
+		return runtime.GOARCH
+	}
+}
 func validateManifest(m Manifest, env string) error {
-	if m.SchemaVersion != 1 || m.Environment != env || m.Platform != "windows" || m.Arch != "x64" ||
+	if m.SchemaVersion != 1 || m.Environment != env ||
+		(m.Platform != "windows" && m.Platform != "macos" && m.Platform != "linux") ||
+		(m.Arch != "x64" && m.Arch != "arm64") ||
+		m.Platform != runtimePlatform() || m.Arch != runtimeArch() ||
 		!segmentPattern.MatchString(m.BuildID) || !segmentPattern.MatchString(m.CoreBuildID) ||
 		!checksumPattern.MatchString(m.InstallerSHA256) || m.InstallerBytes < 1024*1024 || m.InstallerBytes > maxInstaller ||
 		!safeHTTPS(m.InstallerURL) {

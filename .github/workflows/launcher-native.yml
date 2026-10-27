@@ -15,6 +15,7 @@ on:
       - 'scripts/**'
       - 'src/data-paths.ts'
       - '.github/workflows/launcher-native.yml'
+      - '.github/workflows/desktop-release.yml'
   workflow_dispatch:
     inputs:
       build_artifacts:
@@ -49,7 +50,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.10'
           cache-dependency-path: packages/desktop-launcher/go.sum
       - uses: pnpm/action-setup@v5
         with:
@@ -80,7 +81,7 @@ jobs:
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
       - name: Desktop delivery policies and native-status boundary
-        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs packages/web/test/desktop-update-client.test.mjs
+        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs packages/web/test/desktop-update-client.test.mjs
       - name: Host-provided Node and lightweight VSIX packaging boundaries
         run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs packages/vscode/test/managed-core-session.test.mjs
       - name: Read-only installer preflight (disposable HOME only)
@@ -119,7 +120,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.10'
           cache-dependency-path: packages/desktop-launcher/go.sum
       - name: WebKitGTK
         if: matrix.target.goos == 'linux'

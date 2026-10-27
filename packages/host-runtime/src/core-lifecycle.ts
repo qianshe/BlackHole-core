@@ -897,8 +897,9 @@ export class CoreLifecycle {
             if (r.status !== 200 || h.daemon_id !== lease.daemonId || h.start_fingerprint !== record.startFingerprint
               || h.descriptor_hash !== record.descriptorHash || h.data_root_id !== record.dataRootId) return error('maintenance_outcome_unknown');
           } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === 'ECONNREFUSED') closed = true;
-            else return error('maintenance_outcome_unknown');
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === 'ECONNREFUSED') closed = true;
+            else if (code !== 'ECONNRESET' && !(e instanceof Error && e.message === 'daemon_probe_unknown')) return error('maintenance_outcome_unknown');
           }
           try { process.kill(record.pid, 0); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') dead = true; else return error('recovery_process_unknown'); }
           if (closed && dead) { stopped = true; break; }

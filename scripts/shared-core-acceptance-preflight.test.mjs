@@ -2,33 +2,41 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { compareObservations, runPreflight, verifyCandidate } from './shared-core-acceptance-preflight.mjs';
+import { buildArtifactManifest, buildReleaseMetadata } from './release-metadata.mjs';
 
 const script = fileURLToPath(new URL('./shared-core-acceptance-preflight.mjs', import.meta.url));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
-const candidate = { environment: 'test', version: '0.3.201', descriptorHash: 'a'.repeat(64) };
+const candidate = { environment: 'test', version: '0.3.201', descriptorHash: 'a'.repeat(64), buildId: 'fixture-a', sourceHead: '1'.repeat(40) };
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-acceptance-preflight-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const files = ['core.zip', 'bridge.vsix', 'desktop/blackhole.exe', 'desktop/installer/setup.exe'];
-  const entries = files.map((file, index) => {
+  files.forEach((file, index) => {
     const bytes = Buffer.from(`non-executable fixture ${index}\n`), absolute = path.join(root, file);
     fs.mkdirSync(path.dirname(absolute), { recursive: true }); fs.writeFileSync(absolute, bytes);
-    return { file, bytes: bytes.length, sha256: digest(bytes) };
   });
-  const [core, vsix, launcher, installer] = entries;
-  const manifest = {
-    environment: candidate.environment, version: candidate.version,
-    seed: { archive: core.file, bytes: core.bytes, archiveSha256: core.sha256, descriptorSha256: candidate.descriptorHash, signingKeyId: 'test-fixture' },
-    vsix: { ...vsix, bridgeNotThin: true },
-    desktop: { launcher: launcher.file, launcherBytes: launcher.bytes, launcherSha256: launcher.sha256,
-      installer: installer.file, installerBytes: installer.bytes, installerSha256: installer.sha256 },
-  };
+  const manifest = buildArtifactManifest({
+    artifactsDir: root,
+    environment: candidate.environment,
+    version: candidate.version,
+    platform: 'win32',
+    arch: 'x64',
+    sourceHead: candidate.sourceHead,
+    buildId: candidate.buildId,
+    seedArchive: files[0],
+    descriptorSha256: candidate.descriptorHash,
+    signingKeyId: 'test-fixture',
+    vsixFile: files[1],
+    vsixCorePackage: 'offline-code',
+    desktopLauncher: files[2],
+    desktopInstaller: files[3],
+  });
   const manifestPath = path.join(root, 'artifact-manifest.json');
   const save = () => fs.writeFileSync(manifestPath, JSON.stringify(manifest)); save();
   return { root, manifest, manifestPath, files, save };
@@ -209,4 +217,106 @@ test('CLI errors are bounded and never echo parser excerpts or raw input paths',
   const invalid = spawnSync(process.execPath, [script, '--manifest', f.manifestPath, '--force', 'SENSITIVE_SENTINEL'], { encoding: 'utf8', timeout: 10000 });
   assert.equal(invalid.status, 1); assert.equal(JSON.parse(invalid.stderr).code, 'arguments_invalid');
   assert.ok(!invalid.stderr.includes('SENSITIVE_SENTINEL'));
+});
+
+test('artifact-manifest contract rejects missing or drifted identity fields', async t => {
+  for (const [label, mutate, expected] of [
+    ['missing sourceHead', m => { delete m.sourceHead; }, /manifest_identity_invalid/],
+    ['short sourceHead', m => { m.sourceHead = 'abc123'; }, /manifest_identity_invalid/],
+    ['missing buildId', m => { delete m.buildId; }, /manifest_identity_invalid/],
+    ['wrong platform', m => { m.platform = 'linux'; }, /manifest_identity_invalid/],
+    ['wrong arch', m => { m.arch = 'arm64'; }, /manifest_identity_invalid/],
+    ['missing seed version', m => { delete m.seed.version; }, /manifest_identity_invalid/],
+    ['drifted seed version', m => { m.seed.version = '0.9.9'; }, /manifest_identity_invalid/],
+    ['missing seed signingKeyId', m => { delete m.seed.signingKeyId; }, /manifest_identity_invalid/],
+    ['missing vsix version', m => { delete m.vsix.version; }, /manifest_identity_invalid/],
+    ['drifted vsix version', m => { m.vsix.version = '0.9.9'; }, /manifest_identity_invalid/],
+    ['missing vsix corePackage', m => { delete m.vsix.corePackage; }, /bridge_candidate_required/],
+    ['thin vsix corePackage', m => { m.vsix.corePackage = 'thin'; }, /bridge_candidate_required/],
+    ['missing desktop installer', m => { delete m.desktop.installer; }, /artifact_path_invalid|artifact_metadata_invalid/],
+  ]) {
+    const f = fixture(t);
+    mutate(f.manifest);
+    f.save();
+    await assert.rejects(verifyCandidate(f.manifestPath, 'test'), expected, label);
+  }
+});
+
+test('release-metadata binds signature manifest to every artifact hash, size, file and cryptographic signature', t => {
+  const f = fixture(t);
+  const pair = generateKeyPairSync('ed25519');
+  const pubPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const makeSignatures = (manifest, keyId = 'prod-release-2026') => ({
+    formatVersion: 1,
+    algorithm: 'ed25519',
+    keyId,
+    environment: manifest.environment,
+    signedAt: '2026-10-26T12:00:00Z',
+    sourceHead: manifest.sourceHead,
+    version: manifest.version,
+    buildId: manifest.buildId,
+    signatures: [
+      { id: 'core-seed', file: manifest.seed.archive, bytes: manifest.seed.bytes, sha256: manifest.seed.archiveSha256 },
+      { id: 'vsix', file: manifest.vsix.file, bytes: manifest.vsix.bytes, sha256: manifest.vsix.sha256 },
+      { id: 'desktop-installer', file: manifest.desktop.installer, bytes: manifest.desktop.installerBytes, sha256: manifest.desktop.installerSha256 },
+      { id: 'desktop-launcher', file: manifest.desktop.launcher, bytes: manifest.desktop.launcherBytes, sha256: manifest.desktop.launcherSha256 },
+    ].map(entry => ({
+      ...entry,
+      signature: sign(null, Buffer.from(`${entry.sha256}\n${entry.file}\n`, 'utf8'), pair.privateKey).toString('base64'),
+    })),
+  });
+
+  const prodManifest = structuredClone(f.manifest);
+  prodManifest.environment = 'production';
+  prodManifest.seed.signingKeyId = 'prod-core-2026';
+  const validSigs = makeSignatures(prodManifest);
+  const meta = buildReleaseMetadata({
+    manifest: prodManifest,
+    channel: 'production',
+    baseUrl: 'https://downloads.example.invalid/blackhole',
+    signatures: validSigs,
+    publicKeyPem: pubPem,
+  });
+  assert.equal(meta.artifacts.length, 4);
+  assert.ok(meta.artifacts.every(a => a.signed === true && a.signingKeyId === 'prod-release-2026' && typeof a.signature === 'string'));
+
+  // Missing one artifact signature must fail
+  const missingOne = structuredClone(validSigs);
+  missingOne.signatures.pop();
+  assert.throws(() => buildReleaseMetadata({
+    manifest: prodManifest,
+    channel: 'production',
+    baseUrl: 'https://downloads.example.invalid/blackhole',
+    signatures: missingOne,
+  }), /signature_records_incomplete/);
+
+  // Tampered artifact hash in signature manifest must fail
+  const wrongHash = structuredClone(validSigs);
+  wrongHash.signatures[0].sha256 = 'f'.repeat(64);
+  assert.throws(() => buildReleaseMetadata({
+    manifest: prodManifest,
+    channel: 'production',
+    baseUrl: 'https://downloads.example.invalid/blackhole',
+    signatures: wrongHash,
+  }), /signature_hash_mismatch:core-seed/);
+
+  // Invalid Ed25519 signature bytes must fail when publicKeyPem is provided
+  const badCrypto = structuredClone(validSigs);
+  badCrypto.signatures[2].signature = Buffer.alloc(64, 1).toString('base64');
+  assert.throws(() => buildReleaseMetadata({
+    manifest: prodManifest,
+    channel: 'production',
+    baseUrl: 'https://downloads.example.invalid/blackhole',
+    signatures: badCrypto,
+    publicKeyPem: pubPem,
+  }), /signature_invalid:desktop-installer/);
+
+  // Test key ID on production channel must fail
+  const testKeyOnProd = makeSignatures(prodManifest, 'test-key-2026');
+  assert.throws(() => buildReleaseMetadata({
+    manifest: prodManifest,
+    channel: 'production',
+    baseUrl: 'https://downloads.example.invalid/blackhole',
+    signatures: testKeyOnProd,
+  }), /production_rejects_test_key/);
 });

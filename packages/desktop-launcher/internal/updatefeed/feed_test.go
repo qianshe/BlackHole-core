@@ -38,7 +38,7 @@ func fixture(t *testing.T) (Feed, *SignedRelease, []byte, func()) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	m := Manifest{SchemaVersion: 1, Environment: "test", Platform: "windows", Arch: "x64", Version: "0.3.202", BuildID: "r1", CoreVersion: "0.3.202", CoreBuildID: "core-r1", InstallerURL: server.URL + "/setup.exe", InstallerSHA256: hex.EncodeToString(sum[:]), InstallerBytes: int64(len(binary))}
+	m := Manifest{SchemaVersion: 1, Environment: "test", Platform: runtimePlatform(), Arch: runtimeArch(), Version: "0.3.202", BuildID: "r1", CoreVersion: "0.3.202", CoreBuildID: "core-r1", InstallerURL: server.URL + "/setup.exe", InstallerSHA256: hex.EncodeToString(sum[:]), InstallerBytes: int64(len(binary))}
 	feedPayload, err = json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)

@@ -30,6 +30,7 @@ import { resolveConnectionRoutes } from '../connection/resolve.js';
 import { networkScope } from '../connection/scope.js';
 import { RemoteProbeRegistry } from './remote-probe.js';
 import { buildTurnDiff } from '../workspace/turnDiff.js';
+import { listWorkspaceEntries, readWorkspacePreview, WorkspaceBrowseError } from './workspace-browser.js';
 import type { SetupSummary } from '../../packages/contracts/dist/connections.js';
 
 export { WEB_SESSION_TTL_MS };
@@ -664,6 +665,31 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
     try { res.json({ ...buildTurnDiff(session, rows), incomplete: false, turnAt }); }
     catch { res.status(500).json({ error: 'turn_diff_failed' }); }
   });
+
+  // Authenticated local Web only. A preview can never read outside its
+  // session workspace (including via symlink); directories and files are bounded.
+  const workspaceBrowse = (req: Request, res: Response, mode: 'entries' | 'file'): void => {
+    const session = deps.sessions.get(String(req.params.id));
+    if (!session || session.status === 'revoked' || session.status === 'archived') {
+      res.status(404).json({ error: 'session_not_found' });
+      return;
+    }
+    const relative = typeof req.query.path === 'string' ? req.query.path : '';
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      res.json(mode === 'entries'
+        ? listWorkspaceEntries(session.workspace_path, relative)
+        : readWorkspacePreview(session.workspace_path, relative));
+    } catch (reason) {
+      if (reason instanceof WorkspaceBrowseError) {
+        res.status(reason.status).json({ error: reason.code });
+        return;
+      }
+      res.status(500).json({ error: 'workspace_browser_failed' });
+    }
+  };
+  api.get('/sessions/:id/workspace/entries', (req, res) => workspaceBrowse(req, res, 'entries'));
+  api.get('/sessions/:id/workspace/file', (req, res) => workspaceBrowse(req, res, 'file'));
 
   // Read routes shared with the phone surface (/remote-api/v1).
   const data = Router();

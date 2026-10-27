@@ -36,7 +36,21 @@ below are still open: this is **not a production release**.
   Tests isolate by changing HOME/USERPROFILE to a disposable user, not by using
   an alternative data-directory policy. See [single-root storage](../../installers/STORAGE-SINGLE-ROOT.md).
 
-## Build a fresh unsigned test layout
+## Build a fresh matched Test candidate (Core + VSIX + Desktop + Installer)
+
+First-phase Desktop installer support targets **Windows x64 (`win32-x64`)** with the pinned toolchain in `scripts/desktop-toolchain.json` (`Node 22.20.0`, `Go 1.26.1`, `go-winres 0.3.3`, `pnpm 10.0.0`, `Inno Setup 6.7.3`).
+
+To build a complete, matched Test candidate (Core v2 ZIP + offline-code VSIX + Desktop `blackhole.exe` + Inno Setup installer + signed update-feed manifest + `artifact-manifest.json` + preflight report + SBOM) into a fresh `.tmp/` directory without manually concatenating low-level flags:
+
+```sh
+node scripts/package-vscode-local-test.mjs .tmp/candidate-0426-YYYYMMDD
+```
+
+(When the currently installed `qianshe.blackhole-vscode` extension has the same semver as the candidate, either bump the patch version first or set `BH_ALLOW_INSTALLED_VERSION=1` for an isolated build that does not overwrite the running extension.)
+
+The unified builder automatically resolves the active `~/.blackhole/core/active.json` descriptor and installed test trust roots (or accepts explicit `EXISTING_TEST_TRUST_JSON INSTALLED_CORE_DESCRIPTOR_JSON` arguments), enforces that the active Core's `signingKeyId` is retained in `trust.json`, verifies byte-for-byte Core archive parity between VSIX and Desktop, and runs `scripts/shared-core-acceptance-preflight.mjs` against the generated `artifact-manifest.json`.
+
+### Low-level Desktop layout packager (`scripts/package-desktop.mjs`)
 
 From `BlackHole-core`, only in an approved native-build environment, supply a
 verified **Core v2 code archive**, its **public** key and one independently
@@ -55,6 +69,11 @@ Core is no longer accepted for new distributions. The packager checks Node
 platform/version/SQLite and hashes, delivers Node and license only once, and
 keeps the same signed Core ZIP available to the VS Code adapter. It never strips
 members from an already signed archive. Output must be fresh.
+
+### Ed25519 vs Windows Authenticode signing
+
+- **Ed25519 signatures** (`core-descriptor.json`, `latest.json.sig`, `signatures.json`) authenticate Core code archives, update-feed metadata, and release manifests.
+- **Windows Authenticode signatures** authenticate PE binaries (`blackhole.exe` and `BlackHole-Desktop-*-setup.exe`) for Windows SmartScreen/OS trust. Passing Core Ed25519 verification does **not** mean the Windows EXE or Setup installer is Authenticode-signed. Production Authenticode keys remain exclusively with the Signing Owner.
 
 The native runtime integration currently has synthetic layout/cache tests and
 Inno syntax checks. Do not run a blocked native candidate or invoke the native

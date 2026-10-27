@@ -129,6 +129,11 @@ export class DaemonManager implements Disposable {
       if (binding === 'attaching') return false;
       if (binding === 'unbound' || binding === 'closed') {
         if (this.state !== 'error') this.setState('error', 'managed_core_not_attached');
+        if (binding === 'unbound' && this.lastError === 'managed_core_lease_lost'
+          && health.lifecycle_state === 'managed' && Date.now() >= this.nextReconcileAt) {
+          this.nextReconcileAt = Date.now() + RECONCILE_BACKOFF_MS;
+          void this.ensureRunning();
+        }
         return false;
       }
       if (binding === 'maintenance_unknown') {

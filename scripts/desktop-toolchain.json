@@ -1,16 +1,26 @@
 {
   "$comment": "Toolchain and dependency baseline for the unified Web / desktop launcher plan (.blackhole/plan/unified-web-launcher.md, T0). Observed 2026-09-26 on the Windows x64 dev machine. 'planned' dependencies are not installed yet; lock exact versions when the owning task adds them and re-check licenses/advisories then.",
-  "observedAt": "2026-09-26",
+  "observedAt": "2026-10-26",
+  "firstPhaseDesktopInstaller": "win32-x64",
+  "versioningPolicy": {
+    "format": "MAJOR.MINOR.PATCH",
+    "testVsProduction": "Test and Production share monotonic semver validation but are strictly isolated by environment, trust roots, AppId (StellarBridge.BlackHole.Desktop.Test vs StellarBridge.BlackHole.Desktop) and update feed.",
+    "sameVersionRule": "Never overwrite an installed VSIX or running Desktop with a different build of the same semver while the host is running; bump PATCH for each new candidate or uninstall before clean test replacement."
+  },
   "go": {
     "dev": "1.26.1",
-    "releaseMinimum": "1.26.8",
+    "ci": "1.26.10",
+    "releaseMinimum": "1.26.10",
+    "goWinres": "0.3.3",
     "env": { "GOTOOLCHAIN": "local", "CGO_ENABLED": "0" },
     "verified": "vet, test, -H windowsgui build, run, cross-build windows/darwin/linux x amd64/arm64 without runtime/cgo"
   },
   "node": {
     "devMachine": "22.20.0",
+    "ci": "22.20.0",
+    "coreMinVersion": "22.13.0",
     "target": "24 LTS",
-    "gate": "dev machine upgrades to Node 24 LTS before T2 starts; T0/T1 must not use Node-24-only APIs",
+    "gate": "Core v2 requires >=22.13.0 (built-in node:sqlite); Desktop bundles one hash-pinned Node 22.20.0 executable outside the Node-free Core archive",
     "vscodeElectron": { "vscode": "1.139.1", "electron": "43.6.0", "node": "24.20.0", "modules": "148", "napi": "10" }
   },
   "pnpm": "10.0.0",

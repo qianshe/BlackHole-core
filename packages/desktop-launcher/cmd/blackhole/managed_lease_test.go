@@ -138,7 +138,7 @@ func TestKeeperFailsClosedOnLeaseExpiredRefusal(t *testing.T) {
 	})
 	select {
 	case <-lost:
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected onLost after a definitive lease_expired refusal")
 	}
 }
@@ -156,7 +156,7 @@ func TestKeeperFailsClosedOnIdentityConflict(t *testing.T) {
 	})
 	select {
 	case <-lost:
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected onLost after core_identity_conflict")
 	}
 }
@@ -173,7 +173,7 @@ func TestKeeperFailsClosedAfterRecordedExpiry(t *testing.T) {
 	})
 	select {
 	case <-lost:
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected onLost after the recorded lease expiry passed")
 	}
 }

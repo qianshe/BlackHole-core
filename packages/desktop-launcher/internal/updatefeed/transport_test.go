@@ -32,6 +32,23 @@ func TestProductionDownloadMustMatchGitHubRepoAndVersion(t *testing.T) {
 			t.Fatal("unsafe release URL accepted", u)
 		}
 	}
+	for _, tc := range []struct {
+		platform, url string
+		want          bool
+	}{
+		{"windows", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-windows-x64-setup.exe", true},
+		{"macos", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-arm64.dmg", true},
+		{"macos", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-x64.zip", true},
+		{"linux", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-linux-x64.deb", true},
+		{"linux", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-linux-arm64.AppImage", true},
+		{"windows", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-arm64.dmg", false},
+		{"macos", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-windows-x64-setup.exe", false},
+		{"linux", "https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-arm64.dmg", false},
+	} {
+		if got := productionInstallerURL(Manifest{Platform: tc.platform, Version: "0.3.202", InstallerURL: tc.url}); got != tc.want {
+			t.Fatalf("platform %s URL %s: got %v, want %v", tc.platform, tc.url, got, tc.want)
+		}
+	}
 }
 func TestGitHubCDNRedirectAllowsSignedQueryWithoutAccountCookies(t *testing.T) {
 	jar, _ := cookiejar.New(nil)

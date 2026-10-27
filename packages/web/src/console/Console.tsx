@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, ApiError, panel, remoteAdmin, type AccountView, type ConfirmationView, type ProjectView, type SessionView } from '../api';
 import { readViewState, sessionTitle, underPath, writeViewState, type SettingsSection, type ViewState } from '../format';
 import { NewChatPane } from './NewChatPane';
@@ -34,6 +34,96 @@ function useViewState(): [ViewState, (patch: Partial<ViewState>) => void] {
 
 const narrow = (): boolean => window.matchMedia('(max-width: 760px)').matches;
 
+const SIDE_LIMITS = { min: 150, max: 600, initial: 284, feedMin: 360, rightMin: 230, gutter: 5, padding: 12, key: 'bh.web.sidebarWidth' } as const;
+
+function sidebarStoredWidth(): number {
+  try {
+    const value = Number(localStorage.getItem(SIDE_LIMITS.key));
+    return value >= SIDE_LIMITS.min && value <= SIDE_LIMITS.max ? value : SIDE_LIMITS.initial;
+  } catch {
+    return SIDE_LIMITS.initial;
+  }
+}
+
+/** Resize only the workbench shell. The sidebar's labels, menus and data stay untouched. */
+function useSidebarResize(collapsed: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const gesture = useRef<{ pointerId: number; x: number; start: number; previous: number; latest: number } | null>(null);
+  const [preferred, setPreferred] = useState(sidebarStoredWidth);
+  const [available, setAvailable] = useState(() => typeof window === 'undefined' ? 1400 : window.innerWidth);
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setAvailable(el.clientWidth);
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+  const wide = available > 1100;
+  const max = Math.max(SIDE_LIMITS.min, Math.min(SIDE_LIMITS.max,
+    available - SIDE_LIMITS.padding - SIDE_LIMITS.gutter - SIDE_LIMITS.feedMin - (wide ? SIDE_LIMITS.rightMin + SIDE_LIMITS.gutter : 0)));
+  const visible = collapsed ? 48 : Math.min(max, Math.max(SIDE_LIMITS.min, preferred));
+  const clamp = (value: number) => Math.round(Math.min(max, Math.max(SIDE_LIMITS.min, value)));
+  const save = (width: number) => {
+    const next = clamp(width);
+    setPreferred(next);
+    try { localStorage.setItem(SIDE_LIMITS.key, String(next)); } catch { /* optional */ }
+  };
+  const finish = (el: HTMLDivElement, pointerId: number, commit: boolean) => {
+    const d = gesture.current;
+    if (!d || d.pointerId !== pointerId) return;
+    gesture.current = null;
+    setDragging(false);
+    if (commit) save(d.latest);
+    else setPreferred(d.previous);
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+  };
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (collapsed || e.button !== 0) return;
+    e.preventDefault();
+    gesture.current = { pointerId: e.pointerId, x: e.clientX, start: visible, previous: preferred, latest: visible };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = gesture.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    d.latest = clamp(d.start + e.clientX - d.x);
+    setPreferred(d.latest);
+  };
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (collapsed) return;
+    const step = e.shiftKey ? 64 : 16;
+    const next = e.key === 'ArrowLeft' ? visible - step : e.key === 'ArrowRight' ? visible + step
+      : e.key === 'Home' ? SIDE_LIMITS.min : e.key === 'End' ? max : null;
+    if (next === null) return;
+    e.preventDefault();
+    save(next);
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !gesture.current) return;
+      const d = gesture.current;
+      const handle = ref.current?.querySelector<HTMLDivElement>('[role="separator"]');
+      if (handle) {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(handle, d.pointerId, false);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+  return { ref, visible, max, dragging, onPointerDown, onPointerMove, onKeyDown, finish, reset: () => save(SIDE_LIMITS.initial) };
+}
+
+
 function RotatedDialog({ id, onClose }: { id: string; onClose: () => void }) {
   return (
     <Modal label="新的会话 ID" onClose={onClose}>
@@ -61,6 +151,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const [view, setView] = useViewState();
   const now = useNow(5000);
   const [collapsed, setCollapsed] = useState(narrow);
+  const sidebarResize = useSidebarResize(collapsed);
   // crossing into the narrow layout closes the drawer; widening restores the sidebar
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 760px)');
@@ -244,7 +335,7 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
   const reachable = !sessions.error || !!sessions.data;
 
   return (
-    <div className={`${c.app} ${collapsed ? c.collapsed : ''}`}>
+    <div ref={sidebarResize.ref} className={`${c.app} ${collapsed ? c.collapsed : ''} ${sidebarResize.dragging ? c.sidebarResizing : ''}`} style={{ '--sidebar-w': `${sidebarResize.visible}px` } as CSSProperties}>
       <Sidebar
         sessions={listed}
         projects={projectList}
@@ -294,8 +385,9 @@ function ConsoleInner({ onSignedOut }: { onSignedOut: (reason: string) => void }
         onAccount={onAccount}
       />
 
+      <div role="separator" aria-orientation="vertical" aria-label="调整导航栏宽度" aria-valuenow={sidebarResize.visible} aria-valuemin={collapsed ? 48 : SIDE_LIMITS.min} aria-valuemax={collapsed ? 48 : sidebarResize.max} tabIndex={collapsed ? -1 : 0} title="拖动面板间距调整导航宽度，双击恢复默认" className={c.sidebarSplitter} onPointerDown={sidebarResize.onPointerDown} onPointerMove={sidebarResize.onPointerMove} onPointerUp={(event) => sidebarResize.finish(event.currentTarget, event.pointerId, true)} onPointerCancel={(event) => sidebarResize.finish(event.currentTarget, event.pointerId, false)} onLostPointerCapture={(event) => sidebarResize.finish(event.currentTarget, event.pointerId, false)} onKeyDown={sidebarResize.onKeyDown} onDoubleClick={sidebarResize.reset} />
       <button type="button" className={c.scrim} aria-label="收起侧栏" tabIndex={-1} onClick={() => setCollapsed(true)} />
-      <main className={c.main}>
+      <main className={`${c.main} ${current ? c.mainSession : ''}`}>
         {!reachable && (
           <div className={c.connection} role="alert">
             <Icon name="alert" size={14} /> 连不上 BlackHole，正在重试…

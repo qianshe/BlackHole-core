@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {generateKeyPairSync,createHash,verify} from 'node:crypto';
+import {generateKeyPairSync,createHash,verify,sign} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
+import {renderDesktopReleaseCatalog} from './generate-cloud-desktop-catalog.mjs';
 
 const signer=fileURLToPath(new URL('./sign-desktop-update.mjs', import.meta.url));
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -71,4 +72,70 @@ test('publication rejects a signer differing from the updater public-key pin',t=
   fs.writeFileSync(otherKey,other.privateKey.export({format:'pem',type:'pkcs8'}));
   assert.match(f.invoke(otherKey).stderr,/update_signer_mismatch/);
   assert.equal(fs.existsSync(f.output),false);
+});
+test('confirmed production signing validates multi-platform GitHub release URLs and rejects test/unsigned filenames',t=>{
+  const f=fixture(t);
+  f.audit.environment='production';
+  f.audit.platform='darwin';
+  f.audit.arch='arm64';
+  f.audit.catalogPlatform='macos';
+  const dmg=path.join(f.layout,'installer','BlackHole-Desktop-0.3.202-macos-arm64.dmg');
+  fs.writeFileSync(dmg,f.content);
+  f.audit.installer={file:'installer/BlackHole-Desktop-0.3.202-macos-arm64.dmg',sha256:hash(f.content),bytes:f.content.length};
+  f.writeAudit();
+  const keyFile=path.join(f.root,'signing.pem');
+  const badUrl=spawnSync(process.execPath,[signer,'--layout',f.layout,'--installer-url','https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-arm64-unsigned.dmg','--signing-key',keyFile,'--output',f.output,'--confirm-production-signing'],{encoding:'utf8',windowsHide:true});
+  assert.notEqual(badUrl.status,0);
+  assert.match(badUrl.stderr,/production_installer_url_invalid/);
+  const goodUrl=spawnSync(process.execPath,[signer,'--layout',f.layout,'--installer-url','https://github.com/qianshe/BlackHole-core/releases/download/v0.3.202/BlackHole-Desktop-0.3.202-macos-arm64.dmg','--signing-key',keyFile,'--output',f.output,'--confirm-production-signing'],{encoding:'utf8',windowsHide:true});
+  assert.equal(goodUrl.status,0,goodUrl.stderr);
+  const manifest=JSON.parse(fs.readFileSync(path.join(f.output,'latest.json'),'utf8'));
+  assert.equal(manifest.environment,'production');
+  assert.equal(manifest.platform,'macos');
+  assert.equal(manifest.arch,'arm64');
+});
+test('generate-cloud-desktop-catalog renders multi-platform Cloud catalog and rejects test keys or duplicate targets',()=>{
+  const pair=generateKeyPairSync('ed25519');
+  const pubPem=pair.publicKey.export({type:'spki',format:'pem'}).toString();
+  const makeFeed=(platform,arch,ext)=>{
+    const m={
+      schemaVersion:1,environment:'production',platform,arch,
+      version:'0.4.26',buildId:`build-${platform}-${arch}`,
+      coreVersion:'0.4.26',coreBuildId:`core-${platform}-${arch}`,
+      installerUrl:`https://github.com/qianshe/BlackHole-core/releases/download/v0.4.26/BlackHole-Desktop-0.4.26-${platform}-${arch}${ext}`,
+      installerSha256:'a'.repeat(64),installerBytes:34000000,
+    };
+    const manifestJson=JSON.stringify(m,null,2)+'\n';
+    const signature=sign(null,Buffer.from(manifestJson,'utf8'),pair.privateKey).toString('base64');
+    return {manifestJson,signature};
+  };
+  const feeds=[
+    makeFeed('windows','x64','-setup.exe'),
+    makeFeed('macos','arm64','.dmg'),
+    makeFeed('macos','x64','.dmg'),
+    makeFeed('linux','x64','.deb'),
+    makeFeed('linux','arm64','.deb'),
+  ];
+  const rendered=renderDesktopReleaseCatalog({
+    keyId:'prod-update-2026-v1',
+    publicKeyPem:pubPem,
+    channel:'stable',
+    feeds,
+  });
+  assert.equal(rendered.entries,5);
+  assert.deepEqual(rendered.targets,['linux-arm64','linux-x64','macos-arm64','macos-x64','windows-x64']);
+  assert.match(rendered.source,/export const desktopReleaseKeys/);
+  assert.match(rendered.source,/export const desktopReleaseCatalog/);
+
+  assert.throws(()=>renderDesktopReleaseCatalog({
+    keyId:'test-update-2026',
+    publicKeyPem:pubPem,
+    feeds,
+  }),/catalog_key_id_invalid/);
+
+  assert.throws(()=>renderDesktopReleaseCatalog({
+    keyId:'prod-update-2026-v1',
+    publicKeyPem:pubPem,
+    feeds:[feeds[0],feeds[0]],
+  }),/catalog_duplicate_platform_target/);
 });

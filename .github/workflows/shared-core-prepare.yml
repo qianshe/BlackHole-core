@@ -13,6 +13,11 @@ on:
         type: boolean
         required: false
         default: true
+      archive_candidate_binaries:
+        description: 'Archive matched Test Core, VSIX and Desktop installer binaries for controlled review (never public release)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -45,7 +50,7 @@ jobs:
           cache: pnpm
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.1'
+          go-version: '1.26.10'
           cache-dependency-path: packages/desktop-launcher/go.sum
       - name: Require reviewed source (pending Defender investigation blocks candidate builds)
         env:
@@ -136,9 +141,33 @@ jobs:
       - name: SBOM, hashes, test signatures and download metadata
         shell: pwsh
         run: |
-          node scripts/generate-sbom.mjs --output .tmp/ci-artifacts/sbom.cdx.json
-          node -e "const fs=require('fs'),crypto=require('crypto');const sha=f=>crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');const size=f=>fs.statSync(f).size;const v=JSON.parse(fs.readFileSync('package.json','utf8')).version;const m={kind:'matched-test-artifacts',date:new Date().toISOString().slice(0,10),sourceHead:process.env.GITHUB_SHA,environment:'test',version:v,seed:{archive:'core-bridge.zip',bytes:size('.tmp/ci-artifacts/core-bridge.zip'),archiveSha256:sha('.tmp/ci-artifacts/core-bridge.zip')},vsix:{file:'blackhole-bridge-test.vsix',bytes:size('.tmp/ci-artifacts/blackhole-bridge-test.vsix'),sha256:sha('.tmp/ci-artifacts/blackhole-bridge-test.vsix')},desktop:{launcher:'desktop/blackhole.exe',launcherBytes:size('.tmp/ci-artifacts/desktop/blackhole.exe'),launcherSha256:sha('.tmp/ci-artifacts/desktop/blackhole.exe')}};fs.writeFileSync('.tmp/ci-artifacts/artifact-manifest.json',JSON.stringify(m,null,2)+'\n')"
-          node scripts/release-metadata.mjs --manifest .tmp/ci-artifacts/artifact-manifest.json --channel test --base-url https://downloads.example.invalid/blackhole --output .tmp/ci-artifacts/download-metadata.json
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $audit = Get-Content .tmp/ci-artifacts/desktop/distribution-audit.json -Raw | ConvertFrom-Json
+          $installerRel = "desktop/installer/BlackHole-Desktop-$version-test-unsigned-setup.exe"
+          node scripts/release-metadata.mjs --write-manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --environment test --version $version --source-head $env:GITHUB_SHA --build-id $audit.core.buildId --seed-archive core-bridge.zip --descriptor-sha256 $audit.seedDescriptorHash --signing-key-id test-local --vsix-file blackhole-bridge-test.vsix --vsix-core-package offline-code --desktop-launcher desktop/blackhole.exe --desktop-installer $installerRel
+          node scripts/shared-core-acceptance-preflight.mjs --manifest .tmp/ci-artifacts/artifact-manifest.json --environment test
+          node scripts/generate-sbom.mjs --output .tmp/ci-artifacts/sbom.cdx.json --artifacts .tmp/ci-artifacts/artifact-manifest.json
+          node scripts/sign-artifacts.mjs sign --manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --private-key .tmp/ci-keys/private.pem --key-id test-local --environment test --output .tmp/ci-artifacts/signatures.json
+          node scripts/sign-artifacts.mjs verify --manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --signatures .tmp/ci-artifacts/signatures.json --public-key .tmp/ci-keys/public.pem
+          node scripts/release-metadata.mjs --manifest .tmp/ci-artifacts/artifact-manifest.json --channel test --base-url https://downloads.example.invalid/blackhole --signatures .tmp/ci-artifacts/signatures.json --public-key .tmp/ci-keys/public.pem --output .tmp/ci-artifacts/download-metadata.json
+          $gates = Get-Content release/desktop-gates.json -Raw | ConvertFrom-Json
+          $status = @{
+            schemaVersion = 1
+            channel = 'test-candidate'
+            publicReleaseAuthorized = $false
+            sourceHead = $env:GITHUB_SHA
+            version = $version
+            buildId = $audit.core.buildId
+            descriptorSha256 = $audit.seedDescriptorHash
+            toolchain = @{ node = (node -v); go = (go version); inno = $audit.installer.compilerVersion }
+            licensesChecked = $true
+            securityReview = $gates.securityReview
+            installerAcceptance = $gates.installerTransaction
+            platformSigning = $gates.platformSigning
+          }
+          $status | ConvertTo-Json -Depth 6 | Set-Content -Path .tmp/ci-artifacts/candidate-review-status.json -Encoding UTF8
       - name: Upload preparation artifacts (review only, not a release)
         uses: actions/upload-artifact@v6
         with:
@@ -146,6 +175,26 @@ jobs:
           path: |
             .tmp/ci-artifacts/sbom.cdx.json
             .tmp/ci-artifacts/artifact-manifest.json
+            .tmp/ci-artifacts/signatures.json
             .tmp/ci-artifacts/download-metadata.json
+            .tmp/ci-artifacts/candidate-review-status.json
+            .tmp/ci-artifacts/desktop/distribution-audit.json
+            .tmp/ci-artifacts/desktop/installer/compiler.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload authorized test candidate bundle (controlled review only, never public release)
+        if: inputs.archive_candidate_binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: shared-core-test-candidate-binaries-${{ github.sha }}
+          path: |
+            .tmp/ci-artifacts/core-bridge.zip
+            .tmp/ci-artifacts/blackhole-bridge-test.vsix
+            .tmp/ci-artifacts/blackhole-thin-test.vsix
+            .tmp/ci-artifacts/desktop/installer/BlackHole-Desktop-*-test-unsigned-setup.exe
+            .tmp/ci-artifacts/artifact-manifest.json
+            .tmp/ci-artifacts/signatures.json
+            .tmp/ci-artifacts/sbom.cdx.json
+            .tmp/ci-artifacts/candidate-review-status.json
           if-no-files-found: error
           retention-days: 7

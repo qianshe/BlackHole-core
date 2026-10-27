@@ -13,6 +13,7 @@
   #define ProductId "StellarBridge.BlackHole.Desktop.Test"
   #define ProductName "BlackHole Desktop (Test)"
   #define ProductDirectory "BlackHole Desktop Test"
+  #define SetupBaseFilename "BlackHole-Desktop-" + AppVersion + "-test-unsigned-setup"
 #else
   #if BuildEnvironment != "production"
     #error BuildEnvironment must be test or production
@@ -20,6 +21,7 @@
   #define ProductId "StellarBridge.BlackHole.Desktop"
   #define ProductName "BlackHole Desktop"
   #define ProductDirectory "BlackHole Desktop"
+  #define SetupBaseFilename "BlackHole-Desktop-" + AppVersion + "-windows-x64-setup"
 #endif
 
 [Setup]
@@ -39,7 +41,7 @@ MinVersion=10.0
 UninstallDisplayIcon={app}\blackhole.exe
 LicenseFile={#StageRoot}\LICENSE.txt
 OutputDir={#StageRoot}\installer
-OutputBaseFilename=BlackHole-Desktop-{#AppVersion}-{#BuildEnvironment}-unsigned-setup
+OutputBaseFilename={#SetupBaseFilename}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
