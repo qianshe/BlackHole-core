@@ -76,7 +76,7 @@ export function registerProcessTool(register: McpServer['registerTool'], deps: T
       exitCode: z.number().nullable().optional(), signal: z.string().nullable().optional(), reason: z.string().nullable().optional(),
       output: z.object({ stdout: z.string(), stderr: z.string(), truncated: z.boolean(), version: z.number() }).optional(),
       terminal: z.object({ state: z.enum(['pending', 'open', 'closed', 'unavailable']), reason: z.string().optional() }).optional(),
-      items: z.array(z.record(z.unknown())).optional(), code: z.string().optional(),
+      items: z.array(z.record(z.string(), z.unknown())).optional(), code: z.string().optional(),
       failure_stage: z.enum(['launch','sandbox_runner','command']).optional(), command_started: z.boolean().optional(),
       sandbox_backend: z.enum(['none','bubblewrap','seatbelt','windows-acl']).optional(), hint: z.string().optional(),
     },

@@ -94,6 +94,8 @@ jobs:
         run: pnpm test:build-flavor && pnpm test:contracts && pnpm test:changelog
       - name: Handoff (includes daemon build and extension typecheck)
         run: pnpm test:handoff
+      - name: Proxy schema defaults and bounds
+        run: node --test scripts/proxy-schema-compat.test.mjs
       - name: Local Web and account tests with isolated data
         run: pnpm test:local-web
       - name: Phone entry point probing and pairing state (synthetic only)

@@ -760,7 +760,7 @@ export function registerTools(
           .positive()
           .optional()
           .describe(`Per-call timeout in milliseconds (default ${cfg.execTimeoutMs}, max ${cfg.execMaxTimeoutMs}).`),
-        env: z.record(z.string()).optional().describe('Extra environment variables for this command.'),
+        env: z.record(z.string(), z.string()).optional().describe('Extra environment variables for this command.'),
       },
       outputSchema: {
         exit_code: z.number().nullable().optional().describe('Process exit code; null on spawn failure.'),

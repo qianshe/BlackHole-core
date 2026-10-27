@@ -67,7 +67,7 @@ const serverSchema = z
         set: z.record(z.string(), z.string()).default({}),
         setFromFile: z.record(z.string(), z.string()).optional(),
       })
-      .default({}),
+      .prefault({}),
     surface: z
       .object({
         expose: z.array(z.string().min(1)).optional(),
