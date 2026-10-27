@@ -7,7 +7,7 @@ import { DesktopUpdates } from '../settings/DesktopUpdates';
 import { runManagedCoreAction } from '../settings/managedCoreActions';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
-import { membershipPlanLabel, type MembershipCatalogue, type MembershipStatus } from '../../../contracts/src/membership';
+import type { MembershipCatalogue, MembershipStatus } from '../../../contracts/src/membership';
 import { VERSION } from '../../../../src/version';
 import {
   api, ApiError, panel, request,
@@ -751,10 +751,7 @@ export function SettingsPanel({ page, account, onAccountChange, refreshAccount, 
       )}
 
       {page === 'account' && (
-        <>
-          <div className="sec" id="set-account">账号与订阅<small>登录状态、订阅时长与购买记录。</small></div>
-          <AccountSection ui={ui} view={account} onView={onAccountChange} refreshAccount={refreshAccount} onSignOut={onSignOut} />
-        </>
+        <AccountSection ui={ui} view={account} onView={onAccountChange} refreshAccount={refreshAccount} onSignOut={onSignOut} />
       )}
 
       {page === 'connections' && (
@@ -1038,6 +1035,8 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
   const [catalogue, setCatalogue] = useState<MembershipCatalogue | null>(null);
   const [membership, setMembership] = useState<MembershipStatus | null>(null);
   const [membershipBusy, setMembershipBusy] = useState(false);
+  const [membershipLoading, setMembershipLoading] = useState(false);
+  const [membershipError, setMembershipError] = useState(false);
   const memberAbort = useRef<{ stopped: boolean } | null>(null);
   const liveUser = useRef(view?.userId); liveUser.current = view?.userId;
   const [buyOpen, setBuyOpen] = useState(false);
@@ -1047,10 +1046,12 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
   const loggedIn = !!view?.userId;
   useEffect(() => {
     let stopped = false; setCatalogue(null); setMembership(null); setSelectedMembershipSku(''); setBuyOpen(false);
+    setMembershipLoading(!!view?.userId); setMembershipError(false);
     if (view?.userId) void panel.membership().then(async c => {
       if (stopped) return; setCatalogue(c);
       if (c.enabled) { const status = await panel.membershipStatus(); if (!stopped) setMembership(status); }
-    }).catch(() => { if (!stopped) setMembership(null); });
+    }).catch(() => { if (!stopped) { setMembership(null); setMembershipError(true); } })
+      .finally(() => { if (!stopped) setMembershipLoading(false); });
     return () => { stopped = true; if (memberAbort.current) memberAbort.current.stopped = true; if (waitAbort.current) waitAbort.current.stopped = true; };
   }, [view?.userId]);
   const refreshView = () => panel.accountRefresh().then((next) => { onView(next); return next; }, () => undefined);
@@ -1060,22 +1061,28 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
   };
   const summary = accountSummary(view);
   const identity = !view ? '读取账号状态…'
-    : summary.authState === 'logged_out' ? '尚未登录'
-      : summary.email && summary.displayName !== summary.email ? `${summary.displayName} ${summary.email}` : summary.displayName;
+    : summary.authState === 'logged_out' ? '尚未登录' : summary.displayName;
+  const accountEmail = loggedIn && summary.email !== summary.displayName ? summary.email : null;
   const subscription = !view ? '订阅状态尚未获取'
     : summary.accountStatus === 'suspended' ? '账号已停用'
       : summary.accountStatus === 'pending' ? '订阅准备中'
         : summary.remainingSeconds === null ? '时长待确认'
           : formatRemaining(summary.remainingSeconds).replace(/^剩余 /, '剩余订阅：');
 
+  const refreshPending = useRef(false);
   const refresh = async () => {
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    setMembershipLoading(true); setMembershipError(false);
     const uid = liveUser.current;
     try {
       const next = await panel.accountRefresh(); if (liveUser.current !== uid) return; onView(next);
+      if (next.userId !== uid) return;
       const c = await panel.membership(); if (liveUser.current !== uid) return; setCatalogue(c); setMembership(null);
       if (c.enabled) { const state = await panel.membershipStatus(); if (liveUser.current !== uid) return; setMembership(state); }
       ui.toast('BlackHole：订阅和商品状态已刷新。');
-    } catch (e) { if (liveUser.current === uid) { setMembership(null); ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); } }
+    } catch (e) { if (liveUser.current === uid) { setMembership(null); setMembershipError(true); ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); } }
+    finally { refreshPending.current = false; if (liveUser.current === uid) setMembershipLoading(false); }
   };
   const fulfilled = async (order: BillingOrder) => {
     await refreshView();
@@ -1198,43 +1205,85 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     } catch (e) { ui.toast('BlackHole：兑换失败 — ' + errText(e), 'bad'); }
   };
   const selectedPlan = catalogue?.plans.find(p => p.sku === selectedMembershipSku);
-  const planText = selectedPlan ? membershipPlanLabel(selectedPlan) : '请选择一个时长套餐';
+  const planText = selectedPlan ? `${selectedPlan.displayName} ${price(selectedPlan.amountMinor)}` : '尚未选择套餐';
+  const purchaseReason = !loggedIn ? '登录后可查看和购买套餐。'
+    : membershipBusy ? '正在确认会员权益，请稍候。'
+      : membershipLoading ? '正在读取套餐与权益…'
+        : membershipError ? '套餐或权益读取失败，请刷新后重试。'
+          : membership && !membership.canPurchase
+            ? membership.decision === 'ALLOW' || membership.legacyExpiresAt > membership.checkedAt
+              ? '现有权益尚未到期，无需重复购买。' : '当前暂不可购买，请稍后刷新权益。'
+            : !catalogue?.salesEnabled ? '暂未开放购买，仍可查看套餐价格。'
+              : !selectedPlan ? '请选择一个套餐。' : '';
+  const canBuy = loggedIn && !wait && !membershipBusy && !membershipLoading && !membershipError
+    && !!catalogue?.salesEnabled && !!membership?.canPurchase && !!selectedPlan;
   return (
-    <section className="card account-card" aria-label="账号与订阅">
-      <div className="account-head"><div><div className="account-eyebrow">BLACKHOLE ACCOUNT</div><div className="account-identity">{identity}</div></div></div>
-      <div className="account-grid">
-        <div><span className="account-label">服务权益</span><div id="cloudSubscription">{subscription}</div></div>
-        <div><span className="account-label">即刻收时长会员</span>
-          <div id="cloudPlan" aria-live="polite">{catalogue?.plans.length ? catalogue.plans.map(p => <div key={p.sku}>{membershipPlanLabel(p)}</div>) : <div>{loggedIn ? '暂无法获取商品与价格，请刷新后重试。' : '登录后查看当前商品与价格。'}</div>}</div>
-          <p className="account-note">在 BlackHole 选择套餐，扫码后在支付宝确认付款。周期按日历计算，不自动续费。</p>
-          <button id="cloudBuyCard" className="secondary" type="button" disabled={!loggedIn || !!wait || membershipBusy || !catalogue?.salesEnabled || !membership?.canPurchase} onClick={() => setBuyOpen(true)}>{membershipBusy ? '正在确认权益…' : '选择套餐并购买'}</button>
-          {membership && !membership.canPurchase && <p className="account-note">{membership.decision === 'ALLOW' || membership.legacyExpiresAt > membership.checkedAt ? '现有权益尚未到期，无需重复购买。' : '当前暂不可购买，请稍后刷新。'}</p>}
-          {membership?.validUntil && <p className="account-note">即刻收有效期至 {new Date(membership.validUntil * 1000).toLocaleString()}</p>}
+    <section id="set-account" className="card account-card" aria-label="账号与订阅">
+      <div className="account-head">
+        <div className="account-profile">
+          <div className="account-label">当前账号</div>
+          <div className="account-identity">{identity}</div>
+          {accountEmail && <div className="account-email">{accountEmail}</div>}
+        </div>
+        {view && <span className="account-badge">{summary.authState === 'verified' ? '已登录' : summary.authState === 'saved' ? '待刷新验证' : summary.authState === 'logged_out' ? '未登录' : '状态待确认'}</span>}
+      </div>
+      <div className="account-entitlement">
+        <div>
+          <div className="account-label">服务权益</div>
+          <div id="cloudSubscription">{subscription}</div>
+          {membership?.validUntil && <div className="account-caption">有效期至 {new Date(membership.validUntil * 1000).toLocaleString()}</div>}
+        </div>
+        <button className="secondary" type="button" disabled={!loggedIn || membershipLoading || membershipBusy} onClick={() => void refresh()}>{membershipLoading ? '刷新中…' : '刷新订阅'}</button>
+      </div>
+      <div className="account-purchase" aria-busy={membershipLoading}>
+        <div className="account-section-head">
+          <h3>订阅套餐</h3>
+          <span className="account-caption">单次购买，不自动续费</span>
+        </div>
+        {catalogue?.plans.length ? (
+          <fieldset id="cloudPlan" className="account-plans" disabled={membershipBusy || membershipLoading}>
+            <legend className="account-sr-only">选择时长套餐</legend>
+            {catalogue.plans.map(p => (
+              <label key={p.sku} className="account-plan" data-selected={selectedMembershipSku === p.sku}>
+                <input type="radio" name="membership-sku" value={p.sku} checked={selectedMembershipSku === p.sku} onChange={() => setSelectedMembershipSku(p.sku)} />
+                <span className="account-plan-name">{p.displayName}</span>
+                <strong className="account-plan-price">{price(p.amountMinor)}</strong>
+              </label>
+            ))}
+          </fieldset>
+        ) : <div id="cloudPlan" className="account-empty" role="status">{!loggedIn ? '登录后查看套餐与价格。' : membershipLoading ? '正在读取套餐…' : membershipError ? '暂无法获取套餐，请刷新后重试。' : '暂无可用套餐。'}</div>}
+        <div className="account-purchase-action">
+          <p id="cloudPurchaseReason" className="account-caption" role="status">{purchaseReason || '月、季、年按日历计算。'}</p>
+          <button id="cloudBuyCard" type="button" disabled={!canBuy} aria-describedby="cloudPurchaseReason" onClick={() => setBuyOpen(true)}>{membershipBusy ? '正在确认权益…' : '确认所选套餐'}</button>
         </div>
       </div>
-      <div className="btnrow">
-        {settingsHost().kind === 'vscode' && !loggedIn && <button type="button" disabled={signingIn} onClick={() => void signIn()}>{signingIn ? '登录中…' : '登录'}</button>}
-        {summary.canSignOut && <button className="secondary" type="button" onClick={onSignOut}>退出登录</button>}
-        {view?.userId && <button className="secondary" type="button" onClick={() => void copy(view.userId!).then(ok => ui.toast(ok ? 'BlackHole：用户 ID 已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn'))}>复制用户 ID</button>}
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refresh()}>刷新订阅</button>
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>历史订单记录</button>
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>历史订单退款</button>
-        <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void redeem()}>兑换订阅卡</button>
+      <div className="account-actions" aria-label="账号操作">
+        <div className="account-action-group">
+          <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void redeem()}>兑换订阅卡</button>
+          <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>历史订单记录</button>
+          <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>历史订单退款</button>
+        </div>
+        <div className="account-action-group">
+          {view?.userId && <button className="secondary" type="button" onClick={() => void copy(view.userId!).then(ok => ui.toast(ok ? 'BlackHole：用户 ID 已复制。' : '复制失败，请重试。', ok ? 'info' : 'warn'))}>复制用户 ID</button>}
+          {settingsHost().kind === 'vscode' && !loggedIn && <button type="button" disabled={signingIn} onClick={() => void signIn()}>{signingIn ? '登录中…' : '登录'}</button>}
+          {summary.canSignOut && <button className="secondary" type="button" onClick={onSignOut}>退出登录</button>}
+        </div>
       </div>
       {wait && <div className="bhp-wait" role="status"><span>正在确认支付宝付款… 订单 {wait.id}</span><button className="secondary" type="button" onClick={() => { if (waitAbort.current) waitAbort.current.stopped = true; }}>停止等待</button></div>}
-      <div className="account-note">服务权益以最近一次服务端校验结果为准。</div>
+      <div className="account-footnote">权益以最近一次服务端校验结果为准。</div>
       {buyOpen && (
-        <div className="buy-modal" role="dialog" aria-modal="true" aria-labelledby="cloudBuyTitle" onClick={(e) => { if (e.target === e.currentTarget) setBuyOpen(false); }} onKeyDown={(e) => { if (e.key === 'Escape') setBuyOpen(false); }}>
-          <div className="buy-dialog">
-            <div className="buy-dialog-head"><div className="buy-dialog-eyebrow">BLACKHOLE 单次订阅购买</div><div className="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div></div>
-            <div className="buy-dialog-body">
-              <fieldset><legend>选择时长套餐</legend>{catalogue?.plans.map(p => <label key={p.sku} className="account-note" style={{ display: 'block', padding: '8px 0' }}><input type="radio" name="membership-sku" value={p.sku} checked={selectedMembershipSku === p.sku} onChange={() => setSelectedMembershipSku(p.sku)} /> {membershipPlanLabel(p)}</label>)}</fieldset>
-              <div className="buy-summary"><span className="k">已选方案</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{view?.userId ? view.userId.slice(0, 8) + '…' + view.userId.slice(-4) : '—'}</span><span className="k">到账方式</span><span className="v">服务端确认会员有效期后生效，不叠加旧时长</span></div>
-              <div className="buy-dialog-note">下一步打开此套餐的安全二维码页面，并显示到期倒计时。请及时扫码，在支付宝核对最终金额。月、季、年按日历计算，不自动续费。页面返回不代表支付成功。即刻收时长包目前不支持退款，也不支持按剩余时长退费。请确认套餐和金额后再付款；重复扣款、未交付等异常请保留凭证联系支持核查。</div>
-            </div>
-            <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" disabled={!selectedPlan || membershipBusy} onClick={() => void buy()}>生成所选套餐二维码</button></div>
+        <Modal label="确认购买方案" onClose={() => setBuyOpen(false)} className="buy-dialog membership-confirm">
+          <div className="buy-dialog-head account-confirm-head">
+            <div className="buy-dialog-title" id="cloudBuyTitle">确认购买方案</div>
+            <button className="secondary" type="button" aria-label="关闭购买确认" onClick={() => setBuyOpen(false)}>×</button>
           </div>
-        </div>
+          <div className="buy-dialog-body">
+            <div className="buy-summary"><span className="k">所选套餐</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{accountEmail || identity}</span><span className="k">到账方式</span><span className="v">服务端确认后生效，不叠加旧时长</span></div>
+            <div className="buy-dialog-note">下一步打开所选套餐的二维码页面，请在支付宝核对金额后付款。月、季、年按日历计算，不自动续费。返回页面不代表支付成功。</div>
+            <div className="buy-dialog-note">即刻收时长包不支持退款或按剩余时长退费。重复扣款、未交付等异常，请保留凭证联系支持核查。</div>
+          </div>
+          <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" disabled={!canBuy} onClick={() => void buy()}>生成所选套餐二维码</button></div>
+        </Modal>
       )}
     </section>
   );

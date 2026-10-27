@@ -19,7 +19,22 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
   let probeResult = { state: 'failed', checked_at: null, reason: 'unreachable' };
   const calls = [], copies = [], blocked = [];
   const origin = 'http://192.0.2.10:7307';
-  const account = { state: 'verified', userId: 'fixture-user', account: { name: 'Demo User', email: 'demo@example.invalid', status: 'active', serviceExpiresAt: 2100000000, serverNow: 2098963200 }, remainingSeconds: 1036800 };
+  let account = { state: 'verified', userId: 'fixture-user', account: { name: 'Demo User', email: 'demo@example.invalid', status: 'active', serviceExpiresAt: 2100000000, serverNow: 2098963200 }, remainingSeconds: 1036800 };
+  // Synthetic catalogue only; these values never reach production services.
+  let membershipScenario = 'active';
+  const membershipCatalogue = () => ({
+    enabled: true, salesEnabled: membershipScenario === 'purchase', productId: 'fixture-membership',
+    productName: 'Fixture membership', capabilityStatus: 'ENABLED', checkedAt: 2098963200,
+    plans: [
+      { sku: 'fixture-week', displayName: '一周', amountMinor: 500, currency: 'CNY', durationPeriod: 'WEEK' },
+      { sku: 'fixture-month', displayName: '一个月', amountMinor: 1500, currency: 'CNY', durationPeriod: 'MONTH' },
+      { sku: 'fixture-quarter', displayName: '三个月', amountMinor: 4000, currency: 'CNY', durationPeriod: 'QUARTER' },
+      { sku: 'fixture-year', displayName: '一年', amountMinor: 8800, currency: 'CNY', durationPeriod: 'YEAR' },
+    ],
+  });
+  const membershipStatus = () => membershipScenario === 'active'
+    ? { decision: 'ALLOW', validFrom: 2098000000, validUntil: 2100000000, legacyExpiresAt: 0, canPurchase: false, checkedAt: 2098963200 }
+    : { decision: 'PURCHASE_REQUIRED', validFrom: null, validUntil: null, legacyExpiresAt: 0, canPurchase: true, checkedAt: 2098963200 };
   const record = () => ({ revision, migrated: true, unseeded: [], values: structuredClone(values), pending_restart: [], updated_at: null });
   const channel = () => ({ on: channelOn, state: channelOn ? 'on' : 'off', running: channelOn ? ['quick'] : [], next: 'quick', last: 'quick', missing: null, reason: null });
   const remote = () => ({ ...(remoteOverride ?? { enabled: true, available: true, reason: null, origin, kind: 'fixed', endpoints: [{ origin, kind: 'fixed', scope: 'private', verification: { state: 'unverified', checked_at: null, reason: null } }] }), devices, requests });
@@ -57,6 +72,11 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
     }
     if (controls && path === '/proxies/tools') return { tools: Array.from({ length: 29 }, (_, i) => ({ name: 'fixture_tool_' + i, description: 'Synthetic tool; no real MCP is connected.', enabled: true })), cachedOnly: true };
     if (controls && path === '/proxies/remove') throw Error('Fixture deletion is deliberately disabled');
+    if (path === '/account/membership' || path === '/account/membership/status') {
+      if (membershipScenario === 'error') throw Error('Synthetic membership unavailable');
+      if (membershipScenario === 'loading') await new Promise(resolve => setTimeout(resolve, 600));
+      return path.endsWith('/status') ? membershipStatus() : membershipCatalogue();
+    }
     if (path === '/account/plans') return { enabled: false, plans: [] };
     if (path === '/account/orders') return [];
     if (path === '/account/refundable') return { orders: [], nextCursor: null };
@@ -81,6 +101,8 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
   };
   window.fetch = async (...args) => { blocked.push(String(args[0])); throw Error('Network disabled in fixture'); };
   return { run, calls, copies, blocked, health, record, setStatusCases: enabled => { statusCases = enabled === true; },
+    setMembershipScenario: value => { membershipScenario = value; },
+    setAccountView: value => { account = structuredClone(value); },
     setRequests: v => { requests = v; }, setRemoteView: v => { remoteOverride = v; },
     setPairExpiryMs: ms => { pairExpiryMs = ms; }, setProbeResult: v => { probeResult = v; },
     edit: patch => { Object.assign(values, patch); revision++; } };

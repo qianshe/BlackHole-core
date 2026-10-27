@@ -93,6 +93,8 @@ export function Modal({
       aria-label={label}
       onCancel={(e) => {
         e.preventDefault();
+        // Nested purchase dialogs close themselves, never the parent settings host.
+        e.stopPropagation();
         closeRef.current();
       }}
       onMouseDown={(e) => {

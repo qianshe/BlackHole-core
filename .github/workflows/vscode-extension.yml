@@ -200,7 +200,7 @@ jobs:
       - name: Build the two real settings renderers, with no backend access
         run: pnpm build && pnpm --dir packages/web build && pnpm --dir packages/vscode run build:test && node scripts/build-shared-settings-preview.mjs
       - name: Desktop/mobile header, navigation, switches and QR dialog
-        run: node --test scripts/settings-ui-browser.test.mjs
+        run: node --test scripts/settings-ui-browser.test.mjs scripts/settings-account-browser.test.mjs
 
   openai-runtime-native:
     name: OpenAI runtime native (${{ matrix.name }})

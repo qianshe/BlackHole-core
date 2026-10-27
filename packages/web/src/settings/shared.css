@@ -173,8 +173,9 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) .settings-shell .bhp
 .settings-shell .bhp .connection-disclosure > summary { padding: 14px 15px; }
 .settings-shell .bhp .connection-disclosure > summary small { font-size: 12px; }
 .settings-shell .bhp .account-card { padding: 22px; border-radius: 12px; }
-.settings-shell .bhp .account-head { padding-bottom: 16px; }
-.settings-shell .bhp .account-grid { margin: 20px 0; gap: 20px; }
+.settings-shell .bhp .account-head { padding-bottom: 20px; }
+.settings-shell .bhp .account-actions button.secondary { border: .5px solid var(--settings-border); background: transparent; }
+.settings-shell .bhp .account-actions button.secondary:hover:not(:disabled) { background: var(--settings-secondary); }
 .settings-shell .bhp .account-note { margin-top: 16px; padding-top: 13px; }
 .settings-shell .bhp .connector-field { max-width: 500px; }
 .settings-shell .bhp .connection-current { margin: 0; }
