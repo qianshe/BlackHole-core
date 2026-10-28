@@ -68,7 +68,8 @@ async function freePort() {
   assert.notEqual(port,7306);return port;
 }
 async function fixture(t, extraEnv = {}, coreFormat = 1) {
-  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'bh-lifecycle-'));
+  // macOS exposes /var through /private/var; fixtures must use the physical store path.
+  const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'bh-lifecycle-')));
   const home=path.join(temp,'home'), data=path.join(home,'.blackhole'), store=path.join(data,'core');
   fs.mkdirSync(data,{recursive:true});
   const port=await freePort();

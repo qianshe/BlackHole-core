@@ -56,7 +56,8 @@ test('Core observed account stays verified across ten cache-expiry windows witho
  let before=reads();
  for(let n=0;n<10;n++){
   s.now+=61_000;
-  assert.equal((await f.client.view()).state,'saved','raw cache expiry reproduces the old welcome-loop trigger');
+  assert.equal((await f.client.view()).state,'unavailable','an expired verified snapshot is transiently unavailable, not a never-verified saved login');
+  assert.equal(f.store.vault.size,1,'cache expiry must retain the credential');
   assert.equal((await f.client.observe()).state,'verified');
   assert.equal(reads(),++before);
   for(let window=0;window<8;window++)assert.equal((await f.client.observe()).state,'verified');
@@ -453,7 +454,7 @@ test('cancel while system browser confirmation is pending stops this client with
  assert.equal(s.calls.filter(v=>v.path.endsWith('/exchange')).length,0);assert.equal(f.store.vault.size,0);
 });
 test('clock rollback does not extend cached verified status',async()=>{
- const s=server(),f=client(s);await f.client.signIn();s.now-=3600000;assert.equal((await f.client.view()).state,'saved');
+ const s=server(),f=client(s);await f.client.signIn();s.now-=3600000;assert.equal((await f.client.view()).state,'unavailable');assert.equal(f.store.vault.size,1);
 });
 
 
@@ -517,74 +518,38 @@ test('billing client rejects foreign checkout origins and untrusted response fie
  s.override=async path=>path==='/api/billing/plans'?Response.json({enabled:true,environment:'sandbox',plans:[],serverSecret:'never-trust-extra-fields'}):undefined;
  await assert.rejects(f.client.billingPlans(s.user),errorCode('invalid_response'));
 });
-const membershipCatalogueFixture=(amountMinor=1990)=>({enabled:true,salesEnabled:true,productId:'DIRECT_fixture',productName:'BlackHole',capabilityStatus:'ENABLED',checkedAt:Math.floor(Date.now()/1000),plans:[{sku:'calendar-month',displayName:'日历月会员',amountMinor,currency:'CNY',durationPeriod:'MONTH'}]});
-const membershipStateFixture=(decision='PURCHASE_REQUIRED')=>{const now=Math.floor(Date.now()/1000);return {decision,validFrom:decision==='ALLOW'?now-60:null,validUntil:decision==='ALLOW'?now+86400:null,legacyExpiresAt:0,canPurchase:decision==='PURCHASE_REQUIRED',checkedAt:now};};
-const membershipEntranceFixture=()=>({checkoutUrl:ORIGIN+'/api/billing/membership/checkout#'+new URLSearchParams({flow:randomUUID(),checkout:'S'.repeat(43)}),expiresAt:Math.floor(Date.now()/1000)+300});
-test('invalid provider price never opens checkout or falls back to a cached legacy price',async()=>{
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  let opened=0;host.mock.env.openExternal=async()=>{opened++;return true;};
-  s.override=async path=>path==='/api/billing/membership/catalogue'?Response.json(membershipCatalogueFixture(-1)):undefined;
-  await host.registrations.get('blackhole.accountBuyCard')('pro_day',true);assert.equal(opened,0);
-  assert.ok(!s.calls.some(c=>c.path==='/api/billing/orders'));
+// New purchases and purchase history share the settings UI. They must not run
+// the retired provider QuickPick/ALLOW polling flow (order fulfillment owns success).
+function captureAccountSettings(host, open = async () => {}) {
+ const calls=[],execute=host.mock.commands.executeCommand;
+ host.mock.commands.executeCommand=async(name,...args)=>{
+  if(name==='blackhole.openSettings'){calls.push(args);return open();}
+  return execute(name,...args);
+ };
+ return calls;
+}
+test('legacy purchase arguments open account settings without provider IO or implicit payment',async()=>{
+ for(const args of [[],['pro_day',true],['invalid-sku',false]])await withHost(async host=>{
+  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());
+  await host.registrations.get('blackhole.accountSignIn')();
+  const settings=captureAccountSettings(host),before=s.calls.length,opened=s.opened.length;
+  host.mock.window.showQuickPick=async()=>{assert.fail('purchase selection belongs to settings');};
+  await host.registrations.get('blackhole.accountBuyCard')(...args);
+  assert.deepEqual(settings,[['account']]);
+  assert.ok(!s.calls.slice(before).some(c=>c.path.startsWith('/api/billing/')));
+  assert.equal(s.opened.length,opened,'opening settings must not open payment');
  });
 });
-test('membership reconfirms actual provider prices and calendar terms even when launched from legacy settings',async()=>{
- for(const approve of [false,true])await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  let confirmations=0,created=0;host.mock.env.openExternal=async()=>false;
-  host.mock.window.showInformationMessage=async(_text,options)=>{
-   if(options?.modal){confirmations++;assert.match(options.detail,/¥19\.90/);assert.match(options.detail,/按日历/);assert.match(options.detail,/不自动续费/);assert.match(options.detail,/此档位的付款二维码/);return approve?'打开购买页':undefined;}
-  };
-  s.override=async(path,init,data)=>{
-   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
-   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());
-   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;assert.deepEqual(data,{sku:'calendar-month'});return Response.json(membershipEntranceFixture());}
-  };
-  await host.registrations.get('blackhole.accountBuyCard')('pro_day',true);
-  assert.equal(confirmations,1);assert.equal(created,approve?1:0);
+test('purchase history opens account settings without reconciling, refunding or launching payment',async()=>{
+ await withHost(async host=>{
+  const settings=captureAccountSettings(host);
+  globalThis.fetch=async()=>{assert.fail('opening history must not make network requests');};
+  await host.registrations.get('blackhole.accountOrders')();
+  assert.deepEqual(settings,[['account']]);
  });
 });
 
-test('membership multi-plan QuickPick forwards the selected provider SKU, never price or buyer',async()=>{
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  host.mock.env.openExternal=async()=>false;let selectedBody=null,picks=0;
-  host.mock.window.showQuickPick=async items=>{picks++;return items[1];};
-  host.mock.window.showInformationMessage=async(_text,options)=>{if(options?.modal){assert.match(options.detail,/一周/);assert.match(options.detail,/¥5\.00/);return '打开购买页';}};
-  s.override=async(path,init,data)=>{
-   if(path==='/api/billing/membership/catalogue'){const c=membershipCatalogueFixture();c.plans.push({sku:'provider-week',displayName:'周会员',amountMinor:500,currency:'CNY',durationPeriod:'WEEK'});return Response.json(c);}
-   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());
-   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){selectedBody=data;return Response.json(membershipEntranceFixture());}
-  };
-  await host.registrations.get('blackhole.accountBuyCard')();assert.equal(picks,1);assert.deepEqual(selectedBody,{sku:'provider-week'});
- });
-});
-test('cancelling membership SKU selection does not create a purchasing capability',async()=>{
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  host.mock.window.showQuickPick=async()=>undefined;let created=0;
-  s.override=async(path)=>{if(path==='/api/billing/membership/catalogue'){const c=membershipCatalogueFixture();c.plans.push({...c.plans[0],sku:'another-month'});return Response.json(c);}if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());if(path==='/api/billing/membership/checkout'){created++;return Response.json(membershipEntranceFixture());}};
-  await host.registrations.get('blackhole.accountBuyCard')();assert.equal(created,0);
- });
-});
-test('VS Code membership opens the browser, tolerates an unknown query and refreshes only on ALLOW',{timeout:20000},async()=>{
- const actions=[];
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  const entrance=membershipEntranceFixture();let opened='',consults=0;
-  host.mock.env.openExternal=async value=>{opened=value.toString();return true;};
-  host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
-  s.override=async(path,init)=>{
-   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
-   if(path==='/api/billing/membership/checkout'&&init.method==='POST')return Response.json(entrance);
-   if(path==='/api/billing/membership/status'){consults++;if(consults===1)return Response.json(membershipStateFixture());if(consults===2)return Response.json({error:'nowpay_unavailable'},{status:503});return Response.json(membershipStateFixture('ALLOW'));}
-  };
-  await host.registrations.get('blackhole.accountBuyCard')();await new Promise(r=>setImmediate(r));
-  assert.equal(opened,entrance.checkoutUrl);assert.equal(consults,3);assert.ok(actions.includes('refresh'));
-  assert.ok(host.messages.some(message=>message.includes('会员权益已生效')));assert.ok(!s.calls.some(call=>call.path.includes('/api/billing/orders')||call.path.includes('/cards/redeem')));
- },{entitlement:async action=>{actions.push(action);return {};}});
-});
+
 test('VS Code settings refund command quotes the selected paid order, explains exclusions and refreshes after success',async()=>{
  const actions=[];
  await withHost(async host=>{
@@ -603,54 +568,26 @@ test('VS Code settings refund command quotes the selected paid order, explains e
   assert.equal(s.calls.filter(call=>call.path.endsWith('/refund')).length,1);
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
-test('cancelling the local membership wait never cancels a provider purchase or claims failure',{timeout:10000},async()=>{
+test('a pending settings handoff blocks duplicate purchase commands and releases afterwards',{timeout:10000},async()=>{
+ const started=deferred(),opened=deferred();
  await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  host.mock.env.openExternal=async()=>true;host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
-  host.mock.window.withProgress=async(_opts,fn)=>{let cancel;const running=fn({}, {isCancellationRequested:false,onCancellationRequested:cb=>{cancel=cb;return new host.mock.Disposable();}});await new Promise(r=>setImmediate(r));cancel();return running;};
-  s.override=async(path,init)=>{if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());if(path==='/api/billing/membership/checkout'&&init.method==='POST')return Response.json(membershipEntranceFixture());if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture());};
-  await host.registrations.get('blackhole.accountBuyCard')();assert.ok(!s.calls.some(call=>call.path.endsWith('/cancel')));assert.ok(host.messages.some(message=>message.includes('停止等待')));
- },{entitlement:async()=>({})});
-});
-test('membership completion releases its mutex before toast dismissal and rechecks active rights instead of buying again',{timeout:15000},async()=>{
- const actions=[],toast=deferred(),shown=deferred();
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  const refreshesBefore=actions.filter(action=>action==='refresh').length;host.mock.env.openExternal=async()=>true;
-  let created=0,catalogues=0;
-  host.mock.window.showInformationMessage=async(text,options)=>{
-   host.messages.push(text);if(options?.modal)return '打开购买页';
-   if(text.includes('会员权益已生效')){shown.resolve();return toast.promise;}
-  };
-  s.override=async(path,init)=>{
-   if(path==='/api/billing/membership/catalogue'){catalogues++;return Response.json(membershipCatalogueFixture());}
-   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;return Response.json(membershipEntranceFixture());}
-   if(path==='/api/billing/membership/status')return Response.json(membershipStateFixture(created?'ALLOW':'PURCHASE_REQUIRED'));
-  };
-  const first=host.registrations.get('blackhole.accountBuyCard')();await shown.promise;await new Promise(r=>setImmediate(r));
-  const second=host.registrations.get('blackhole.accountBuyCard')();await second;
-  assert.equal(catalogues,2);assert.equal(created,1);assert.ok(!host.messages.some(message=>message.includes('当前购买、订单核对或退款仍在进行')));
-  toast.resolve();await first;
-  assert.equal(actions.filter(action=>action==='refresh').length,refreshesBefore+1);
- },{entitlement:async action=>{actions.push(action);return {};}});
-});
-test('in-flight membership confirmation prevents concurrent purchase entrances and releases after ALLOW',{timeout:15000},async()=>{
- const querying=deferred(),payment=deferred();
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  host.mock.env.openExternal=async()=>true;
-  host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal)return '打开购买页';};
-  let created=0;
-  s.override=async(path,init)=>{
-   if(path==='/api/billing/membership/catalogue')return Response.json(membershipCatalogueFixture());
-   if(path==='/api/billing/membership/checkout'&&init.method==='POST'){created++;return Response.json(membershipEntranceFixture());}
-   if(path==='/api/billing/membership/status'){if(!created)return Response.json(membershipStateFixture());querying.resolve();await payment.promise;return Response.json(membershipStateFixture('ALLOW'));}
-  };
+  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());
+  await host.registrations.get('blackhole.accountSignIn')();
+  const settings=captureAccountSettings(host,async()=>{started.resolve();await opened.promise;});
   const first=host.registrations.get('blackhole.accountBuyCard')();
-  try{await querying.promise;await host.registrations.get('blackhole.accountBuyCard')();assert.equal(created,1);assert.ok(host.messages.some(text=>text.includes('当前购买、订单核对或退款仍在进行')));}
-  finally{payment.resolve();await first;}
+  try{
+   await started.promise;
+   await host.registrations.get('blackhole.accountBuyCard')();
+   assert.equal(settings.length,1);
+   assert.ok(host.messages.some(text=>text.includes('当前购买、订单核对或退款仍在进行')));
+  }finally{opened.resolve();await first;}
+  await host.registrations.get('blackhole.accountBuyCard')();
+  assert.equal(settings.length,2);
+  assert.ok(!s.calls.some(c=>c.path.startsWith('/api/billing/')));
  });
 });
+
+
 const cardCode='BH1-'+Array(6).fill('A1B2C3D4').join('-');
 const redeemed=userId=>({cardId:randomUUID(),userId,grantId:randomUUID(),expiresAt:Math.floor(Date.now()/1000)+2592000,duplicate:false});
 test('card redemption sends only code with authenticated bearer, retains no plaintext and does not log in again',async()=>{
@@ -695,19 +632,16 @@ test('billing quote changes request a fresh confirmation, not an uncertain refun
  s.override=async path=>path.endsWith('/refund')?Response.json({error:'refund_quote_changed'},{status:409}):undefined;
  await assert.rejects(f.client.refundBillingOrder(s.user,orderId,'buyer-quote-changed-key',refundQuoteToken),errorCode('refund_quote_changed'));
 });
-test('expired orders offer reconciliation but never reopen the payment window',async()=>{
- await withHost(async host=>{
-  const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
-  const orderId=randomUUID();let options=[],queries=0;
-  host.mock.window.showQuickPick=async items=>{if(typeof items[0]==='string')options=items;return items[0];};
-  s.override=async path=>{
-   if(path==='/api/billing/orders')return Response.json({orders:[billingOrder(orderId,'expired')]});
-   if(path.endsWith('/reconcile')){queries++;return Response.json({order:billingOrder(orderId,'fulfilled')});}
-  };
-  await host.registrations.get('blackhole.accountOrders')();
-  assert.deepEqual(options,['核对支付结果']);assert.equal(queries,1);assert.ok(!s.calls.some(c=>c.path.endsWith('/checkout-link')));
- });
+test('an expired historical order can be explicitly reconciled without creating a checkout',async()=>{
+ const s=server(),f=client(s);await f.client.signIn();const orderId=randomUUID();
+ s.override=async path=>path==='/api/billing/orders/'+orderId+'/reconcile'
+  ?Response.json({order:billingOrder(orderId,'expired')}):undefined;
+ const order=await f.client.reconcileBillingOrder(s.user,orderId);
+ assert.equal(order.status,'expired');assert.equal(order.id,orderId);
+ assert.equal(s.calls.filter(c=>c.path.endsWith('/reconcile')).length,1);
+ assert.ok(!s.calls.some(c=>c.path.endsWith('/checkout-link')));
 });
+
 test('refund picker can reach the next page without loading unbounded history',async()=>{
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
@@ -738,26 +672,26 @@ test('refund uncertainty still refreshes authoritative balance so the reservatio
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
 
-test('review purchase record directly refunds the selected order with full-unfulfilled explanation and no second picker',async()=>{
+test('refund command quotes a selected review order with full-unfulfilled explanation',async()=>{
  const actions=[];await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();
   const orderId=randomUUID();let picks=0,detail='';
   host.mock.window.showQuickPick=async items=>{picks++;if(typeof items[0]==='string')assert.deepEqual(items,['申请退款']);return items[0];};
   host.mock.window.showInformationMessage=async(text,options)=>{host.messages.push(text);if(options?.modal){detail=options.detail;return '确认退款';}};
   s.override=async(path,init,data)=>{
-   if(path==='/api/billing/orders')return Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})]});
+   if(path==='/api/billing/refundable-orders')return Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})],nextCursor:null});
    if(path.endsWith('/refund-quote')){assert.equal(path,'/api/billing/orders/'+orderId+'/refund-quote');return Response.json({quote:billingRefundQuote(orderId,{amountMinor:100,unusedSeconds:86400,refundableSeconds:86400})});}
    if(path.endsWith('/refund')){assert.equal(path,'/api/billing/orders/'+orderId+'/refund');assert.deepEqual(data,{confirmation:'refund',quoteToken:refundQuoteToken});return Response.json({refund:billingRefund(orderId,{amountMinor:100})});}
   };
-  await host.registrations.get('blackhole.accountOrders')();assert.equal(picks,2);assert.match(detail,/未交付订单退款/);assert.match(detail,/预计退款：¥1.00/);assert.ok(!s.calls.some(c=>c.path.endsWith('/reconcile')||c.path.endsWith('/refundable-orders')||c.path.endsWith('/checkout-link')));assert.equal(s.calls.filter(c=>c.path.endsWith('/refund')).length,1);assert.ok(actions.includes('refresh'));assert.ok(host.messages.some(m=>m.includes('该订单未交付权益')));
+  await host.registrations.get('blackhole.accountRefund')();assert.equal(picks,1);assert.match(detail,/未交付订单退款/);assert.match(detail,/预计退款：¥1.00/);assert.ok(!s.calls.some(c=>c.path.endsWith('/reconcile')||c.path.endsWith('/checkout-link')));assert.equal(s.calls.filter(c=>c.path.endsWith('/refund')).length,1);assert.ok(actions.includes('refresh'));assert.ok(host.messages.some(m=>m.includes('该订单未交付权益')));
  },{entitlement:async action=>{actions.push(action);return {};}});
 });
 test('cancelling a review-order refund preview sends no refund or payment reconciliation',async()=>{
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();const orderId=randomUUID();
   host.mock.window.showQuickPick=async items=>items[0];host.mock.window.showInformationMessage=async()=>undefined;
-  s.override=async path=>path==='/api/billing/orders'?Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})]}):path.endsWith('/refund-quote')?Response.json({quote:billingRefundQuote(orderId,{amountMinor:100,unusedSeconds:86400,refundableSeconds:86400})}):undefined;
-  await host.registrations.get('blackhole.accountOrders')();assert.equal(s.calls.filter(c=>c.path.endsWith('/refund-quote')).length,1);assert.ok(!s.calls.some(c=>c.path.endsWith('/refund')||c.path.endsWith('/reconcile')));
+  s.override=async path=>path==='/api/billing/refundable-orders'?Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})],nextCursor:null}):path.endsWith('/refund-quote')?Response.json({quote:billingRefundQuote(orderId,{amountMinor:100,unusedSeconds:86400,refundableSeconds:86400})}):undefined;
+  await host.registrations.get('blackhole.accountRefund')();assert.equal(s.calls.filter(c=>c.path.endsWith('/refund-quote')).length,1);assert.ok(!s.calls.some(c=>c.path.endsWith('/refund')||c.path.endsWith('/reconcile')));
  });
 });
 
@@ -765,8 +699,8 @@ test('pending review refund explains original-request recovery without claiming 
  await withHost(async host=>{
   const s=server();globalThis.fetch=s.fetch;host.mock.env.openExternal=async value=>s.openExternal(value.toString());await host.registrations.get('blackhole.accountSignIn')();const orderId=randomUUID();let detail='';
   host.mock.window.showQuickPick=async items=>items[0];host.mock.window.showInformationMessage=async(text,options)=>{if(options?.modal){detail=options.detail;return '确认退款';}};
-  s.override=async path=>path==='/api/billing/orders'?Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})]}):path.endsWith('/refund-quote')?Response.json({quote:billingRefundQuote(orderId,{amountMinor:100,unusedSeconds:86400,refundableSeconds:86400,existingStatus:'requested'})}):path.endsWith('/refund')?Response.json({refund:billingRefund(orderId,{amountMinor:100,status:'requested',providerConfirmedAt:null,finalizedAt:null})}):undefined;
-  await host.registrations.get('blackhole.accountOrders')();assert.match(detail,/本次将核对同一笔退款/);assert.doesNotMatch(detail,/冻结|权益恢复/);assert.ok(host.messages.some(m=>m.includes('退款请求已保留')&&m.includes('尚未交付权益')&&!m.includes('冻结')));
+  s.override=async path=>path==='/api/billing/refundable-orders'?Response.json({orders:[billingOrder(orderId,'review',{paidAt:1789468801})],nextCursor:null}):path.endsWith('/refund-quote')?Response.json({quote:billingRefundQuote(orderId,{amountMinor:100,unusedSeconds:86400,refundableSeconds:86400,existingStatus:'requested'})}):path.endsWith('/refund')?Response.json({refund:billingRefund(orderId,{amountMinor:100,status:'requested',providerConfirmedAt:null,finalizedAt:null})}):undefined;
+  await host.registrations.get('blackhole.accountRefund')();assert.match(detail,/本次将核对同一笔退款/);assert.doesNotMatch(detail,/冻结|权益恢复/);assert.ok(host.messages.some(m=>m.includes('退款请求已保留')&&m.includes('尚未交付权益')&&!m.includes('冻结')));
  });
 });
 
