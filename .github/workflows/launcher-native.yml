@@ -97,7 +97,7 @@ jobs:
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
       - name: Desktop delivery policies and native-status boundary
-        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs scripts/linux-package-modes.test.mjs scripts/review-desktop-community-release.test.mjs packages/web/test/desktop-update-client.test.mjs
+        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs scripts/linux-package-modes.test.mjs scripts/review-desktop-community-release.test.mjs scripts/desktop-release-index.test.mjs scripts/verify-desktop-release-discovery.test.mjs packages/web/test/desktop-update-client.test.mjs
       - name: Host-provided Node and lightweight VSIX packaging boundaries
         run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs packages/vscode/test/managed-core-session.test.mjs
       - name: Read-only installer preflight (disposable HOME only)

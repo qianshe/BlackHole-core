@@ -3,8 +3,8 @@ name: Desktop Multi-Platform Release
 # Multi-platform (Windows x64, macOS x64/arm64, Linux x64/arm64) Desktop + Core
 # packaging and GitHub Release workflow. VS Code Marketplace publishing remains
 # manual; this workflow builds matched signed Core archives, Desktop installers,
-# per-platform signed update feeds, and generates BlackHole-cloud's
-# desktop-release-catalog.ts.
+# per-platform signed update feeds, and the data-only desktop-release.json index
+# discovered automatically by Cloud. No Cloud credential or deployment is needed.
 on:
   workflow_call:
     inputs:
@@ -305,7 +305,8 @@ jobs:
               --public-key .tmp/release-bundle/update-public.pem \
               --key-id prod-desktop-update-v1 \
               --channel stable \
-              --output .tmp/release-bundle/desktop-release-catalog.ts
+              --output .tmp/release-bundle/desktop-release-catalog.ts \
+              --index-output .tmp/release-bundle/desktop-release.json
           fi
       - name: Upload unified multi-platform release bundle & Cloud catalog
         uses: actions/upload-artifact@v6
@@ -324,15 +325,26 @@ jobs:
           version=$(node -p "require('./package.json').version")
           if [ "${{ inputs.environment }}" = "production" ]; then
             tag="v${version}"
-            # Cloud download readback is verified after catalog deployment, not before assets exist.
+            # Cloud discovers the signed JSON index from GitHub after the complete release is public.
             BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/review-desktop-community-release.mjs --artifacts .tmp/collected --mode prepublish --output .tmp/release-bundle/prepublish-review.json
             # Production versions are immutable; create fails if this release already exists.
             gh release create "$tag" --target "$GITHUB_SHA" --draft --title "BlackHole Desktop $tag" --notes-file release/community-install.txt
             (cd .tmp/release-bundle/installers && sha256sum * > ../SHA256SUMS.txt)
-            gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/SHA256SUMS.txt .tmp/release-bundle/INSTALL.txt .tmp/release-bundle/prepublish-review.json
-            gh release edit "$tag" --draft=false
+            gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/desktop-release.json .tmp/release-bundle/SHA256SUMS.txt .tmp/release-bundle/INSTALL.txt .tmp/release-bundle/prepublish-review.json
+            gh release edit "$tag" --draft=false --latest
+            node scripts/verify-desktop-release-discovery.mjs --feeds-dir .tmp/release-bundle/feeds
+            BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/review-desktop-community-release.mjs --artifacts .tmp/collected --mode release --output .tmp/release-bundle/published-review.json
           else
             tag="desktop-test"
             gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Desktop Test Channel" --prerelease --notes "BlackHole Desktop test channel."
             gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/feeds/windows-x64/latest.json .tmp/release-bundle/feeds/windows-x64/latest.json.sig --clobber
           fi
+
+      - name: Preserve published download verification
+        if: inputs.publish_github_release && inputs.environment == 'production'
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-published-review-${{ github.sha }}
+          path: .tmp/release-bundle/published-review.json
+          if-no-files-found: error
+          retention-days: 30
