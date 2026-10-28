@@ -17,12 +17,12 @@ const (
 )
 
 type fakeBundledAPI struct {
-	running *coremanager.StartState
-	active  *coremanager.ActiveCore
-	staged  coremanager.StagedCore
-	errorAt string
-	calls   []string
-	commit  bool
+	running          *coremanager.StartState
+	active           *coremanager.ActiveCore
+	staged           coremanager.StagedCore
+	errorAt          string
+	calls            []string
+	commit           bool
 	upgradeErrorCode string
 }
 
@@ -189,7 +189,7 @@ func TestOlderDesktopCannotDowngradeNewerStoppedCore(t *testing.T) {
 func TestOlderDesktopCannotDowngradeNewerRunningCore(t *testing.T) {
 	f := &fakeBundledAPI{
 		running: oldRunning(),
-		staged: coremanager.StagedCore{VersionName: "0.3.200-old", RuntimeVersion: "0.3.200", DescriptorHash: fakeNewHash},
+		staged:  coremanager.StagedCore{VersionName: "0.3.200-old", RuntimeVersion: "0.3.200", DescriptorHash: fakeNewHash},
 	}
 	result, err := runBundledFake(f)
 	if err != nil || result.State != "reused_newer" || strings.Join(f.calls, ",") != "inspect,select,stage,attach,pending,detach" {
@@ -199,7 +199,7 @@ func TestOlderDesktopCannotDowngradeNewerRunningCore(t *testing.T) {
 func TestSameCoreVersionWithDifferentSignatureIsNotAccepted(t *testing.T) {
 	f := &fakeBundledAPI{
 		running: oldRunning(),
-		staged: coremanager.StagedCore{VersionName: "0.3.201-other", RuntimeVersion: "0.3.201", DescriptorHash: fakeNewHash},
+		staged:  coremanager.StagedCore{VersionName: "0.3.201-other", RuntimeVersion: "0.3.201", DescriptorHash: fakeNewHash},
 	}
 	_, err := runBundledFake(f)
 	if err == nil || !strings.Contains(err.Error(), "core_identity_conflict") {

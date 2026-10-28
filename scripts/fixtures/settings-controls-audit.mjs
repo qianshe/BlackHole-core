@@ -98,7 +98,11 @@ export async function auditSettingsControls({ interactions = false } = {}) {
   const activityMetric = document.querySelector('.activity-today.ck-summary');
   const right = el => bounds(el)?.right ?? NaN;
   check('home account keeps one heading row and one identity row', accountHead?.parentElement === accountRow?.parentElement && accountHead?.parentElement?.children.length === 2);
-  check('all cockpit headings share the same height', [accountHead, channelHead, activityHead].every(el => bounds(el) && close(bounds(el).height, 18, .3)));
+  // The shared typography uses fractional line heights (12px × 1.55 = 18.6px).
+  // Verify equal rows against their rendered line height rather than rounding to 18px.
+  const headingLineHeight = accountTitle ? Number.parseFloat(getComputedStyle(accountTitle).lineHeight) : NaN;
+  check('all cockpit headings share the same height', Number.isFinite(headingLineHeight) && headingLineHeight >= 18
+    && [accountHead, channelHead, activityHead].every(el => bounds(el) && close(bounds(el).height, headingLineHeight, .3)));
   check('remaining time is right-aligned in the account heading', close(right(accountHead), right(accountRemaining)) && center(accountRemaining) === center(accountRemaining) && close(center(accountTitle), center(accountRemaining), .7));
   check('activity today is right-aligned in its heading', close(right(activityHead), right(activityMetric)) && close(center(activityHead.querySelector('.ck-k')), center(activityMetric), .7));
   check('logout stays on the identity line, not on the heading', logout ? accountRow?.contains(logout) && !accountHead?.contains(logout) : true);

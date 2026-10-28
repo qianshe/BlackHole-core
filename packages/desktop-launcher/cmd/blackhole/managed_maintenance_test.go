@@ -357,4 +357,3 @@ func TestSharedTrayAndWindowSyncAttachmentAndStop(t *testing.T) {
 		t.Fatal("stop notice must be consumed once")
 	}
 }
-

@@ -73,8 +73,12 @@ func Load(root, encoded string) (Bundle, error) {
 		return Bundle{}, errors.New("distribution_manifest_invalid")
 	}
 	names := []string{"bootstrap/node.exe", "bootstrap/core-manager-cli.mjs", "bootstrap/trust.json", "seed/core.zip"}
-	if m.NodeRuntime == "shared-cache" { names = append(names, "bootstrap/node-LICENSE") }
-	if len(m.Files) != len(names) { return Bundle{}, errors.New("distribution_manifest_invalid") }
+	if m.NodeRuntime == "shared-cache" {
+		names = append(names, "bootstrap/node-LICENSE")
+	}
+	if len(m.Files) != len(names) {
+		return Bundle{}, errors.New("distribution_manifest_invalid")
+	}
 	for _, name := range names {
 		pin, exists := m.Files[name]
 		bytes, err := hex.DecodeString(pin)
@@ -133,7 +137,9 @@ func Load(root, encoded string) (Bundle, error) {
 	node := filepath.Join(root, "bootstrap", "node.exe")
 	if m.NodeRuntime == "shared-cache" {
 		node, err = prepareRuntimeCache(root, store, m.Files["bootstrap/node.exe"], m.Files["bootstrap/node-LICENSE"])
-		if err != nil { return Bundle{}, err }
+		if err != nil {
+			return Bundle{}, err
+		}
 	}
 	c := coremanager.Client{Node: node, Entry: filepath.Join(root, "bootstrap", "core-manager-cli.mjs"), Store: store, TrustConfig: filepath.Join(root, "bootstrap", "trust.json"), Env: env}
 	return Bundle{Client: c, Seed: filepath.Join(root, "seed", "core.zip"), SeedHash: m.Files["seed/core.zip"], Environment: m.Environment, Version: m.Version}, nil

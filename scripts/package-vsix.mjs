@@ -21,6 +21,9 @@ const daemonVersion = /export const VERSION = '([^']+)'/.exec(fs.readFileSync(pa
 // package/daemon version must match; the VSIX version may advance on its own.
 if (rootVersion !== daemonVersion) throw new Error('Core package and daemon source version drift; no automatic bump.');
 const { build, out: requestedOut, corePackage, coreUrl } = parseBuildArgs(process.argv.slice(2), { packaging: true, requireEnvironment: true });
+// Reject invalid output arguments before reading seeds or performing package work.
+const out = requestedOut ? path.resolve(requestedOut) : path.join(EXT, `blackhole-vscode-${version}${build.environment === 'test' ? '-test' : ''}.vsix`);
+if (path.extname(out).toLowerCase() !== '.vsix') throw new Error('--out must name a .vsix file.');
 const hostProvided = corePackage !== 'legacy-test';
 const suffix = build.environment === 'test' ? '-test' : '';
 const seedArchive = process.env.BH_SEED_CORE_ARCHIVE?.trim() ? path.resolve(process.env.BH_SEED_CORE_ARCHIVE.trim()) : undefined;
@@ -55,8 +58,7 @@ const hostInput = hostProvided ? await hostCoreInputs(seedArchive,
   process.env.BH_SEED_CORE_PUBLIC_KEY?.trim() ? fs.readFileSync(path.resolve(process.env.BH_SEED_CORE_PUBLIC_KEY.trim()),'utf8') : undefined,
   process.env.BH_SEED_CORE_KEY_ID?.trim(), build, corePackage, coreUrl, priorRoots,
   process.env.BH_PACKAGE_PLATFORM?.trim() || 'win32', process.env.BH_PACKAGE_ARCH?.trim() || 'x64') : undefined;
-const out = requestedOut ? path.resolve(requestedOut) : path.join(EXT, `blackhole-vscode-${version}${suffix}.vsix`);
-if (path.extname(out).toLowerCase() !== '.vsix') throw new Error('--out must name a .vsix file.');
+// Output path syntax was checked before seed verification.
 // Never rebuild the version VS Code already has installed (2026-10-02 incident): reinstalling the same version over the
 // running extension made VS Code delete the in-use folder and leave a broken, half-extracted install. Alternate versions.
 {

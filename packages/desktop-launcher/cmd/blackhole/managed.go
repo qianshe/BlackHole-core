@@ -532,7 +532,7 @@ func runManagedTray(ctx context.Context, bundle distribution.Bundle, keeper *lea
 		})
 		go func() { <-ctx.Done(); desktopLog("tray quit: lease context done"); systray.Quit() }()
 		go watchManagedTrayActions(ctx, trayActionChannels{open: open.ClickedCh, auto: autoCh, quit: quit.ClickedCh}, trayActionHandlers{
-			onOpen:   func() { go openManagedUI(ctx, bundle.Client, keeper.current(), port) },
+			onOpen: func() { go openManagedUI(ctx, bundle.Client, keeper.current(), port) },
 			onAuto: func() {
 				if auto == nil {
 					return

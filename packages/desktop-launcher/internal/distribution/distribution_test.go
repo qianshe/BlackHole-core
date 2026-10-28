@@ -154,24 +154,42 @@ func TestAllInstalledChannelsUseTheSameProfile(t *testing.T) {
 }
 
 func TestV2ManifestRunsManagerFromVerifiedStableRuntime(t *testing.T) {
-    root, manifest := fixture(t)
-    home, err := os.UserHomeDir()
-    if err != nil { t.Fatal(err) }
-    home, err = filepath.EvalSymlinks(home)
-    if err != nil { t.Fatal(err) }
-    t.Setenv("HOME", home)
-    t.Setenv("USERPROFILE", home)
-    manifest.NodeRuntime = "shared-cache"
-    license := []byte("TEST NODE LICENSE")
-    licenseFile := filepath.Join(root,"bootstrap","node-LICENSE")
-    if err := os.WriteFile(licenseFile, license, 0600); err != nil { t.Fatal(err) }
-    hash := sha256.Sum256(license)
-    manifest.Files["bootstrap/node-LICENSE"] = hex.EncodeToString(hash[:])
-    bundle, err := Load(root, encoded(manifest))
-    if err != nil { t.Fatal(err) }
-    if !strings.HasPrefix(bundle.Client.Node,filepath.Join(home,".blackhole","core","runtimes")+string(os.PathSeparator)) { t.Fatal(bundle.Client.Node) }
-    if strings.HasPrefix(bundle.Client.Node,root+string(os.PathSeparator)) { t.Fatal("Core runtime still belongs to replaceable installation") }
-    if bundle.Client.Entry != filepath.Join(root,"bootstrap","core-manager-cli.mjs") { t.Fatal("unexpected manager entry") }
-    if err := os.WriteFile(licenseFile,[]byte("changed"),0600);err!=nil{t.Fatal(err)}
-    if _,err := Load(root,encoded(manifest));err==nil{t.Fatal("license pin mismatch accepted")}
+	root, manifest := fixture(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	manifest.NodeRuntime = "shared-cache"
+	license := []byte("TEST NODE LICENSE")
+	licenseFile := filepath.Join(root, "bootstrap", "node-LICENSE")
+	if err := os.WriteFile(licenseFile, license, 0600); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(license)
+	manifest.Files["bootstrap/node-LICENSE"] = hex.EncodeToString(hash[:])
+	bundle, err := Load(root, encoded(manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(bundle.Client.Node, filepath.Join(home, ".blackhole", "core", "runtimes")+string(os.PathSeparator)) {
+		t.Fatal(bundle.Client.Node)
+	}
+	if strings.HasPrefix(bundle.Client.Node, root+string(os.PathSeparator)) {
+		t.Fatal("Core runtime still belongs to replaceable installation")
+	}
+	if bundle.Client.Entry != filepath.Join(root, "bootstrap", "core-manager-cli.mjs") {
+		t.Fatal("unexpected manager entry")
+	}
+	if err := os.WriteFile(licenseFile, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, encoded(manifest)); err == nil {
+		t.Fatal("license pin mismatch accepted")
+	}
 }

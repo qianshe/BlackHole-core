@@ -55,6 +55,7 @@ func (c Client) InspectStart(ctx context.Context) (*StartState, error) {
 	}
 	return &state, nil
 }
+
 // RecoverStart archives a stale start record. Evidence that the recorded
 // incarnation cannot be running (exited process, an earlier OS boot, or an
 // expired Core heartbeat lease) is proven by the Manager. force additionally
