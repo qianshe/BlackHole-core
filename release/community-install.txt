@@ -1,4 +1,4 @@
-BlackHole Desktop - Community distribution / 社区分发版
+BlackHole Desktop / 桌面版
 
 macOS
 Choose Apple Silicon (arm64) for M-series Macs, or Intel (x64) for Intel Macs.
@@ -13,14 +13,14 @@ If macOS says the app is damaged, download again and report the exact message.
 Apple's instructions: https://support.apple.com/102445
 
 选择与处理器对应的 DMG，将 BlackHole.app 拖入“应用程序”后打开。
-此社区版本只有 ad-hoc 签名，没有 Apple Developer ID 签名，也未经过 Apple 公证。
+此版本采用 ad-hoc 签名，没有 Apple Developer ID 签名，也未经过 Apple 公证。
 如首次运行被“无法验证开发者”或“Apple 无法检查”拦截，请确认来自官方仓库，
 尝试打开一次后，进入“系统设置 > 隐私与安全性”，针对 BlackHole 选择“仍要打开”。
 不同系统版本或受管设备可能不提供此选项。
 如提示恶意软件、授权被撤销或文件损坏，请停止运行、重新下载或反馈，不要全局关闭系统保护。
 
 Windows
-No Authenticode publisher certificate is provided in the community build.
+No Authenticode publisher certificate is provided in this build.
 Core and update metadata use BlackHole Ed25519 signatures; these do not
 replace an OS publisher certificate or guarantee that software is harmless.
 
