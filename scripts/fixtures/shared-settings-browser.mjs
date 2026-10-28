@@ -23,18 +23,20 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
   // Synthetic catalogue only; these values never reach production services.
   let membershipScenario = 'active';
   const membershipCatalogue = () => ({
-    enabled: true, salesEnabled: membershipScenario === 'purchase', productId: 'fixture-membership',
+    enabled: true, salesEnabled: ['purchase', 'active', 'legacy'].includes(membershipScenario), productId: 'blackhole-calendar-subscription-v1',
     productName: 'Fixture membership', capabilityStatus: 'ENABLED', checkedAt: 2098963200,
     plans: [
-      { sku: 'fixture-week', displayName: '一周', amountMinor: 500, currency: 'CNY', durationPeriod: 'WEEK' },
-      { sku: 'fixture-month', displayName: '一个月', amountMinor: 1500, currency: 'CNY', durationPeriod: 'MONTH' },
-      { sku: 'fixture-quarter', displayName: '三个月', amountMinor: 4000, currency: 'CNY', durationPeriod: 'QUARTER' },
-      { sku: 'fixture-year', displayName: '一年', amountMinor: 8800, currency: 'CNY', durationPeriod: 'YEAR' },
+      { sku: 'week', displayName: '一周', amountMinor: 500, currency: 'CNY', durationPeriod: 'WEEK' },
+      { sku: 'month', displayName: '一个月', amountMinor: 1500, currency: 'CNY', durationPeriod: 'MONTH' },
+      { sku: 'quarter', displayName: '三个月', amountMinor: 4000, currency: 'CNY', durationPeriod: 'QUARTER' },
+      { sku: 'year', displayName: '一年', amountMinor: 8800, currency: 'CNY', durationPeriod: 'YEAR' },
     ],
   });
   const membershipStatus = () => membershipScenario === 'active'
     ? { decision: 'ALLOW', validFrom: 2098000000, validUntil: 2100000000, legacyExpiresAt: 0, canPurchase: false, checkedAt: 2098963200 }
-    : { decision: 'PURCHASE_REQUIRED', validFrom: null, validUntil: null, legacyExpiresAt: 0, canPurchase: true, checkedAt: 2098963200 };
+    : { decision: 'PURCHASE_REQUIRED', validFrom: null, validUntil: null, legacyExpiresAt: membershipScenario === 'legacy' ? 2100000000 : 0, canPurchase: membershipScenario !== 'legacy', checkedAt: 2098963200 };
+  let subscriptionOrder=null,subscriptionOrderState='payment_pending',subscriptionReconciles=0;
+  const subscriptionStatus=()=>({canPurchase:['purchase','active','legacy'].includes(membershipScenario),serviceExpiresAt:['active','legacy'].includes(membershipScenario)?2100000000:2098963199,checkedAt:2098963200});
   const record = () => ({ revision, migrated: true, unseeded: [], values: structuredClone(values), pending_restart: [], updated_at: null });
   const channel = () => ({ on: channelOn, state: channelOn ? 'on' : 'off', running: channelOn ? ['quick'] : [], next: 'quick', last: 'quick', missing: null, reason: null });
   const remote = () => ({ ...(remoteOverride ?? { enabled: true, available: true, reason: null, origin, kind: 'fixed', endpoints: [{ origin, kind: 'fixed', scope: 'private', verification: { state: 'unverified', checked_at: null, reason: null } }] }), devices, requests });
@@ -72,6 +74,24 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
     }
     if (controls && path === '/proxies/tools') return { tools: Array.from({ length: 29 }, (_, i) => ({ name: 'fixture_tool_' + i, description: 'Synthetic tool; no real MCP is connected.', enabled: true })), cachedOnly: true };
     if (controls && path === '/proxies/remove') throw Error('Fixture deletion is deliberately disabled');
+    if(path==='/account/subscriptions'||path==='/account/subscriptions/status'){
+      if(membershipScenario==='error')throw Error('Synthetic subscription unavailable');
+      if(membershipScenario==='loading')await new Promise(resolve=>setTimeout(resolve,600));
+      return path.endsWith('/status')?subscriptionStatus():membershipCatalogue();
+    }
+    if(path==='/account/subscriptions/orders'&&method==='GET')return subscriptionOrder?[subscriptionOrder]:[];
+    if(path==='/account/subscriptions/orders'&&method==='POST'){
+      const plan=membershipCatalogue().plans.find(p=>p.sku===body.sku);
+      subscriptionOrder={id:'12345678-1234-4234-8234-123456789012',sku:plan.sku,displayName:plan.displayName,durationPeriod:plan.durationPeriod,amountMinor:plan.amountMinor,currency:'CNY',status:'payment_pending',createdAt:2098963200,expiresAt:2098964100,paidAt:null,fulfilledAt:null,serviceExpiresAt:null};
+      return {order:structuredClone(subscriptionOrder),opened:true};
+    }
+    if(path.startsWith('/account/subscriptions/orders/')&&path.endsWith('/checkout'))return {order:structuredClone(subscriptionOrder),opened:true};
+    if(path.startsWith('/account/subscriptions/orders/')&&path.endsWith('/reconcile')){
+      subscriptionReconciles++;
+      if(subscriptionOrderState==='fulfilled')subscriptionOrder={...subscriptionOrder,status:'fulfilled',paidAt:2098963201,fulfilledAt:2098963202,serviceExpiresAt:2101000000};
+      if(subscriptionOrderState==='expired')subscriptionOrder={...subscriptionOrder,status:'expired'};
+      return structuredClone(subscriptionOrder);
+    }
     if (path === '/account/membership' || path === '/account/membership/status') {
       if (membershipScenario === 'error') throw Error('Synthetic membership unavailable');
       if (membershipScenario === 'loading') await new Promise(resolve => setTimeout(resolve, 600));
@@ -102,6 +122,8 @@ export function createSettingsPreview(defaults, { controls = false } = {}) {
   window.fetch = async (...args) => { blocked.push(String(args[0])); throw Error('Network disabled in fixture'); };
   return { run, calls, copies, blocked, health, record, setStatusCases: enabled => { statusCases = enabled === true; },
     setMembershipScenario: value => { membershipScenario = value; },
+    setSubscriptionOrderState:value=>{subscriptionOrderState=value;},
+    subscriptionTrace:()=>({reconciles:subscriptionReconciles,order:structuredClone(subscriptionOrder)}),
     setAccountView: value => { account = structuredClone(value); },
     setRequests: v => { requests = v; }, setRemoteView: v => { remoteOverride = v; },
     setPairExpiryMs: ms => { pairExpiryMs = ms; }, setProbeResult: v => { probeResult = v; },

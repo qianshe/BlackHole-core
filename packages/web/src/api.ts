@@ -1,4 +1,5 @@
 import type { MembershipCatalogue, MembershipStatus } from '../../contracts/src/membership';
+import type {SubscriptionOrder,SubscriptionSku,SubscriptionStatus} from '../../contracts/src/subscriptions';
 export type { MembershipCatalogue, MembershipStatus } from '../../contracts/src/membership';
 import { settingsHost } from './settings/host';
 import type { ConnectionRoutesView, DirectAccessView, PhoneEndpoint, SetupSummary } from '../../contracts/src/connections';
@@ -389,6 +390,12 @@ export const panel = {
   restart: () => request<{ ok: boolean }>('/daemon/restart', json('POST', { confirm: true })),
   skills: (dir: string) => request<{ cls: '' | 'ok' | 'bad'; hint: string }>(`/settings/skills?dir=${enc(dir)}`),
   accountRefresh: () => request<AccountView>('/account/refresh', json('POST', {})),
+  subscriptions: () => request<MembershipCatalogue>('/account/subscriptions'),
+  subscriptionStatus: () => request<SubscriptionStatus>('/account/subscriptions/status'),
+  subscriptionOrders: () => request<SubscriptionOrder[]>('/account/subscriptions/orders'),
+  createSubscription: (sku:SubscriptionSku,key:string) => request<{order:SubscriptionOrder;opened:boolean}>('/account/subscriptions/orders',json('POST',{sku,key})),
+  subscriptionCheckout: (id:string) => request<{order:SubscriptionOrder;opened:boolean}>(`/account/subscriptions/orders/${enc(id)}/checkout`,json('POST',{})),
+  subscriptionReconcile: (id:string) => request<SubscriptionOrder>(`/account/subscriptions/orders/${enc(id)}/reconcile`,json('POST',{})),
   membership: () => request<MembershipCatalogue>('/account/membership'),
   membershipStatus: () => request<MembershipStatus>('/account/membership/status'),
   membershipCheckout: (sku: string) => request<{ opened: boolean; expiresAt: number }>('/account/membership/checkout', json('POST', { sku })),

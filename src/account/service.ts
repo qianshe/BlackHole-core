@@ -14,6 +14,7 @@ const CALLS = {
   view: 0, check: 0, restore: 0, signOut: 0,
   redeemCard: 2,
   membershipCatalogue: 1, membershipStatus: 1, membershipCheckout: 2,
+  subscriptionCatalogue:1,subscriptionStatus:1,subscriptionOrders:1,createSubscriptionOrder:3,subscriptionOrder:2,reconcileSubscriptionOrder:2,subscriptionCheckoutLink:2,
   billingPlans: 1, billingOrders: 1, billingRefundableOrders: 2, createBillingOrder: 3,
   billingOrder: 2, reconcileBillingOrder: 2, billingCheckoutLink: 2, billingRefundQuote: 2, refundBillingOrder: 4,
 } as const;

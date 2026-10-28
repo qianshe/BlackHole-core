@@ -7,7 +7,8 @@ import { DesktopUpdates } from '../settings/DesktopUpdates';
 import { runManagedCoreAction } from '../settings/managedCoreActions';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { accountSummary, formatRemaining } from '../../../contracts/src/account-summary';
-import type { MembershipCatalogue, MembershipStatus } from '../../../contracts/src/membership';
+import type { MembershipCatalogue } from '../../../contracts/src/membership';
+import type {SubscriptionOrder,SubscriptionSku,SubscriptionStatus} from '../../../contracts/src/subscriptions';
 import { VERSION } from '../../../../src/version';
 import {
   api, ApiError, panel, request,
@@ -1033,7 +1034,7 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     finally { setSigningIn(false); }
   };
   const [catalogue, setCatalogue] = useState<MembershipCatalogue | null>(null);
-  const [membership, setMembership] = useState<MembershipStatus | null>(null);
+  const [membership, setMembership] = useState<SubscriptionStatus | null>(null);
   const [membershipBusy, setMembershipBusy] = useState(false);
   const [membershipLoading, setMembershipLoading] = useState(false);
   const [membershipError, setMembershipError] = useState(false);
@@ -1047,9 +1048,9 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
   useEffect(() => {
     let stopped = false; setCatalogue(null); setMembership(null); setSelectedMembershipSku(''); setBuyOpen(false);
     setMembershipLoading(!!view?.userId); setMembershipError(false);
-    if (view?.userId) void panel.membership().then(async c => {
+    if (view?.userId) void panel.subscriptions().then(async c => {
       if (stopped) return; setCatalogue(c);
-      if (c.enabled) { const status = await panel.membershipStatus(); if (!stopped) setMembership(status); }
+      if (c.enabled) { const status = await panel.subscriptionStatus(); if (!stopped) setMembership(status); }
     }).catch(() => { if (!stopped) { setMembership(null); setMembershipError(true); } })
       .finally(() => { if (!stopped) setMembershipLoading(false); });
     return () => { stopped = true; if (memberAbort.current) memberAbort.current.stopped = true; if (waitAbort.current) waitAbort.current.stopped = true; };
@@ -1078,8 +1079,8 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     try {
       const next = await panel.accountRefresh(); if (liveUser.current !== uid) return; onView(next);
       if (next.userId !== uid) return;
-      const c = await panel.membership(); if (liveUser.current !== uid) return; setCatalogue(c); setMembership(null);
-      if (c.enabled) { const state = await panel.membershipStatus(); if (liveUser.current !== uid) return; setMembership(state); }
+      const c = await panel.subscriptions(); if (liveUser.current !== uid) return; setCatalogue(c); setMembership(null);
+      if (c.enabled) { const state = await panel.subscriptionStatus(); if (liveUser.current !== uid) return; setMembership(state); }
       ui.toast('BlackHole：订阅和商品状态已刷新。');
     } catch (e) { if (liveUser.current === uid) { setMembership(null); setMembershipError(true); ui.toast('BlackHole：刷新失败 — ' + errText(e), 'bad'); } }
     finally { refreshPending.current = false; if (liveUser.current === uid) setMembershipLoading(false); }
@@ -1110,37 +1111,68 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     } catch (e) { report(e); }
     finally { if (waitAbort.current === token) { waitAbort.current = null; setWait(null); } }
   };
+  const purchaseIntent = useRef<{userId:string;sku:string;key:string}|null>(null);
+  const purchaseBlockedMessage = () => '当前账号暂不可购买，请核对销售状态或稍后刷新。';
+  const waitForSubscription = async (initial:SubscriptionOrder,current:()=>boolean) => {
+    let order=initial;
+    for(let i=0;i<28&&current();i++){
+      try{order=await panel.subscriptionReconcile(order.id);}catch(e){if(!(e instanceof ApiError)||!['payment_result_unknown','network'].includes(e.code))throw e;}
+      if(!current())return;
+      if(order.status==='fulfilled'){
+        purchaseIntent.current=null;
+        const account=await panel.accountRefresh();if(!current())return;onView(account);
+        const status=await panel.subscriptionStatus();if(!current())return;setMembership(status);
+        ui.toast('付款已确认，所购周期已顺延到当前账号，有效期以服务端记录为准。');return;
+      }
+      if(order.status==='review'||order.status==='refunded'){purchaseIntent.current=null;ui.toast(`订单 ${order.id} 当前为“${STATUS_NAMES[order.status]}”，请保留订单号联系支持核查。`,'warn');return;}
+      if(order.status==='expired'){purchaseIntent.current=null;ui.toast('原订单付款窗口已结束。如已付款或结果不确定，请从购买记录核对原订单，不要重复付款；确认未付款后可重新选择套餐。','warn');return;}
+      await sleep(i<12?5000:15000);
+    }
+    if(current())ui.toast(`订单 ${order.id} 仍待确认。请从购买记录继续核对原订单，勿重复付款。`,'warn');
+  };
   const buy = async () => {
-    const chosen = catalogue?.plans.find(p => p.sku === selectedMembershipSku);
-    if (memberAbort.current || !chosen) return;
-    setBuyOpen(false); setMembershipBusy(true);
-    const token = { stopped: false }, userId = view?.userId; memberAbort.current = token;
-    const current = () => !token.stopped && liveUser.current === userId;
-    try {
-      const latest = await panel.membership(); if (!current()) return; setCatalogue(latest);
-      if (!latest.salesEnabled) { ui.toast('即刻收暂未开放新购，请稍后刷新。'); return; }
-      const state = await panel.membershipStatus(); if (!current()) return; setMembership(state);
-      if (!state.canPurchase) { ui.toast(state.decision === 'ALLOW' || state.legacyExpiresAt > state.checkedAt ? '现有会员或试用权益尚未到期，不重复购买。' : '当前暂不可购买，请稍后刷新权益。'); return; }
-      const currentPlan = latest.plans.find(p => p.sku === chosen.sku);
-      if (!currentPlan || currentPlan.amountMinor !== chosen.amountMinor || currentPlan.durationPeriod !== chosen.durationPeriod) {
-        setBuyOpen(true); ui.toast('所选套餐已变更或下架，请核对最新套餐后重新确认。', 'warn'); return;
-      }
-      const entrance = await panel.membershipCheckout(chosen.sku); if (!current()) return;
-      if (!entrance.opened) { ui.toast('未能打开系统浏览器；可重新打开同一套餐入口。未在本地确认支付。', 'warn'); return; }
-      ui.toast('已打开所选套餐的二维码页面。请在有效期内扫码，支付宝中核对金额后操作；完成后返回刷新权益。');
-      for (let i = 0; i < 12 && current(); i++) {
-        await sleep(5000); if (!current()) return;
-        let next: MembershipStatus;
-        try { next = await panel.membershipStatus(); } catch { continue; }
-        if (!current()) return; setMembership(next);
-        if (next.decision === 'ALLOW') {
-          const account = await panel.accountRefresh(); if (!current()) return; onView(account);
-          ui.toast('会员权益已确认生效，有效期以服务端查询为准。'); return;
-        }
-      }
-      if (current()) ui.toast('权益暂未确认。请稍后点击“刷新订阅”，不要据此重复付款。', 'warn');
-    } catch (e) { if (current()) report(e); }
-    finally { if (memberAbort.current === token) { memberAbort.current = null; setMembershipBusy(false); } }
+    const chosen=catalogue?.plans.find(p=>p.sku===selectedMembershipSku),userId=view?.userId;
+    if(memberAbort.current||!chosen||!userId)return;
+    setBuyOpen(false);setMembershipBusy(true);
+    const token={stopped:false};memberAbort.current=token;
+    const current=()=>!token.stopped&&liveUser.current===userId;
+    try{
+      const latest=await panel.subscriptions();if(!current())return;setCatalogue(latest);
+      if(!latest.salesEnabled){ui.toast('订阅购买暂未开放，请稍后刷新。');return;}
+      const state=await panel.subscriptionStatus();if(!current())return;setMembership(state);
+      if(!state.canPurchase){ui.toast(purchaseBlockedMessage());return;}
+      const plan=latest.plans.find(p=>p.sku===chosen.sku);
+      if(!plan||plan.amountMinor!==chosen.amountMinor||plan.durationPeriod!==chosen.durationPeriod){setBuyOpen(true);ui.toast('套餐已变更，请核对最新价格和周期后重新确认。','warn');return;}
+      const recent=await panel.subscriptionOrders();if(!current())return;
+      const pending=recent.find(o=>o.status==='paid'||(o.status==='payment_pending'&&o.expiresAt>state.checkedAt));
+      if(pending&&pending.sku!==chosen.sku){ui.toast('已有另一套餐的订单待核对，请先从购买记录处理原订单。','warn');return;}
+      if(purchaseIntent.current?.userId!==userId)purchaseIntent.current=null;
+      if(purchaseIntent.current&&purchaseIntent.current.sku!==chosen.sku){ui.toast('上一笔请求结果尚未确认，请重试原套餐或从购买记录核对。','warn');return;}
+      purchaseIntent.current??={userId,sku:chosen.sku,key:Array.from(crypto.getRandomValues(new Uint8Array(24)),b=>b.toString(16).padStart(2,'0')).join('')};
+      if(pending?.status==='paid'){await waitForSubscription(pending,current);return;}
+      const entrance=pending?await panel.subscriptionCheckout(pending.id):await panel.createSubscription(chosen.sku as SubscriptionSku,purchaseIntent.current.key);if(!current())return;
+      if(entrance.order.status==='fulfilled'){await waitForSubscription(entrance.order,current);return;}
+      if(!entrance.opened){ui.toast('未能打开浏览器，订单已保留，可从购买记录继续付款。','warn');return;}
+      ui.toast('已打开支付宝收银台。请核对金额后付款；付款确认后会保留已有时长并自动顺延。');
+      await waitForSubscription(entrance.order,current);
+    }catch(e){if(current())report(e);}
+    finally{if(memberAbort.current===token){memberAbort.current=null;setMembershipBusy(false);}}
+  };
+  const subscriptionHistory=async()=>{
+    if(memberAbort.current)return;
+    const userId=liveUser.current,token={stopped:false};if(!userId)return;memberAbort.current=token;setMembershipBusy(true);
+    const current=()=>!token.stopped&&liveUser.current===userId;
+    try{
+      const rows=await panel.subscriptionOrders();if(!current())return;if(!rows.length){ui.toast('当前账号还没有订阅购买订单。');return;}
+      const id=await ui.pick('最近20笔订阅购买记录',rows.map(o=>({label:`${o.displayName} ${price(o.amountMinor)} ${STATUS_NAMES[o.status]}`,description:o.id,value:o.id})));if(!current()||!id)return;
+      const order=rows.find(o=>o.id===id)!;
+      if(order.status==='fulfilled'){ui.toast(`订单 ${id} 已到账，所购周期已顺延。`);return;}
+      const actions=['核对到账'];if(order.status==='payment_pending'&&order.expiresAt>Math.floor(Date.now()/1000))actions.unshift('继续付款');
+      const action=await ui.pick('处理当前订单',actions.map(v=>({label:v,value:v})));if(!current()||!action)return;
+      if(action==='继续付款'){const entrance=await panel.subscriptionCheckout(id);if(!current())return;if(!entrance.opened){ui.toast('未能打开浏览器，订单仍然保留。','warn');return;}}
+      await waitForSubscription(order,current);
+    }catch(e){if(current())report(e);}
+    finally{if(memberAbort.current===token){memberAbort.current=null;setMembershipBusy(false);}}
   };
   const refund = async (selected?: BillingOrder) => {
     try {
@@ -1210,13 +1242,20 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
     : membershipBusy ? '正在确认会员权益，请稍候。'
       : membershipLoading ? '正在读取套餐与权益…'
         : membershipError ? '套餐或权益读取失败，请刷新后重试。'
-          : membership && !membership.canPurchase
-            ? membership.decision === 'ALLOW' || membership.legacyExpiresAt > membership.checkedAt
-              ? '现有权益尚未到期，无需重复购买。' : '当前暂不可购买，请稍后刷新权益。'
-            : !catalogue?.salesEnabled ? '暂未开放购买，仍可查看套餐价格。'
+          : !catalogue?.salesEnabled ? '暂未开放购买，仍可查看套餐价格。'
+            : membership && !membership.canPurchase ? purchaseBlockedMessage()
               : !selectedPlan ? '请选择一个套餐。' : '';
   const canBuy = loggedIn && !wait && !membershipBusy && !membershipLoading && !membershipError
     && !!catalogue?.salesEnabled && !!membership?.canPurchase && !!selectedPlan;
+  const currentRightsActive = !!membership && membership.serviceExpiresAt > membership.checkedAt;
+  const purchaseButtonLabel = !loggedIn ? '登录后购买'
+    : membershipBusy ? '正在确认权益…'
+      : membershipLoading ? '正在读取权益…'
+        : membershipError ? '刷新后重试'
+          : !catalogue?.salesEnabled ? '暂未开放购买'
+            : !membership?.canPurchase ? '暂不可购买'
+                : wait ? '正在核对付款…'
+                  : !selectedPlan ? '请先选择套餐' : currentRightsActive ? '确认续费套餐' : '确认所选套餐';
   return (
     <section id="set-account" className="card account-card" aria-label="账号与订阅">
       <div className="account-head">
@@ -1231,7 +1270,7 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
         <div>
           <div className="account-label">服务权益</div>
           <div id="cloudSubscription">{subscription}</div>
-          {membership?.validUntil && <div className="account-caption">有效期至 {new Date(membership.validUntil * 1000).toLocaleString()}</div>}
+          {membership && membership.serviceExpiresAt > membership.checkedAt && <div className="account-caption">有效期至 {new Date(membership.serviceExpiresAt * 1000).toLocaleString()}</div>}
         </div>
         <button className="secondary" type="button" disabled={!loggedIn || membershipLoading || membershipBusy} onClick={() => void refresh()}>{membershipLoading ? '刷新中…' : '刷新订阅'}</button>
       </div>
@@ -1254,12 +1293,13 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
         ) : <div id="cloudPlan" className="account-empty" role="status">{!loggedIn ? '登录后查看套餐与价格。' : membershipLoading ? '正在读取套餐…' : membershipError ? '暂无法获取套餐，请刷新后重试。' : '暂无可用套餐。'}</div>}
         <div className="account-purchase-action">
           <p id="cloudPurchaseReason" className="account-caption" role="status">{purchaseReason || '月、季、年按日历计算。'}</p>
-          <button id="cloudBuyCard" type="button" disabled={!canBuy} aria-describedby="cloudPurchaseReason" onClick={() => setBuyOpen(true)}>{membershipBusy ? '正在确认权益…' : '确认所选套餐'}</button>
+          <button id="cloudBuyCard" type="button" disabled={!canBuy} aria-describedby="cloudPurchaseReason" onClick={() => setBuyOpen(true)}>{purchaseButtonLabel}</button>
         </div>
       </div>
       <div className="account-actions" aria-label="账号操作">
         <div className="account-action-group">
           <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void redeem()}>兑换订阅卡</button>
+          <button className="secondary" type="button" disabled={!loggedIn || membershipBusy} onClick={() => void subscriptionHistory()}>购买记录</button>
           <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void orders()}>历史订单记录</button>
           <button className="secondary" type="button" disabled={!loggedIn} onClick={() => void refund()}>历史订单退款</button>
         </div>
@@ -1270,6 +1310,7 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
         </div>
       </div>
       {wait && <div className="bhp-wait" role="status"><span>正在确认支付宝付款… 订单 {wait.id}</span><button className="secondary" type="button" onClick={() => { if (waitAbort.current) waitAbort.current.stopped = true; }}>停止等待</button></div>}
+      {membershipBusy && <div className="bhp-wait" role="status"><span>正在核对本次订阅订单，已有权益保持有效。</span><button className="secondary" type="button" onClick={() => { if(memberAbort.current)memberAbort.current.stopped=true; }}>停止等待</button></div>}
       <div className="account-footnote">权益以最近一次服务端校验结果为准。</div>
       {buyOpen && (
         <Modal label="确认购买方案" onClose={() => setBuyOpen(false)} className="buy-dialog membership-confirm">
@@ -1278,11 +1319,11 @@ function AccountSection({ ui, view, onView, refreshAccount, onSignOut }: {
             <button className="secondary" type="button" aria-label="关闭购买确认" onClick={() => setBuyOpen(false)}>×</button>
           </div>
           <div className="buy-dialog-body">
-            <div className="buy-summary"><span className="k">所选套餐</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{accountEmail || identity}</span><span className="k">到账方式</span><span className="v">服务端确认后生效，不叠加旧时长</span></div>
-            <div className="buy-dialog-note">下一步打开所选套餐的二维码页面，请在支付宝核对金额后付款。月、季、年按日历计算，不自动续费。返回页面不代表支付成功。</div>
-            <div className="buy-dialog-note">即刻收时长包不支持退款或按剩余时长退费。重复扣款、未交付等异常，请保留凭证联系支持核查。</div>
+            <div className="buy-summary"><span className="k">所选套餐</span><span className="v">{planText}</span><span className="k">购买账号</span><span className="v">{accountEmail || identity}</span><span className="k">到账方式</span><span className="v">付款确认后保留剩余时长并顺延，以服务端记录为准</span></div>
+            <div className="buy-dialog-note">下一步前往支付宝收银台，核对金额后付款。未到期从原到期时间顺延，已到期从本次生效时间计算。月、季、年按日历计算，不自动扣款。返回页面不代表付款成功。</div>
+            <div className="buy-dialog-note">新订阅订单暂不提供自助退款入口。重复扣款、未交付或其他售后问题，请保留订单号和付款凭证联系支持核查；历史订单自助退款仍按原规则处理。</div>
           </div>
-          <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" disabled={!canBuy} onClick={() => void buy()}>生成所选套餐二维码</button></div>
+          <div className="buy-dialog-actions"><button className="secondary" type="button" onClick={() => setBuyOpen(false)}>取消</button><button type="button" disabled={!canBuy} onClick={() => void buy()}>前往支付宝付款</button></div>
         </Modal>
       )}
     </section>

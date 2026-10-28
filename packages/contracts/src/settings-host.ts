@@ -27,6 +27,9 @@ const hostRoutes: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', /^\/account\/(plans|orders|refundable)$/],
   ['GET', /^\/account\/membership(?:\/status)?$/],
   ['POST', /^\/account\/membership\/checkout$/],
+  ['GET', /^\/account\/subscriptions(?:\/(status|orders))?$/],
+  ['POST', /^\/account\/subscriptions\/orders$/],
+  ['POST', /^\/account\/subscriptions\/orders\/[0-9a-f-]{36}\/(checkout|reconcile)$/],
   ['POST', /^\/account\/(refresh|orders|redeem)$/],
   ['POST', /^\/account\/orders\/[^/]+\/(checkout|reconcile|refund-quote|refund)$/],
 ];

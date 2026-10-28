@@ -1,3 +1,13 @@
+test('calendar purchase bridge binds daemon identity and stable retry key; arbitrary financial fields never reach Core',async()=>{
+ const h=services(),key='a'.repeat(48),id='12345678-1234-4234-8234-123456789012';
+ for(const body of [{sku:'month',key,userId:'forged'},{sku:'month',key,amountMinor:1},{sku:'unknown',key}])await assert.rejects(h.request('POST','/account/subscriptions/orders',body));
+ assert.equal(h.calls.length,0);
+ await h.request('POST','/account/subscriptions/orders',{sku:'month',key});
+ assert.deepEqual(plain(h.calls[0]),['billing','createSubscriptionOrder',['daemon-user','month',key]]);
+ await h.request('POST','/account/subscriptions/orders/'+id+'/reconcile',{});
+ assert.deepEqual(plain(h.calls.at(-1)),['billing','reconcileSubscriptionOrder',['daemon-user',id]]);
+ await assert.rejects(h.request('POST','/account/subscriptions/orders/'+id+'/reconcile',{userId:'forged'}));
+});
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

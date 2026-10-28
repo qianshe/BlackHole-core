@@ -901,6 +901,22 @@ export function mountLocalWeb(app: express.Express, deps: DaemonDeps, state: Loc
       return { opened: await a.openCheckout(result.checkoutUrl), expiresAt: result.expiresAt };
     });
   });
+  api.get('/account/subscriptions',(_req,res)=>billing(res,(uid,a)=>a.call('subscriptionCatalogue',[uid])));
+  api.get('/account/subscriptions/status',(_req,res)=>billing(res,(uid,a)=>a.call('subscriptionStatus',[uid])));
+  api.get('/account/subscriptions/orders',(_req,res)=>billing(res,(uid,a)=>a.call('subscriptionOrders',[uid])));
+  api.post('/account/subscriptions/orders',(req,res)=>{
+    const b=req.body as Record<string,unknown>|undefined;
+    if(!b||Array.isArray(b)||Object.keys(b).sort().join(',')!=='key,sku'||typeof b.sku!=='string'||!['week','month','quarter','year'].includes(b.sku)||typeof b.key!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(b.key)){res.status(400).json({error:'invalid_input'});return;}
+    billing(res,async(uid,a)=>withCheckout(a,await a.call('createSubscriptionOrder',[uid,b.sku,b.key])));
+  });
+  api.post('/account/subscriptions/orders/:id/checkout',(req,res)=>{
+    const id=orderId(req);if(!id||!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length){res.status(400).json({error:'invalid_input'});return;}
+    billing(res,async(uid,a)=>withCheckout(a,await a.call('subscriptionCheckoutLink',[uid,id])));
+  });
+  api.post('/account/subscriptions/orders/:id/reconcile',(req,res)=>{
+    const id=orderId(req);if(!id||!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length){res.status(400).json({error:'invalid_input'});return;}
+    billing(res,(uid,a)=>a.call('reconcileSubscriptionOrder',[uid,id]));
+  });
   api.get('/account/orders', (_req, res) => billing(res, (uid, a) => a.call('billingOrders', [uid])));
   api.get('/account/refundable', (req, res) => {
     const cursor = req.query.cursor === undefined ? undefined : str(req.query.cursor);

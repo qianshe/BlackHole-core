@@ -70,11 +70,12 @@
 .settings-shell .bhp .fgrid { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px 16px; }
 .settings-shell .bhp .f { min-width: 0; }
 .settings-shell .bhp .f label { margin-bottom: 4px; font-size: 12px; font-weight: 600; }
-.settings-shell.settings-shell .bhp input:not([type='checkbox']), .settings-shell.settings-shell .bhp select { height: 36px; min-width: 0; padding: 0 10px; font: 13px/1.55 var(--vscode-font-family, inherit); border-radius: 6px; border: 1px solid var(--settings-input-border); background-color: var(--settings-input); color: var(--settings-input-fg); }
+.settings-shell.settings-shell .bhp input:not([type='checkbox'], [type='radio']), .settings-shell.settings-shell .bhp select { height: 36px; min-width: 0; padding: 0 10px; font: 13px/1.55 var(--vscode-font-family, inherit); border-radius: 6px; border: 1px solid var(--settings-input-border); background-color: var(--settings-input); color: var(--settings-input-fg); }
 .settings-shell.settings-shell .bhp textarea { width: 100%; min-width: 0; padding: 7px 10px; font: 13px/1.55 var(--vscode-font-family, inherit); border-radius: 6px; border: 1px solid var(--settings-input-border); background-color: var(--settings-input); color: var(--settings-input-fg); resize: vertical; }
 .settings-shell.settings-shell .bhp select { padding-right: 30px; }
 .settings-shell.settings-shell .bhp :is(button,input,select,textarea,summary):focus-visible { outline: 2px solid var(--settings-focus); outline-offset: 2px; }
 .settings-shell.settings-shell .bhp :is(input,select,textarea):focus-visible { border-color: var(--settings-focus); }
+.settings-shell.settings-shell .bhp .account-plan input[type='radio']:focus-visible { outline: none; } /* The option supplies keyboard focus, never a text-input rectangle. */
 /* Disclosures clip an outside outline: use only a 2px inside ring, not outline + shadow together. */
 .settings-shell.settings-shell .bhp :is(.connection-disclosure, .connection-more) > summary:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--settings-focus); }
 .settings-shell .bhp .hint { margin-top: 6px; font-size: 12px; line-height: 1.55; }

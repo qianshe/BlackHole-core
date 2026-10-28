@@ -1,7 +1,6 @@
 import { commands, Disposable, env, ProgressLocation, Uri, window } from 'vscode';
 import { randomUUID } from 'node:crypto';
 import { authSleep, CloudAuthClient, CloudAuthError, type BillingOrder } from './cloudAuthClient';
-import { membershipPlanLabel } from '../../contracts/src/membership';
 
 const statusNames:Record<BillingOrder['status'],string>={payment_pending:'待付款 / 待确认',paid:'付款已确认，权益处理中',fulfilled:'已到账',expired:'支付窗口已结束',review:'超时付款，未交付权益',refunded:'已退款'};
 const errorMessages:Record<string,string>={
@@ -19,7 +18,7 @@ const errorMessages:Record<string,string>={
 function days(seconds:number){return Math.max(1,Math.round(seconds/86400));}
 function price(minor:number){return '¥'+(minor/100).toFixed(2);}
 function durationLabel(seconds:number){const days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.ceil(seconds%3600/60);return [days?days+' 天':'',hours?hours+' 小时':'',minutes?minutes+' 分钟':''].filter(Boolean).join(' ')||'不足 1 分钟';}
-// New-sale prices use membershipPlanLabel; legacy order labels below preserve original facts.
+// New sales use the shared subscription UI; these labels preserve legacy order facts.
 function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 ${price(order.amountMinor)} ${statusNames[order.status]}`;}
 
 /** User-driven only: no background order polling and no automatic recurring payment. */
@@ -62,35 +61,9 @@ export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Dis
   }
   finally{if(abort===controller)abort=undefined;}
  }
- async function buy(client:CloudAuthClient,userId:string,_requestedSku?:string,_confirmedBySettings=false) {
-  const catalogue=await client.membershipCatalogue(userId);
-  if(disposed)return;
-  if(!catalogue.salesEnabled){info('即刻收商品与价格暂不可用或尚未开放新购。请稍后刷新，不会使用旧套餐价格。');return;}
-  const state=await client.membershipStatus(userId);
-  if(disposed)return;
-  if(!state.canPurchase){info(state.decision==='ALLOW'||state.legacyExpiresAt>state.checkedAt?'当前会员或试用权益尚未到期，无需重复购买。':'当前暂不可购买，请稍后刷新权益。');return;}
-  let selected=catalogue.plans.find(p=>p.sku===_requestedSku);
-  if(!selected)selected=catalogue.plans.length===1?catalogue.plans[0]:(await window.showQuickPick(catalogue.plans.map(plan=>({label:membershipPlanLabel(plan),plan})),{title:'选择即刻收时长套餐',ignoreFocusOut:false}))?.plan;
-  if(!selected||disposed)return;
-  const detail=membershipPlanLabel(selected)+'\n\n周期按日历计算，不自动续费。将生成此档位的付款二维码，请在有效期内扫码并核对最终金额。即刻收时长包目前不支持退款，也不支持按剩余时长退费。请确认套餐和金额后再付款；重复扣款、未交付等异常请保留凭证联系支持核查。';
-  if(await window.showInformationMessage('打开即刻收购买页？',{modal:true,detail},'打开购买页')!=='打开购买页'||disposed)return;
-  const entrance=await client.membershipCheckout(userId,selected.sku);if(disposed)return;
-  if(!await env.openExternal(Uri.parse(entrance.checkoutUrl))){warn('未能打开系统浏览器，请重新发起购买入口。');return;}
-  const controller=new AbortController();abort=controller;let active=false;
-  try{
-   await window.withProgress({location:ProgressLocation.Notification,title:'BlackHole：等待会员权益确认',cancellable:true},async(_progress,cancellation)=>{
-    const registration=cancellation.onCancellationRequested(()=>controller.abort());
-    try{for(let i=0;i<12&&!disposed&&!controller.signal.aborted;i++){
-     await authSleep(5000,controller.signal);
-     try{const status=await client.membershipStatus(userId);if(status.decision==='ALLOW'){active=true;break;}}
-     catch(error){if(error instanceof CloudAuthError&&error.code==='rejected')throw error;}
-    }}finally{registration.dispose();}
-   });
-   if(disposed||controller.signal.aborted)return;
-   if(active){await commands.executeCommand('blackhole.accountRefresh');info('BlackHole：会员权益已生效，有效期以服务端校验为准。');}
-   else info('BlackHole：权益暂未确认，请稍后刷新。不要因为等待结束而重复付款。');
-  }catch(error){if(!controller.signal.aborted)throw error;if(!disposed)info('BlackHole：已停止等待。请稍后刷新权益；此操作不会取消支付宝购买或判定支付失败。');}
-  finally{if(abort===controller)abort=undefined;}
+ async function buy(_client:CloudAuthClient,_userId:string,_requestedSku?:string,_confirmedBySettings=false) {
+  // All new purchases share the same order-based UI, including Command Palette entry.
+  await commands.executeCommand('blackhole.openSettings','account');
  }
  async function orders(client:CloudAuthClient,userId:string) {
   const rows=await client.billingOrders(userId);if(!rows.length){info('当前账号还没有支付宝购买订单。');return;}
@@ -153,7 +126,7 @@ export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Dis
  }
  return Disposable.from(
   commands.registerCommand('blackhole.accountBuyCard',(sku?:string,confirmedBySettings=false)=>act('buy',sku,confirmedBySettings===true)),
-  commands.registerCommand('blackhole.accountOrders',()=>act('orders')),
+  commands.registerCommand('blackhole.accountOrders',()=>commands.executeCommand('blackhole.openSettings','account')),
   commands.registerCommand('blackhole.accountRefund',()=>act('refund')),
   new Disposable(()=>{disposed=true;abort?.abort();}),
  );

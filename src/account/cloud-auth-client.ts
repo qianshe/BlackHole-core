@@ -1,5 +1,7 @@
 import { parseMembershipCatalogue, parseMembershipStatus } from '../../packages/contracts/dist/membership.js';
 import { parseMembershipCheckout } from './membership-checkout.js';
+import {parseSubscriptionCatalogue,parseSubscriptionStatus,parseSubscriptionOrder,parseSubscriptionOrders,type SubscriptionSku} from '../../packages/contracts/dist/subscriptions.js';
+import {parseSubscriptionCheckout} from './subscription-checkout.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { PRODUCTION_CLOUD_ORIGIN, cloudAuthPrefix, validateCloudOrigin } from './cloud-origin.js';
 export const CLOUD_AUTH_ORIGIN=PRODUCTION_CLOUD_ORIGIN;
@@ -188,7 +190,7 @@ export class CloudAuthClient {
  }
  /** Native buyer-only billing calls; never exports a bearer or changes subscription facts locally. */
  private async billingRequest(path:string,method:'GET'|'POST',expectedUserId:string,data?:Record<string,string>,idempotencyKey?:string,signal?:AbortSignal,kind:'general'|'reconcile'|'refundQuote'|'refund'='general'):Promise<unknown> {
-  if(!/^\/api\/billing\/(?:membership\/(?:catalogue|status|checkout)|plans|refundable-orders(?:\?cursor=\d{1,16}\.[0-9a-f-]{36})?|orders(?:\/[0-9a-f-]{36}(?:\/(?:reconcile|checkout-link|refund-quote|refund))?)?)$/.test(path))throw new CloudAuthError('invalid_response');
+  if(!/^\/api\/billing\/(?:subscriptions\/(?:catalogue|status|orders(?:\/[0-9a-f-]{36}(?:\/(?:reconcile|checkout-link))?)?)|membership\/(?:catalogue|status|checkout)|plans|refundable-orders(?:\?cursor=\d{1,16}\.[0-9a-f-]{36})?|orders(?:\/[0-9a-f-]{36}(?:\/(?:reconcile|checkout-link|refund-quote|refund))?)?)$/.test(path))throw new CloudAuthError('invalid_response');
   const value=await this.current();if(!value||value.userId!==expectedUserId||value.expiresAt<=Math.floor(this.now()/1000))throw new CloudAuthError('rejected');
   let result:Awaited<ReturnType<CloudAuthClient['request']>>;
   try {result=await this.request(path,method,data,value.token,signal,idempotencyKey);}
@@ -203,7 +205,7 @@ export class CloudAuthClient {
   if(result.status===401){await this.forget(value);throw new CloudAuthError('rejected');}
   // A forbidden checkout does not prove the login expired (401 handles that).
   // Error bodies are intentionally discarded by request(); preserve that boundary.
-  if(path==='/api/billing/membership/checkout'&&result.status===403)throw new CloudAuthError('payment_not_available');
+  if((path==='/api/billing/membership/checkout'||path.startsWith('/api/billing/subscriptions/'))&&result.status===403)throw new CloudAuthError('payment_not_available');
   if(result.status===403)throw new CloudAuthError('rejected');
   if(result.status===429)throw new CloudAuthError('rate_limited');
   // A refund POST is always preceded by a server-signed quote. Any 409 means that confirmation is no longer current;
@@ -237,6 +239,17 @@ export class CloudAuthClient {
   const value=await this.billingRequest('/api/billing/membership/checkout','POST',expectedUserId,{sku});
   try{return parseMembershipCheckout(value,this.origin,Math.floor(this.now()/1000));}catch{throw new CloudAuthError('invalid_response');}
  }
+ async subscriptionCatalogue(expectedUserId:string){try{return parseSubscriptionCatalogue(await this.billingRequest('/api/billing/subscriptions/catalogue','GET',expectedUserId));}catch(e){if(e instanceof CloudAuthError)throw e;throw new CloudAuthError('invalid_response')}}
+ async subscriptionStatus(expectedUserId:string){try{return parseSubscriptionStatus(await this.billingRequest('/api/billing/subscriptions/status','GET',expectedUserId));}catch(e){if(e instanceof CloudAuthError)throw e;throw new CloudAuthError('invalid_response')}}
+ async subscriptionOrders(expectedUserId:string){try{return parseSubscriptionOrders(await this.billingRequest('/api/billing/subscriptions/orders','GET',expectedUserId));}catch(e){if(e instanceof CloudAuthError)throw e;throw new CloudAuthError('invalid_response')}}
+ async createSubscriptionOrder(expectedUserId:string,sku:SubscriptionSku,key:string){
+  if(!['week','month','quarter','year'].includes(sku)||!/^[A-Za-z0-9_-]{16,128}$/.test(key))throw new CloudAuthError('invalid_response');
+  const v=await this.billingRequest('/api/billing/subscriptions/orders','POST',expectedUserId,{sku},key);
+  try{const result=parseSubscriptionCheckout(v,this.origin);if(result.order.sku!==sku)throw Error('order_plan_mismatch');return result;}catch{throw new CloudAuthError('invalid_response')}
+ }
+ async subscriptionOrder(expectedUserId:string,id:string){if(!uuid.test(id))throw new CloudAuthError('invalid_response');const v=exactObject(await this.billingRequest('/api/billing/subscriptions/orders/'+id,'GET',expectedUserId),['order']);try{const order=parseSubscriptionOrder(v.order);if(order.id!==id)throw Error('order_id_mismatch');return order}catch{throw new CloudAuthError('invalid_response')}}
+ async reconcileSubscriptionOrder(expectedUserId:string,id:string){if(!uuid.test(id))throw new CloudAuthError('invalid_response');const v=exactObject(await this.billingRequest('/api/billing/subscriptions/orders/'+id+'/reconcile','POST',expectedUserId,{},undefined,undefined,'reconcile'),['order']);try{const order=parseSubscriptionOrder(v.order);if(order.id!==id)throw Error('order_id_mismatch');return order}catch{throw new CloudAuthError('invalid_response')}}
+ async subscriptionCheckoutLink(expectedUserId:string,id:string){if(!uuid.test(id))throw new CloudAuthError('invalid_response');const v=await this.billingRequest('/api/billing/subscriptions/orders/'+id+'/checkout-link','POST',expectedUserId,{});try{const result=parseSubscriptionCheckout(v,this.origin);if(result.order.id!==id)throw Error('order_id_mismatch');return result}catch{throw new CloudAuthError('invalid_response')}}
  async billingPlans(expectedUserId:string):Promise<{enabled:boolean;environment?:'sandbox'|'production';plans:BillingPlan[]}> {
   const row=exactObject(await this.billingRequest('/api/billing/plans','GET',expectedUserId),['enabled','plans'],['environment']);
   if(typeof row.enabled!=='boolean'||!Array.isArray(row.plans)||row.plans.length>10||new Set(row.plans.map(item=>(item as {sku?:unknown})?.sku)).size!==row.plans.length

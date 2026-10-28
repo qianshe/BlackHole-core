@@ -129,6 +129,15 @@ export class SettingsHostService {
     };
     if (p === '/account/refresh') { await call('check', []); return h.api.account(); }
     if (p === '/account/plans') return call('billingPlans', [uid]);
+    if(p==='/account/subscriptions')return call('subscriptionCatalogue',[uid]);
+    if(p==='/account/subscriptions/status')return call('subscriptionStatus',[uid]);
+    if(p==='/account/subscriptions/orders'&&r.method==='GET')return call('subscriptionOrders',[uid]);
+    if(p==='/account/subscriptions/orders'&&r.method==='POST'){
+      if(Object.keys(b).sort().join(',')!=='key,sku'||typeof b.sku!=='string'||!['week','month','quarter','year'].includes(b.sku)||typeof b.key!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(b.key))throw problem('invalid_input',400);
+      return checkout(await call('createSubscriptionOrder',[uid,b.sku,b.key]));
+    }
+    const subscription=/^\/account\/subscriptions\/orders\/([0-9a-f-]{36})\/(checkout|reconcile)$/.exec(p);
+    if(subscription){if(Object.keys(b).length)throw problem('invalid_input',400);return subscription[2]==='checkout'?checkout(await call('subscriptionCheckoutLink',[uid,subscription[1]])):call('reconcileSubscriptionOrder',[uid,subscription[1]]);}
     if (p === '/account/membership') return call('membershipCatalogue', [uid]);
     if (p === '/account/membership/status') return call('membershipStatus', [uid]);
     if (p === '/account/membership/checkout') {

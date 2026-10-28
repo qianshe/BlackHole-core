@@ -275,7 +275,7 @@
   .bhp .account-plan { display:grid; grid-template-columns:16px minmax(0,1fr); gap:8px; align-items:center; min-width:0; padding:14px 12px; border:.5px solid var(--account-border); border-radius:6px; background:transparent; cursor:pointer; }
   .bhp .account-plan:hover { background:var(--vscode-list-hoverBackground,var(--vscode-sideBar-background)); }
   .bhp .account-plan[data-selected="true"] { border-color:var(--vscode-focusBorder); background:color-mix(in srgb,var(--vscode-focusBorder) 8%,transparent); }
-  .bhp .account-plan:focus-within { outline:2px solid var(--vscode-focusBorder); outline-offset:2px; }
+  .bhp .account-plan:has(input:focus-visible) { outline:2px solid var(--vscode-focusBorder); outline-offset:3px; }
   .bhp .account-plan input[type="radio"] { width:16px; height:16px; min-width:16px; margin:0; padding:0; accent-color:var(--vscode-focusBorder); cursor:pointer; }
   .bhp .account-plan input[type="radio"]:focus-visible { outline:none; } /* The enclosing option owns the visible focus ring. */
   .bhp .account-plan:has(input:disabled) { opacity:.65; cursor:wait; }
