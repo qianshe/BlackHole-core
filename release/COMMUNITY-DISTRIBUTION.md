@@ -36,6 +36,9 @@ Reviewed the packaging trust boundaries against parent 06915104960a80131e2b926ee
 - Signing keys stay in a temporary directory removed by a trap and excluded from artifacts.
 - GitHub version assets remain immutable; no production clobber or implicit Cloud deployment.
 - Ad-hoc signing verifies the whole app and checks that all compiler-pinned payload hashes are unchanged.
+- macOS stores non-code payloads in Contents/Resources/BlackHole; the launcher derives this fixed path
+  without an environment override. The real file-loading regression still rejects a modified Node payload.
+- Debian payload permissions are normalized independently of the private signing-key umask.
 - The native installer smoke refuses to execute outside a disposable GitHub Actions runner.
 - No live local installation, user-profile deletion, payment setting or Cloud migration is performed.
 - Focused policy/signing checks: 19 passed locally on 2026-10-28.

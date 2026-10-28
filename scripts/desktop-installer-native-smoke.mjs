@@ -33,12 +33,12 @@ function install() {
   run(installer,['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/DIR='+appRoot,'/LOG='+path.join(root,'setup.log')]);
   exe=path.join(appRoot,'blackhole.exe');
  } else if(process.platform==='darwin') {
-  appRoot=path.join(root,'installed','BlackHole.app','Contents/MacOS');
+  appRoot=path.join(root,'installed','BlackHole.app','Contents/Resources/BlackHole');
   fs.mkdirSync(path.join(root,'installed'),{recursive:true});
   fs.cpSync(path.join(root,'mount','BlackHole.app'),path.join(root,'installed','BlackHole.app'),{recursive:true,force:true});
   run('codesign',['--verify','--deep','--strict',path.join(root,'installed','BlackHole.app')]);
   assert.equal(audit.signing.macos.notarized,false);assert.equal(audit.signing.macos.identity,'ad-hoc');
-  exe=path.join(appRoot,'blackhole');
+  exe=path.join(root,'installed','BlackHole.app','Contents/MacOS/blackhole');
  } else {
   run('sudo',['dpkg','--install',installer]);
   appRoot='/opt/BlackHole';exe=path.join(appRoot,'blackhole');

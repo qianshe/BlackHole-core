@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 export function signCommunityMacBundle(app, { run = spawnSync } = {}) {
  if (!path.isAbsolute(app) || !app.endsWith('.app') || fs.lstatSync(app).isSymbolicLink()) throw Error('macos_app_path_invalid');
- const code = path.join(app, 'Contents/MacOS');
+ const code = path.join(app, 'Contents/Resources/BlackHole');
  const pinned = ['bootstrap/node.exe', 'bootstrap/node-LICENSE', 'bootstrap/core-manager-cli.mjs', 'bootstrap/trust.json', 'seed/core.zip'];
  const before = pinned.map(file => hash(path.join(code, file)));
  // Never use --deep when signing: it would rewrite the pinned Node binary.

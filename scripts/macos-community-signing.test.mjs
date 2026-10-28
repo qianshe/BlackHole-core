@@ -9,7 +9,7 @@ function fixture(t) {
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const app = path.join(root,'BlackHole.app');
  for(const file of ['bootstrap/node.exe','bootstrap/node-LICENSE','bootstrap/core-manager-cli.mjs','bootstrap/trust.json','seed/core.zip']) {
-  const at=path.join(app,'Contents/MacOS',file); fs.mkdirSync(path.dirname(at),{recursive:true});fs.writeFileSync(at,'pinned');
+  const at=path.join(app,'Contents/Resources/BlackHole',file); fs.mkdirSync(path.dirname(at),{recursive:true});fs.writeFileSync(at,'pinned');
  }
  return app;
 }
@@ -25,5 +25,5 @@ test('failed signature verification stops packaging',t=>{
 });
 test('rewriting embedded Node is rejected even when codesign reports success',t=>{
  const app=fixture(t);
- assert.throws(()=>signCommunityMacBundle(app,{run:()=>{fs.writeFileSync(path.join(app,'Contents/MacOS/bootstrap/node.exe'),'changed');return {status:0}}}),/macos_pinned_payload_changed/);
+ assert.throws(()=>signCommunityMacBundle(app,{run:()=>{fs.writeFileSync(path.join(app,'Contents/Resources/BlackHole/bootstrap/node.exe'),'changed');return {status:0}}}),/macos_pinned_payload_changed/);
 });

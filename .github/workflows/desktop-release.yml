@@ -138,6 +138,8 @@ jobs:
           trap 'rm -rf "$key_dir"' EXIT
           printf '%s\n' "$CORE_PRIVATE_KEY_SECRET" > "$key_dir/core-private.pem"
           printf '%s\n' "$UPDATE_PRIVATE_KEY_SECRET" > "$key_dir/update-private.pem"
+          # Keys remain private in the 0700 temporary directory; public payloads use standard permissions.
+          umask 022
           node -e "
             const fs = require('fs'), crypto = require('crypto');
             const corePub = crypto.createPublicKey(fs.readFileSync(process.argv[1])).export({ type: 'spki', format: 'pem' });
