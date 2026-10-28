@@ -18,6 +18,11 @@ on:
       - '.github/workflows/desktop-release.yml'
   workflow_dispatch:
     inputs:
+      community_packages:
+        description: 'Build all five production community installers after native tests; do not publish'
+        type: boolean
+        required: false
+        default: false
       build_artifacts:
         description: 'Build development launchers after tests (not a VSIX or a release)'
         type: boolean
@@ -81,7 +86,7 @@ jobs:
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
       - name: Desktop delivery policies and native-status boundary
-        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs packages/web/test/desktop-update-client.test.mjs
+        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs packages/web/test/desktop-update-client.test.mjs
       - name: Host-provided Node and lightweight VSIX packaging boundaries
         run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs packages/vscode/test/managed-core-session.test.mjs
       - name: Read-only installer preflight (disposable HOME only)
@@ -149,3 +154,12 @@ jobs:
           name: blackhole-launcher-dev-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
           path: launcher/
           retention-days: 7
+
+  community-packages:
+    if: github.event_name == 'workflow_dispatch' && inputs.community_packages
+    needs: test
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      environment: production
+      publish_github_release: false
+    secrets: inherit

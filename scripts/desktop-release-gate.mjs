@@ -8,11 +8,13 @@ import { createHash } from 'node:crypto';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const gates=['securityReview','installerTransaction','uninstallChoices','nodeRuntimeLayout','platformSigning','cloudDownloadReadback'];
 export function evaluateDesktopGates(policy,{mode='release',sourceSha='',approvedSha='',dirty=true,artifactHashes=[]}={}){
- if(!['candidate','release'].includes(mode) || !policy || policy.schemaVersion!==1 || !Array.isArray(policy.blockedArtifactSha256))throw Error('release_policy_invalid');
- for(const name of gates)if(!policy[name] || !['pending','passed'].includes(policy[name].state))throw Error('release_policy_invalid');
+ if(!['candidate','prepublish','release'].includes(mode) || !policy || policy.schemaVersion!==1 || !Array.isArray(policy.blockedArtifactSha256))throw Error('release_policy_invalid');
+ const communityDisclosure = name => name==='platformSigning' && policy.distributionProfile==='community' && policy[name]?.state==='disclosed' && policy[name]?.windows==='unsigned' && policy[name]?.macos==='adhoc-unnotarized' && policy[name]?.linux==='core-and-update-ed25519';
+ for(const name of gates)if(!policy[name] || (!['pending','passed'].includes(policy[name].state) && !communityDisclosure(name)))throw Error('release_policy_invalid');
  const reasons=[];
- for(const name of mode==='candidate'?['securityReview']:gates){
-  const g=policy[name];if(g.state!=='passed' || typeof g.evidence!=='string' || !g.evidence.trim())reasons.push(name);
+ const required=mode==='candidate'?['securityReview']:mode==='prepublish'?gates.filter(name=>name!=='cloudDownloadReadback'):gates;
+ for(const name of required){
+  const g=policy[name];if((g.state!=='passed' && !communityDisclosure(name)) || typeof g.evidence!=='string' || !g.evidence.trim())reasons.push(name);
  }
  if(dirty)reasons.push('uncommitted_source');
  if(!/^[a-f0-9]{40}$/.test(sourceSha) || sourceSha!==approvedSha)reasons.push('source_approval_required');
@@ -20,7 +22,7 @@ export function evaluateDesktopGates(policy,{mode='release',sourceSha='',approve
  return {schemaVersion:1,mode,allowed:reasons.length===0,reasons,sourceSha};
 }
 export function main(argv=process.argv.slice(2)){
- if(argv.length<2 || argv.length>10 || argv.length%2!==0 || argv[0]!=='--mode' || !['candidate','release'].includes(argv[1]))throw Error('usage: --mode candidate|release [--artifact FILE]');
+ if(argv.length<2 || argv.length>10 || argv.length%2!==0 || argv[0]!=='--mode' || !['candidate','prepublish','release'].includes(argv[1]))throw Error('usage: --mode candidate|prepublish|release [--artifact FILE]');
  const artifactHashes=[];
  for(let i=2;i<argv.length;i+=2){
   if(argv[i]!=='--artifact')throw Error('artifact_argument_invalid');

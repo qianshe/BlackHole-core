@@ -1,4 +1,5 @@
-// Creates an unsigned developer/candidate Desktop layout, never installs it.
+// Creates a Desktop layout without a vendor identity certificate, never installs it.
+// macOS bundles receive a verified ad-hoc signature; they are not notarized.
 // The native launcher pins bootstrap hashes at compile time; mutable metadata
 // is audit output only, not a runtime source of trust.
 import fs from 'node:fs';
@@ -10,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { createPublicKey } from 'node:crypto';
 import { verifyCoreArchive, sha256 } from './core-runtime-lib.mjs';
 import { verifyDesktopNodeInputs, probeDesktopNode, stageDesktopNode } from './desktop-node-layout.mjs';
+import { signCommunityMacBundle } from './macos-community-signing.mjs';
 
 const {values:a}=parseArgs({options:{seed:{type:'string'},'public-key':{type:'string'},'key-id':{type:'string'},manager:{type:'string'},output:{type:'string'},environment:{type:'string'},platform:{type:'string'},arch:{type:'string'},iscc:{type:'string'},'package-installer':{type:'boolean'},'desktop-version':{type:'string'},'update-feed':{type:'string'},'update-public-key':{type:'string'},'node-exe':{type:'string'},'node-sha256':{type:'string'},'node-license':{type:'string'},'node-license-sha256':{type:'string'}}});
 for(const name of ['seed','public-key','key-id','manager','output','environment','node-exe','node-sha256','node-license','node-license-sha256'])if(!a[name])throw new Error(`argument_required:${name}`);
@@ -184,6 +186,9 @@ try {
    '<key>NSHighResolutionCapable</key><true/>',
    '</dict></plist>',
   ].join('\n')+'\n');
+  audit.signing.macos = signCommunityMacBundle(path.join(dmgStage,appName));
+  fs.symlinkSync('/Applications',path.join(dmgStage,'Applications'));
+  fs.writeFileSync(path.join(dmgStage,'INSTALL.txt'),fs.readFileSync(path.join(root,'release/community-install.txt')));
   fs.mkdirSync(path.join(output,'installer'),{recursive:true});
   const name=`BlackHole-Desktop-${version}-macos-${arch}${suffix}.dmg`;
   const file=path.join(output,'installer',name);
@@ -227,6 +232,7 @@ try {
    'Section: devel',
    'Priority: optional',
    `Architecture: ${debArch}`,
+   'Depends: libc6, libgcc-s1, libstdc++6, libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0, bubblewrap',
    'Maintainer: BlackHole <support@stellarbridge.dpdns.org>',
    'Description: BlackHole Desktop shared-core native shell',
   ].join('\n')+'\n');

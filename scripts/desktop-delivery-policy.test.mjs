@@ -65,7 +65,8 @@ test('multi-platform Desktop release workflow enforces release gate, builds all 
  assert.equal(w.jobs.package.needs,'gate');
  assert.equal(w.jobs.publish.needs,'package');
  const gateSteps=w.jobs.gate.steps.map(s=>s.run??'').join('\n');
- assert.match(gateSteps,/desktop-release-gate\.mjs --mode release/);
+ assert.doesNotMatch(gateSteps,/--mode (release|prepublish)/);
+ assert.match(w.jobs.publish.steps.find(s=>String(s.run).includes('gh release upload')).run,/desktop-release-gate\.mjs --mode prepublish/);
  assert.match(gateSteps,/desktop-release-gate\.mjs --mode candidate/);
  const targets=w.jobs.package.strategy.matrix.include.map(m=>m.target).sort();
  assert.deepEqual(targets,['linux-arm64','linux-x64','macos-arm64','macos-x64','windows-x64']);
@@ -110,10 +111,10 @@ test('release signing selects a secret name before resolving its value and rejec
  assert.match(signing.run,/desktop-node-info\.mjs --output/);
  assert.doesNotMatch(signing.run,/JSON\.parse\(process\.argv\[1\]\)|copyFileSync\('LICENSE'/);
 });
-test('production artifact-only builds use candidate policy while publication requires the release policy',()=>{
+test('pre-build checks use candidate policy; post-build publication has its separate prepublish gate',()=>{
  const run=workflow('desktop-release.yml').jobs.gate.steps.find(s=>s.env?.BLACKHOLE_APPROVED_SOURCE_SHA).run;
  for(const [environment,publish,expected] of [
-  ['production','false','candidate'],['production','true','release'],
+  ['production','false','candidate'],['production','true','candidate'],
   ['test','false','candidate'],['test','true','candidate'],
  ]) {
   const script=run.replaceAll('${{ inputs.environment }}',environment)
@@ -128,7 +129,8 @@ test('production artifact-only builds use candidate policy while publication req
 test('production publication never overwrites a version and only exposes a fully uploaded draft',()=>{
  const step=workflow('desktop-release.yml').jobs.publish.steps.find(s=>String(s.run).includes('gh release upload'));
  const script=step.run.replaceAll('${{ inputs.environment }}','production')
-  .replace(/version=\$\(node -p [^\n]+/, 'version=9.9.9');
+  .replace(/version=\$\(node -p [^\n]+/, 'version=9.9.9')
+  .replace(/BLACKHOLE_APPROVED_SOURCE_SHA=[^\n]+node scripts\/desktop-release-gate\.mjs --mode prepublish/, 'printf gate-approved');
  const mock=`gh() {
   printf 'gh:%s\\n' "$*"
   if [ "$1 $2" = "release create" ] && [ "$SIMULATE_CREATE_FAILURE" = 1 ]; then return 1; fi

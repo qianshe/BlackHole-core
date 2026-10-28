@@ -1,10 +1,11 @@
 {
   "schemaVersion": 1,
-  "securityReview": { "state": "pending", "evidence": null },
+  "distributionProfile": "community",
+  "securityReview": { "state": "passed", "evidence": "release/COMMUNITY-DISTRIBUTION.md#candidate-source-security-review" },
   "installerTransaction": { "state": "pending", "evidence": null },
   "uninstallChoices": { "state": "pending", "evidence": null },
   "nodeRuntimeLayout": { "state": "pending", "evidence": null },
-  "platformSigning": { "state": "pending", "evidence": null },
+  "platformSigning": { "state": "disclosed", "windows": "unsigned", "macos": "adhoc-unnotarized", "linux": "core-and-update-ed25519", "evidence": "release/COMMUNITY-DISTRIBUTION.md#signing-policy; release/community-install.txt" },
   "cloudDownloadReadback": { "state": "pending", "evidence": null },
   "blockedArtifactSha256": [
     "1f2a11b73d7a49621fe0e17edb9cb69fd3e6ee3f1e131c89f3ea903f61c34919",
