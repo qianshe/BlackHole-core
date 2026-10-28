@@ -82,7 +82,7 @@ test('manually closing a process terminal stops that task instead of leaving it 
 test('exit keeps the terminal and final stderr; no false automatic restart', async t => {
   const h = harness(t); await h.start('fail'); await h.controller.poll(); h.terminals[0].open();
   h.children[0].cb.output('stderr', Buffer.from('fatal\n')); h.children[0].cb.exit({ exitCode: 7, cleanupConfirmed: true });
-  await h.controller.poll(); assert.match(h.terminals[0].output, /fatal/); assert.match(h.terminals[0].output, /exited · exit 7/); assert.equal(h.terminals[0].disposed, false); assert.equal(h.children.length, 1);
+  await h.controller.poll(); assert.match(h.terminals[0].output, /fatal/); assert.match(h.terminals[0].output, /\[exited exit 7\]/); assert.equal(h.terminals[0].disposed, false); assert.equal(h.children.length, 1);
 });
 test('stop-and-close disposes only the selected terminal after confirmed cleanup; normal stop keeps logs visible', async t => {
   const h = harness(t), rows = await Promise.all(['keep-log', 'close-log'].map(h.start));
