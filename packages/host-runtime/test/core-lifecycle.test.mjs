@@ -182,7 +182,9 @@ test('concurrent clients cannot both launch; retry attaches after a positively r
 
 test('member tampering and an untrusted signing key cannot run code',async(t)=>{
   const f=await fixture(t);
-  await assert.rejects(new CoreLifecycle(f.manager,{environment:'test',publicKeys:{}},f.env).attachOrStart(f.request),/signature_invalid/);
+  await assert.rejects(new CoreLifecycle(f.manager,{environment:'test',publicKeys:{}},f.env).attachOrStart(f.request),/core_trust_root_missing:test-lifecycle/);
+  const wrongKey=generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'pem'}).toString();
+  await assert.rejects(new CoreLifecycle(f.manager,{environment:'test',publicKeys:{'test-lifecycle':wrongKey}},f.env).attachOrStart(f.request),/signature_invalid/);
   fs.appendFileSync(path.join(f.core.root,'daemon/cli.cjs'),'// tampered');
   await assert.rejects(f.lifecycle.attachOrStart(f.request),/member_hash_invalid/);
   assert.equal(f.spawns().length,0);

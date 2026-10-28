@@ -33,6 +33,7 @@ function host(options = {}) {
   vm.runInNewContext(managerJs, { module, exports: module.exports, console, setTimeout: fn => setTimeout(fn, 0), clearTimeout,
     Date: options.Date ?? Date, process: { platform: process.platform, arch: process.arch, execPath: 'fixture-node', env: {} },
     require: name => name === 'vscode' ? vscode : name === './cloudEnvironment' ? { resolveCloudEndpoint: () => ({ environment: 'test', origin: 'https://fixture.example.org' }) }
+      : name === './hostCoreUi' ? { reportHostCoreFailure: () => {} }
       : name === './vscodeRipgrep' ? { resolveExecutionRg: () => undefined, pathFromEnvironment: () => '', prependToolDirectory: v => v }
       : name === 'node:fs' ? fakeFs : name === 'node:child_process' ? { spawn: () => {
         spawns++; child = new EventEmitter(); child.pid = 123; child.exitCode = null; child.signalCode = null; child.unref = () => {};
