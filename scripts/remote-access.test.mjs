@@ -13,6 +13,19 @@ import { createIsolatedEnv, freeLoopbackPort } from './fixtures/isolated-env.mjs
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 if (process.argv.includes('--fixture-daemon')) {
+  // Exercise the verified-account gate with a synthetic Cloud response, never live credentials.
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/api/auth/plugin/session' && url.protocol === 'https:') {
+      assert.equal(init.headers.Authorization, 'Bearer ' + 'bhp_' + 'a'.repeat(43));
+      return Response.json({ userId: 'user_1', clientId: 'c'.repeat(22),
+        sessionId: '11111111-2222-4333-8444-555555555555',
+        expiresAt: Number(process.env.REMOTE_TEST_AUTH_EXPIRES_AT), loginOrder: 7 });
+    }
+    if (url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)) return nativeFetch(input, init);
+    throw Error('external_network_forbidden_fixture');
+  };
   const { startDaemon } = await import('../dist/daemon.js');
   const daemon = await startDaemon({ port: Number(process.env.BLACKHOLE_PORT), dbPath: process.env.BLACKHOLE_DB, tunnel: 'off' }, () => {});
   process.on('message', (m) => { if (m === 'stop') void daemon.stop().then(() => process.exit(0), () => process.exit(1)); });
@@ -21,7 +34,8 @@ if (process.argv.includes('--fixture-daemon')) {
   test('phone access: one listener, origin-bound single-use pairing, computer approval and phone-only routes', { timeout: 60_000 }, async (t) => {
     const iso = await createIsolatedEnv({ name: 'remote-access' });
     const directPort = await freeLoopbackPort();
-    const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env: { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    const expiration = Math.floor(Date.now() / 1000) + 3600;
+    const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env: { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist'), BLACKHOLE_ACCOUNT_OFFLINE: '0', REMOTE_TEST_AUTH_EXPIRES_AT: String(expiration) }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     const exited = new Promise((r) => child.once('exit', r));
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-remote-'));
     t.after(async () => {
@@ -57,7 +71,7 @@ if (process.argv.includes('--fixture-daemon')) {
     });
 
     // Sign in only the isolated machine, then open its local Web session.
-    const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: Math.floor(Date.now() / 1000) + 3600, loginOrder: 7 };
+    const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: expiration, loginOrder: 7 };
     assert.equal((await req('/api/account/migrate', { method: 'POST', body: { credential: cred } })).status, 200);
     const localOrigin = `http://${local}`;
     const login = await req('/web-api/v1/auth/local', { method: 'POST', body: {}, headers: { origin: localOrigin, 'x-blackhole-web': '1' } });
