@@ -18,6 +18,10 @@ else {
  // The native client now consumes the shared membership parser. Compile its real source
  // into the isolated CommonJS test tree instead of mocking it or resolving the live tree.
  const contracts=path.join(directory,'packages/contracts/dist');mkdirSync(contracts,{recursive:true});
- writeFileSync(path.join(contracts,'membership.js'),ts.transpileModule(readFileSync(path.join(root,'packages/contracts/src/membership.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText);
+ // Every contract module the compiled client sources require must exist in the isolated
+ // tree; a missing one only shows up as MODULE_NOT_FOUND when the suite runs.
+ for(const name of ['membership','subscriptions']){
+  writeFileSync(path.join(contracts,name+'.js'),ts.transpileModule(readFileSync(path.join(root,'packages/contracts/src/'+name+'.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText);
+ }
  console.log('Cloud auth test modules compiled; no real extension host or credentials loaded.');
 }
