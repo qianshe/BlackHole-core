@@ -51,12 +51,17 @@ function startDaemon(dbPath) {
   // SMOKE_NODE swaps the daemon runtime (e.g. VSCode's Code.exe with
   // ELECTRON_RUN_AS_NODE=1) to prove the extension's zero-Node path works.
   const runtime = process.env.SMOKE_NODE ?? process.execPath;
+  const home = path.dirname(path.dirname(dbPath));
   const env = {
     ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    BLACKHOLE_ACCOUNT_SECRETS: 'memory',
+    BLACKHOLE_ACCOUNT_OFFLINE: '1',
     BLACKHOLE_DB: dbPath,
     BLACKHOLE_TUNNEL: 'off',
     // fixture built in main(): commit-fast (frontmatter) + plain + linked-skill (junction)
-    BLACKHOLE_SKILLS_DIR: path.join(path.dirname(dbPath), 'skills'),
+    BLACKHOLE_SKILLS_DIR: path.join(home, 'skills'),
     // hermetic key file: the /semantic settings-surface assertions must never
     // touch the real ~/.blackhole/semantic-key on this machine
     BLACKHOLE_SEMANTIC_KEY_FILE: path.join(path.dirname(dbPath), 'semantic-key'),
@@ -154,7 +159,9 @@ async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-smoke-'));
   const ws = path.join(tmp, 'ws');
   const wsSub = path.join(ws, 'sub');
-  const dbPath = path.join(tmp, 'db.sqlite');
+  const data = path.join(tmp, '.blackhole');
+  fs.mkdirSync(data, { recursive: true });
+  const dbPath = path.join(data, 'blackhole.db');
   fs.mkdirSync(wsSub, { recursive: true });
 
   // legacy-DB migration fixture: pre-seed the OLD schema (trusted/guarded
@@ -311,7 +318,7 @@ async function main() {
     assert.ok(panelHtml.includes('poll(!online)') && panelHtml.includes('if (!online) setOnline(true);'), 'offline rounds keep probing; a successful probe restores LIVE/runtime');
     assert.ok(panelHtml.includes('scrollbar-gutter: stable'), 'panel scroll regions reserve scrollbar gutter space');
     assert.ok(panelHtml.includes('height: min(460px, 100dvh)') && panelHtml.includes('max-height: 132px; overflow-y: auto'), 'panel stays compact while long approval commands scroll internally');
-    assert.ok(panelHtml.includes('"进行中"') && panelHtml.includes(' + " · " + done + "/" + items.length'), 'todo counter renders status plus N/M');
+    assert.ok(panelHtml.includes('"进行中"') && panelHtml.includes(' + " " + done + "/" + items.length'), 'todo counter renders status plus N/M');
     assert.ok(panelHtml.includes('fold.textContent = "▾"'), 'todo fold control shows only the arrow');
     assert.ok(panelHtml.includes('call.diff.added') && panelHtml.includes('call.diff.removed'), 'panel renders workspace editor +N/-M change counts');
     assert.ok(panelHtml.includes('arg.removeAttribute("title")') && panelHtml.includes('arg.setAttribute("aria-label", preview'), 'call arguments carry the full preview via aria-label (native title tooltip removed by design)');
@@ -800,7 +807,7 @@ async function main() {
     // --- workspace confinement ---
     let escaped = await call(client, 'editor', { command: 'create', path: '../escape.txt', content: 'nope' });
     assert.equal(escaped.isError, true);
-    escaped = await call(client, 'editor', { command: 'view', path: path.join(tmp, 'db.sqlite') });
+    escaped = await call(client, 'editor', { command: 'view', path: dbPath });
     assert.equal(escaped.isError, true);
     let symOk = true;
     try {
@@ -1330,10 +1337,16 @@ async function main() {
 
     // --- enabled tunnel + missing cloudflared reports unavailable; no auto-start ---
     const port2 = PORT + 1;
+    const secondHome = path.join(tmp, 'second-home');
+    fs.mkdirSync(path.join(secondHome, '.blackhole'), { recursive: true });
     const daemon2 = spawn(process.execPath, [path.join(ROOT, 'dist', 'cli.js'), 'serve', '--port', String(port2)], {
       env: {
         ...process.env,
-        BLACKHOLE_DB: path.join(tmp, 'db2.sqlite'),
+        HOME: secondHome,
+        USERPROFILE: secondHome,
+        BLACKHOLE_ACCOUNT_SECRETS: 'memory',
+        BLACKHOLE_ACCOUNT_OFFLINE: '1',
+        BLACKHOLE_DB: path.join(secondHome, '.blackhole', 'blackhole.db'),
         BLACKHOLE_TUNNEL: 'auto',
         BLACKHOLE_CLOUDFLARED: 'bh-no-such-cloudflared',
       },

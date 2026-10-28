@@ -16,7 +16,8 @@ import { registerTools } from '../dist/mcp/tools.js';
 
 // Verify the daemon/Courier prompt directly; prompt-sync separately enforces VS Code parity.
 const source = fs.readFileSync(new URL('../src/courier/prompt.ts', import.meta.url), 'utf8');
-const configPanelSource = fs.readFileSync(new URL('../packages/vscode/src/configPanel.ts', import.meta.url), 'utf8');
+const settingsPanelSource = fs.readFileSync(new URL('../packages/web/src/panel/SettingsPanel.tsx', import.meta.url), 'utf8');
+const copiedDescription = /const copyDesc = async \(\) => \{([\s\S]*?)\n  \};/.exec(settingsPanelSource)?.[1] ?? '';
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 });
@@ -38,8 +39,8 @@ await check('connector mode is selected by kind, not by the URL', () => {
   assert.equal(renderPrompt('connector', url, sid), renderPrompt('connector', '', sid));
 });
 await check('copied connector description stays concise and session-scoped', () => {
-  assert.match(configPanelSource, /Use the supplied sessionId on every BlackHole call\. Call guide before workspace work and follow it\./);
-  assert.doesNotMatch(configPanelSource, /must comply|Task:/i);
+  assert.match(copiedDescription, /Start with guide using the supplied sessionId\. Comply with its instructions throughout the session, and use that sessionId on every BlackHole call\./);
+  assert.doesNotMatch(copiedDescription, /must comply|Task:/i);
 });
 await check('custom connector name and explicit multiline user payload survive unchanged', () => {
   const task = 'Inspect this diff\n' + '保留我的变更。'.repeat(300);
