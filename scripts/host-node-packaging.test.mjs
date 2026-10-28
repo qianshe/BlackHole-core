@@ -16,7 +16,7 @@ const compiled=buildSync({entryPoints:[path.join(repo,'packages/vscode/src/hostC
 const {loadHostCoreBuild,acquireHostCore}=await import('data:text/javascript;base64,'+Buffer.from(compiled.outputFiles[0].text).toString('base64'));
 const cloud={environment:'test',origin:'https://fixture.invalid'};
 const url='https://github.com/qianshe/BlackHole-core/releases/download/v0.4.0/BlackHole-Core-0.4.0-win32-x64-test.zip';
-function fresh(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'bh-host-package-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));return root;}
+function fresh(t){const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'bh-host-package-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));return root;}
 async function coreFixture(t,formatVersion=2){
  const root=fresh(t),layout=path.join(root,'core'),archive=path.join(root,'core.zip');
  const files={'daemon/cli.js':'// fixture daemon','web/index.html':'<!doctype html>fixture','host/core-manager-cli.mjs':'// fixture manager',...(formatVersion===1?{'node/node.exe':'not executable'}:{})};

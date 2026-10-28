@@ -31,12 +31,13 @@ const dataOf = (r) => JSON.parse(envelopeOf(r).dataJson ?? '{}');
 
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m2-'));
+  fs.mkdirSync(path.join(tmp, '.blackhole'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'workspace'), { recursive: true });
   // setFromFile 的机密文件（值不进配置）
   const secretFile = path.join(tmp, 'from-file.secret');
   fs.writeFileSync(secretFile, 'sk-fromfile-secret-4242\n');
 
-  const cfg = path.join(tmp, 'proxies.yaml');
+  const cfg = path.join(tmp, '.blackhole', 'mcp-proxies.yaml');
   fs.writeFileSync(cfg, `proxies:\n  - name: fake
     transport: stdio
     command: node
@@ -68,7 +69,7 @@ async function main() {
 `);
   const port = 26000 + Math.floor(Math.random() * 8000);
   const daemon = spawn(process.execPath, [path.join(ROOT, 'scripts', 'smoke-daemon-fixture.mjs'), '--port', String(port)], {
-    env: { ...process.env, BLACKHOLE_DB: path.join(tmp, 'db.sqlite'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfg },
+    env: { ...process.env, HOME: tmp, USERPROFILE: tmp, BLACKHOLE_ACCOUNT_SECRETS: 'memory', BLACKHOLE_ACCOUNT_OFFLINE: '1', BLACKHOLE_DB: path.join(tmp, '.blackhole', 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfg },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const base = `http://127.0.0.1:${port}`;
@@ -170,7 +171,7 @@ async function main() {
     // ── 验收 4：upstream offline → 稳定可恢复错误 ──
     {
       // 找到 fake 的 child 并杀掉（模拟 upstream 崩溃后不可用）
-      const pidFile = path.join(tmp, 'proxy-children.json');
+      const pidFile = path.join(tmp, '.blackhole', 'proxy-children.json');
       const pids = JSON.parse(fs.readFileSync(pidFile, 'utf8')).map((r) => r.pid);
       for (const pid of pids) {
         try { execSync(process.platform === 'win32' ? `taskkill /F /PID ${pid}` : `kill -9 ${pid}`, { stdio: 'ignore' }); } catch { /* already dead */ }

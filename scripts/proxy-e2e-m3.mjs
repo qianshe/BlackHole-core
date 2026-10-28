@@ -35,8 +35,9 @@ const dataOf = (r) => JSON.parse(envelopeOf(r).dataJson ?? '{}');
 
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m3-'));
+  fs.mkdirSync(path.join(tmp, '.blackhole'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'workspace'), { recursive: true });
-  const cfg = path.join(tmp, 'proxies.yaml');
+  const cfg = path.join(tmp, '.blackhole', 'mcp-proxies.yaml');
   // v2.5: browser profile 仅剩 opt-in 白名单 + fill 密码脱敏；fakeb 不配白名单演示透传
   fs.writeFileSync(cfg, `proxies:\n  - name: fake
     transport: stdio
@@ -72,7 +73,7 @@ async function main() {
 `);
   const port = 27000 + Math.floor(Math.random() * 8000);
   const daemon = spawn(process.execPath, [path.join(ROOT, 'scripts', 'smoke-daemon-fixture.mjs'), '--port', String(port)], {
-    env: { ...process.env, BLACKHOLE_DB: path.join(tmp, 'db.sqlite'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfg },
+    env: { ...process.env, HOME: tmp, USERPROFILE: tmp, BLACKHOLE_ACCOUNT_SECRETS: 'memory', BLACKHOLE_ACCOUNT_OFFLINE: '1', BLACKHOLE_DB: path.join(tmp, '.blackhole', 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfg },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const base = `http://127.0.0.1:${port}`;
@@ -174,8 +175,8 @@ async function main() {
     {
       await api(base, 'POST', `/sessions/${sess.id}/revoke`);
       await sleep(300);
-      const pidRecords = fs.existsSync(path.join(tmp, 'proxy-children.json'))
-        ? JSON.parse(fs.readFileSync(path.join(tmp, 'proxy-children.json'), 'utf8'))
+      const pidRecords = fs.existsSync(path.join(tmp, '.blackhole', 'proxy-children.json'))
+        ? JSON.parse(fs.readFileSync(path.join(tmp, '.blackhole', 'proxy-children.json'), 'utf8'))
         : [];
       assert.equal(pidRecords.filter((r) => r.sessionId === sess.id).length, 0, '被 revoke 的 session 不留 child 记录');
       assert.ok(pidRecords.some((r) => r.sessionId === '__shared__'), 'enabled MCP 作为 daemon-owned shared child 不随 session revoke 回收');
