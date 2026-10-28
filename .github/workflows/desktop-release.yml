@@ -150,7 +150,7 @@ jobs:
           build_id="release-${RELEASE_ENV}-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}-${GITHUB_SHA:0:7}"
           if [ "$RELEASE_ENV" = "production" ]; then
             cloud_origin="https://blackhole.stellarbridge.dpdns.org"
-            feed_url="https://blackhole.stellarbridge.dpdns.org/downloads/updates/stable/${{ matrix.catalog_platform }}-${BH_PACKAGE_ARCH}/latest.json"
+            feed_url="https://blackhole.stellarbridge.dpdns.org/downloads/updates/preview/${{ matrix.catalog_platform }}-${BH_PACKAGE_ARCH}/latest.json"
           else
             cloud_origin="$TEST_CLOUD_ORIGIN"
             feed_url="https://github.com/qianshe/BlackHole-core/releases/download/desktop-test/latest.json"
@@ -302,7 +302,7 @@ jobs:
               --feeds-dir .tmp/release-bundle/feeds \
               --public-key .tmp/release-bundle/update-public.pem \
               --key-id prod-desktop-update-v1 \
-              --channel stable \
+              --channel preview \
               --output .tmp/release-bundle/desktop-release-catalog.ts
           fi
       - name: Upload unified multi-platform release bundle & Cloud catalog

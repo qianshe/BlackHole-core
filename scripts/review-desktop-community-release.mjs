@@ -64,7 +64,7 @@ export async function reviewBundle(directory,{sourceSha,approvedSha,mode='prepub
  for(const name of ['installerTransaction','uninstallChoices','nodeRuntimeLayout'])policy[name]={state:'passed',evidence};
  if(mode==='release'){
   for(const {target,manifest,raw,signature} of entries){
-   const feed='https://blackhole.stellarbridge.dpdns.org/downloads/updates/stable/'+target+'/latest.json';
+   const feed='https://blackhole.stellarbridge.dpdns.org/downloads/updates/preview/'+target+'/latest.json';
    const r=await fetch(feed,{signal:AbortSignal.timeout(30000)});assert.equal(r.status,200);assert.equal(await r.text(),raw);
    const s=await fetch(feed+'.sig',{signal:AbortSignal.timeout(30000)});assert.equal(s.status,200);assert.equal((await s.text()).trim(),signature);
    const download=await fetch(manifest.installerUrl,{signal:AbortSignal.timeout(180000)});assert.equal(download.status,200);

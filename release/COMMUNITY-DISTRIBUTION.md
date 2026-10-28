@@ -2,7 +2,7 @@
 
 ## Goal and scope
 
-Publish production-connected community Desktop installers for Windows x64,
+Publish production-connected community prerelease Desktop installers for Windows x64,
 macOS x64/arm64 and Debian/Ubuntu Linux x64/arm64. Keep online sales closed.
 Retain the published 0.4.30 bytes; build 0.4.31 from one committed source.
 
@@ -54,7 +54,8 @@ must be recorded from the actual bytes before public release.
 3. Review five receipts and artifacts; interactive UI acceptance is reported separately.
 4. Prepublish gate checks installer evidence and explicit community signing disclosure.
 5. Upload GitHub assets, download and verify their real bytes.
-6. Generate catalog from verified signed manifests; deploy Cloud with sales still closed.
+6. Generate the preview catalog from verified signed manifests; retain the existing stable catalog.
+   Deploy Cloud with sales still closed. The download page labels community prereleases explicitly.
 7. Read all Cloud download feeds and installer bytes, then complete the final release gate.
 
 The Cloud readback gate belongs after assets/catalog exist. Prepublish defers
