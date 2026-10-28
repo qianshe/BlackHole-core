@@ -49,6 +49,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22.20.0
+          package-manager-cache: false
       - name: Enforce reviewed source and release gate policy
         env:
           BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
@@ -270,6 +271,12 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22.20.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - run: pnpm install --frozen-lockfile && pnpm --dir packages/contracts build
       - name: Download all platform Desktop packages
         uses: actions/download-artifact@v5
         with:
@@ -280,6 +287,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .tmp/release-bundle/installers .tmp/release-bundle/feeds
+          cp release/community-install.txt .tmp/release-bundle/INSTALL.txt
           for dir in .tmp/collected/desktop-release-*; do
             target="${dir##*desktop-release-}"
             mkdir -p ".tmp/release-bundle/feeds/$target"
@@ -315,10 +323,11 @@ jobs:
           if [ "${{ inputs.environment }}" = "production" ]; then
             tag="v${version}"
             # Cloud download readback is verified after catalog deployment, not before assets exist.
-            BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/desktop-release-gate.mjs --mode prepublish
+            BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/review-desktop-community-release.mjs --artifacts .tmp/collected --mode prepublish --output .tmp/release-bundle/prepublish-review.json
             # Production versions are immutable; create fails if this release already exists.
-            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "$tag" --notes "BlackHole Desktop ${version} multi-platform release."
-            gh release upload "$tag" .tmp/release-bundle/installers/*
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "$tag · Community Desktop" --notes-file release/community-install.txt
+            (cd .tmp/release-bundle/installers && sha256sum * > ../SHA256SUMS.txt)
+            gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/SHA256SUMS.txt .tmp/release-bundle/INSTALL.txt .tmp/release-bundle/prepublish-review.json
             gh release edit "$tag" --draft=false
           else
             tag="desktop-test"

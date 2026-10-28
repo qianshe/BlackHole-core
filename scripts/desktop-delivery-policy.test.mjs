@@ -66,7 +66,7 @@ test('multi-platform Desktop release workflow enforces release gate, builds all 
  assert.equal(w.jobs.publish.needs,'package');
  const gateSteps=w.jobs.gate.steps.map(s=>s.run??'').join('\n');
  assert.doesNotMatch(gateSteps,/--mode (release|prepublish)/);
- assert.match(w.jobs.publish.steps.find(s=>String(s.run).includes('gh release upload')).run,/desktop-release-gate\.mjs --mode prepublish/);
+ assert.match(w.jobs.publish.steps.find(s=>String(s.run).includes('gh release upload')).run,/review-desktop-community-release\.mjs .*--mode prepublish/);
  assert.match(gateSteps,/desktop-release-gate\.mjs --mode candidate/);
  const targets=w.jobs.package.strategy.matrix.include.map(m=>m.target).sort();
  assert.deepEqual(targets,['linux-arm64','linux-x64','macos-arm64','macos-x64','windows-x64']);
@@ -130,7 +130,8 @@ test('production publication never overwrites a version and only exposes a fully
  const step=workflow('desktop-release.yml').jobs.publish.steps.find(s=>String(s.run).includes('gh release upload'));
  const script=step.run.replaceAll('${{ inputs.environment }}','production')
   .replace(/version=\$\(node -p [^\n]+/, 'version=9.9.9')
-  .replace(/BLACKHOLE_APPROVED_SOURCE_SHA=[^\n]+node scripts\/desktop-release-gate\.mjs --mode prepublish/, 'printf gate-approved');
+  .replace(/BLACKHOLE_APPROVED_SOURCE_SHA=[^\n]+node scripts\/review-desktop-community-release\.mjs[^\n]+/, 'printf gate-approved')
+  .replace(/[^\n]*sha256sum[^\n]*/, 'true'); // filesystem bundle assembly is outside the gh publication transaction
  const mock=`gh() {
   printf 'gh:%s\\n' "$*"
   if [ "$1 $2" = "release create" ] && [ "$SIMULATE_CREATE_FAILURE" = 1 ]; then return 1; fi

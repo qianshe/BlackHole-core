@@ -18,6 +18,11 @@ on:
       - '.github/workflows/desktop-release.yml'
   workflow_dispatch:
     inputs:
+      publish_community_release:
+        description: 'Publish the community prerelease only after five native installer receipts and signed artifacts verify'
+        type: boolean
+        required: false
+        default: false
       community_packages:
         description: 'Build all five production community installers after native tests; do not publish'
         type: boolean
@@ -86,7 +91,7 @@ jobs:
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
       - name: Desktop delivery policies and native-status boundary
-        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs packages/web/test/desktop-update-client.test.mjs
+        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs scripts/review-desktop-community-release.test.mjs packages/web/test/desktop-update-client.test.mjs
       - name: Host-provided Node and lightweight VSIX packaging boundaries
         run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs packages/vscode/test/managed-core-session.test.mjs
       - name: Read-only installer preflight (disposable HOME only)
@@ -163,5 +168,5 @@ jobs:
     uses: ./.github/workflows/desktop-release.yml
     with:
       environment: production
-      publish_github_release: false
+      publish_github_release: ${{ inputs.publish_community_release }}
     secrets: inherit
