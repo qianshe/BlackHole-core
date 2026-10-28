@@ -62,7 +62,7 @@ async function freePort() {
   assert.notEqual(port, 7306); return port;
 }
 async function fixture(t) {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-upgrade-'));
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bh-upgrade-')));
   const home = path.join(temp, 'home'), store = path.join(temp, 'Core'), data = path.join(home, '.blackhole');
   fs.mkdirSync(data, { recursive: true });
   const port = await freePort();

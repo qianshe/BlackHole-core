@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startDaemon } from '../../dist/daemon.js';
 const root = fs.realpathSync(process.env.BH_PROCESS_TEST_ROOT);
-const daemon = await startDaemon({ port: Number(process.env.BH_PROCESS_TEST_PORT), dbPath: path.join(root, 'fixture.db'),
-  tunnel: 'off', semantic: 'off', skillsDir: undefined, proxyConfigPath: path.join(root, 'missing-proxies.yaml'), execTimeoutMs: 1000 }, () => {});
+const data = path.join(root, 'home', '.blackhole');
+const daemon = await startDaemon({ port: Number(process.env.BH_PROCESS_TEST_PORT), dbPath: path.join(data, 'blackhole.db'),
+  tunnel: 'off', semantic: 'off', skillsDir: undefined, proxyConfigPath: path.join(data, 'mcp-proxies.yaml'), execTimeoutMs: 1000 }, () => {});
 process.on('message', message => {
   if (message === 'stop') void daemon.stop().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
   else if (message?.action === 'expire') {
