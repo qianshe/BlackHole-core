@@ -157,6 +157,8 @@ jobs:
 
   community-packages:
     if: github.event_name == 'workflow_dispatch' && inputs.community_packages
+    permissions:
+      contents: write
     needs: test
     uses: ./.github/workflows/desktop-release.yml
     with:
