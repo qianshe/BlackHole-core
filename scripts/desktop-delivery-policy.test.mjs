@@ -130,7 +130,8 @@ test('production publication never overwrites a version and only exposes a fully
  const step=workflow('desktop-release.yml').jobs.publish.steps.find(s=>String(s.run).includes('gh release upload'));
  const script=step.run.replaceAll('${{ inputs.environment }}','production')
   .replace(/version=\$\(node -p [^\n]+/, 'version=9.9.9')
-  .replace(/BLACKHOLE_APPROVED_SOURCE_SHA=[^\n]+node scripts\/review-desktop-community-release\.mjs[^\n]+/, 'printf gate-approved')
+  .replace(/BLACKHOLE_APPROVED_SOURCE_SHA=[^\n]+node scripts\/review-desktop-community-release\.mjs[^\n]+/g, 'printf gate-approved')
+  .replace(/node scripts\/verify-desktop-release-discovery\.mjs[^\n]+/, 'printf discovery-verified')
   .replace(/[^\n]*sha256sum[^\n]*/, 'true'); // filesystem bundle assembly is outside the gh publication transaction
  const mock=`gh() {
   printf 'gh:%s\\n' "$*"
@@ -146,6 +147,8 @@ test('production publication never overwrites a version and only exposes a fully
   assert.equal(result.stdout.includes('release upload'),createFail==='0');
   const success=createFail==='0'&&uploadFail==='0';
   assert.equal(result.stdout.includes('release edit v9.9.9 --draft=false'),success);
+  assert.equal(result.stdout.includes('discovery-verified'),success);
+  if(success){assert.ok(result.stdout.indexOf('discovery-verified')>result.stdout.indexOf('release edit'));assert.match(result.stdout,/desktop-release\.json/);}
   assert.equal(result.status===0,success,result.error?.message??result.stderr);
  }
 });
