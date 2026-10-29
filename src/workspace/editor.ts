@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { checkedPathInWorkspace } from '../util/fspaths.js';
+import { checkedPathAnywhere, checkedPathInRoots, checkedPathInWorkspace } from '../util/fspaths.js';
 
 const MAX_OUTPUT_CHARS = 16_000;
 
@@ -81,6 +81,51 @@ export interface EditorResult {
   diff?: { added: number; removed: number };
   /** Internal audit/UI metadata. The MCP handler strips it from the public result. */
   navigation?: EditorNavigationRecord;
+  /** `view` 的图片内容（base64）：MCP 处理器把它作为 image 块放在文本之后发出，不写入调用记录。 */
+  image?: { data: string; mimeType: string };
+}
+
+/** `view` 直接返回的图片上限（与 Claude 单图上限一致）；更大的报错，不缩放。 */
+export const MAX_VIEW_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** 按文件头识别图片（不信扩展名）：只放行 PNG / JPEG / GIF / WebP。 */
+export function imageTypeOf(head: Buffer): string | null {
+  if (head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
+  if (head.length >= 6 && /^GIF8[79]a$/.test(head.toString('latin1', 0, 6))) return 'image/gif';
+  if (head.length >= 12 && head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+/** 只读文件头里的宽高；读不出来返回 null（不影响返回图片本身）。 */
+function imageSize(buf: Buffer, mimeType: string): { width: number; height: number } | null {
+  try {
+    if (mimeType === 'image/png') return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    if (mimeType === 'image/gif') return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    if (mimeType === 'image/webp') {
+      const kind = buf.toString('latin1', 12, 16);
+      if (kind === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
+      if (kind === 'VP8L') { const b = buf.readUInt32LE(21); return { width: 1 + (b & 0x3fff), height: 1 + ((b >> 14) & 0x3fff) }; }
+      if (kind === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+      return null;
+    }
+    // JPEG：顺着段找 SOF0–SOF15（跳过 DHT/JPG/DAC）。
+    let i = 2;
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) return null;
+      const marker = buf[i + 1]!;
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+      }
+      i += 2 + buf.readUInt16BE(i + 2);
+    }
+    return null;
+  } catch { return null; }
+}
+
+/** 开头 8 KB 里有 NUL 就当二进制（与 git 的判断一致），不再把它当 UTF-8 输出乱码。 */
+function looksBinary(buf: Buffer): boolean {
+  return buf.subarray(0, 8000).includes(0);
 }
 
 function ok(
@@ -105,11 +150,26 @@ function err(message: string, code = 'EDITOR_ERROR'): EditorResult {
  * view | create | str_replace | insert | delete — the legacy DSH-minimal
  * surface, restored verbatim (including its error texts).
  */
+/**
+ * Where the editor may reach, read live per call so a permission change applies at once:
+ * danger-full-access → anywhere; workspace-write → workspace + granted dirs; otherwise the
+ * workspace only (read-only sessions are additionally refused mutations by the tool).
+ */
+export interface EditorAccess {
+  mode: string;
+  writableDirs?: readonly string[];
+}
+
 export class WorkspaceEditor {
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly access: () => EditorAccess = () => ({ mode: 'workspace-write' }),
+  ) {}
 
   private relativePath(abs: string): string {
     const rel = path.relative(this.workspace, abs);
+    // Outside the workspace (full access / granted dirs): report the absolute path.
+    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return abs.split(path.sep).join('/');
     return (rel || '.').split(path.sep).join('/');
   }
 
@@ -125,6 +185,9 @@ export class WorkspaceEditor {
     // One resolution: the realpath identity the containment check verified is
     // the exact path the caller writes through — a swapped ancestor symlink
     // cannot slide between the check and the mutation.
+    const { mode, writableDirs = [] } = this.access();
+    if (mode === 'danger-full-access') return checkedPathAnywhere(this.workspace, target);
+    if (mode === 'workspace-write' && writableDirs.length > 0) return checkedPathInRoots(this.workspace, writableDirs, target);
     return checkedPathInWorkspace(this.workspace, target);
   }
 
@@ -150,7 +213,23 @@ export class WorkspaceEditor {
         .sort();
       return ok(`Directory: ${abs}\n${entries.join('\n') || '(empty)'}`);
     }
-    const content = fs.readFileSync(abs, 'utf8');
+    // 图片原样返回；其他二进制只报类型和大小。可达范围仍由 guard 按权限模式决定。
+    const head = Buffer.alloc(Math.min(stat.size, 32));
+    const fd = fs.openSync(abs, 'r');
+    try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
+    const mimeType = imageTypeOf(head);
+    if (mimeType) {
+      if (Array.isArray(viewRange)) return err('The `view_range` parameter is not allowed for image files.', 'INVALID_ARGUMENT');
+      if (stat.size > MAX_VIEW_IMAGE_BYTES) {
+        return err(`Image is ${stat.size} bytes; view returns images up to ${MAX_VIEW_IMAGE_BYTES} bytes. Resize or compress it first.`, 'IMAGE_TOO_LARGE');
+      }
+      const bytes = fs.readFileSync(abs);
+      const size = imageSize(bytes, mimeType);
+      return { ...ok(`${abs}\nImage: ${mimeType}, ${stat.size} bytes${size ? `, ${size.width}x${size.height}` : ''}`), image: { data: bytes.toString('base64'), mimeType } };
+    }
+    const raw = fs.readFileSync(abs);
+    if (looksBinary(raw)) return err(`${abs} is a binary file (${stat.size} bytes) and cannot be shown as text. Images (PNG/JPEG/GIF/WebP) are returned directly.`, 'BINARY_FILE');
+    const content = raw.toString('utf8');
     if (Array.isArray(viewRange) && viewRange.length === 2) {
       const [start, end] = viewRange as [number, number];
       const allLines = logicalLines(content);

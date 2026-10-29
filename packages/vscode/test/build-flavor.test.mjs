@@ -7,17 +7,19 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { parseBuildArgs, resolveBuildConfig, buildDefines, daemonBuildDefines, manifestForBuild, PRODUCTION_CLOUD_ORIGIN as PROD } from '../build-config.mjs';
+import { parseBuildArgs as parseArgs, resolveBuildConfig, buildDefines, daemonBuildDefines, manifestForBuild, PRODUCTION_CLOUD_ORIGIN as PROD } from '../build-config.mjs';
 import { auditUniversalVsix as auditArchive } from '../../../scripts/audit-universal-vsix.mjs';
-import {readProfiles} from '../../../scripts/environment-config.mjs';
+import {readProfiles as readBaseProfiles} from '../../../scripts/environment-config.mjs';
 const require = createRequire(import.meta.url), esbuild = require('esbuild');
 const { ZipFile } = createRequire(require.resolve('@vscode/vsce/package.json'))('yazl');
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const OTHER = 'https://sandbox.blackhole.example.org';
+// Mock network-free service identities, distinct from production and the rejected offline build fixture.
+const OTHER = 'https://sandbox.blackhole-ci.dev';
 const TEST_KEY=generateKeyPairSync('ed25519').publicKey.export({format:'der',type:'spki'}).toString('base64');
 const PROD_KEY=resolveBuildConfig().entitlementPublicKey;
-// Explicit legacy/shared fixture: real test builds now fail closed until trust is configured.
-const SHARED_PROFILES=readProfiles();SHARED_PROFILES.test.clientTarget='production';
+const readProfiles=()=>{const p=readBaseProfiles({loadTest:false});p.test.origin='https://test.blackhole-ci.dev';p.test.entitlementPublicKey=TEST_KEY;return p;};
+const parseBuildArgs=(args,options={})=>parseArgs(args,{profiles:readProfiles(),...options});
+const SHARED_PROFILES=readProfiles();
 const auditUniversalVsix=(file,expected)=>auditArchive(file,expected,{profiles:SHARED_PROFILES});
 const testBuild=(origin,key)=>resolveBuildConfig('test',origin,key,SHARED_PROFILES);
 const plain = x => JSON.parse(JSON.stringify(x));
@@ -43,7 +45,7 @@ test('configured test builds use their own origin and trust; incomplete fixtures
   assert.deepEqual(parseBuildArgs(['--environment','test','--cloud-origin',OTHER,'--cloud-public-key',TEST_KEY]).build,{environment:'test',origin:OTHER,entitlementPublicKey:TEST_KEY});
   const incomplete=readProfiles();incomplete.test.entitlementPublicKey=null;
   assert.throws(()=>resolveBuildConfig('test',undefined,undefined,incomplete),/incomplete/);
-  assert.throws(()=>resolveBuildConfig('test',OTHER,TEST_KEY,incomplete),/incomplete/);
+  assert.deepEqual(resolveBuildConfig('test',OTHER,TEST_KEY,incomplete),{environment:'test',origin:OTHER,entitlementPublicKey:TEST_KEY},'complete explicit pair wins over local/injected profile');
   assert.equal(parseBuildArgs(['--environment','test','--out','candidate.vsix'], { packaging: true, requireEnvironment: true }).out, 'candidate.vsix');
 });
 test('local scripts default to test, while every production package caller is explicit', () => {
@@ -55,11 +57,13 @@ test('local scripts default to test, while every production package caller is ex
   assert.equal(manifest.scripts.watch,'pnpm run watch:test');
   assert.match(manifest.scripts['watch:test'],/--watch --environment test/);
   assert.match(manifest.scripts['watch:production'],/--watch --environment production/);
-  assert.equal(manifest.scripts.package,'pnpm run package:test');
+  assert.equal(manifest.scripts.package,'pnpm run package:production');
   assert.match(manifest.scripts['package:test'],/package-vsix\.mjs --environment test/);
   assert.match(manifest.scripts['package:production'],/package-vsix\.mjs --environment production/);
   assert.match(manifest.scripts['vscode:prepublish'],/esbuild\.mjs --environment production/);
-  assert.match(rootManifest.scripts['package:vsix'],/package-vsix\.mjs --environment test/);
+  assert.match(rootManifest.scripts['package:vsix'],/package-vsix\.mjs --environment production/);
+  assert.match(rootManifest.scripts['package:vsix:test'],/package-vsix\.mjs --environment test/);
+  assert.match(rootManifest.scripts['install:vsix'],/install-vsix\.mjs --environment production/);
   assert.match(rootManifest.scripts['package:vsix:production'],/package-vsix\.mjs --environment production/);
   assert.doesNotMatch(manifest.scripts.build,/production/);
 
@@ -117,14 +121,14 @@ async function archive(file, build, mutate = () => {}) {
   const manifest = manifestForBuild(JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')),build);
   manifest.blackholeBuild = build;
   if(build.environment==='test')manifest.displayName+=' (Test)';
-  const bundle = 'module.exports={fixture:true};';
-  const info = {...build,daemonSha256:createHash('sha256').update('').digest('hex'),extensionSha256:createHash('sha256').update(bundle).digest('hex')};
+  const bundle = 'module.exports='+JSON.stringify(build)+';';
+  const daemon = 'module.exports='+JSON.stringify({origin:build.origin,publicKey:build.entitlementPublicKey})+';';
+  const info = {...build,daemonSha256:createHash('sha256').update(daemon).digest('hex'),extensionSha256:createHash('sha256').update(bundle).digest('hex')};
   const files = new Map([
     ['extension/package.json',JSON.stringify(manifest)],['extension.vsixmanifest','<PackageManifest/>'],
-    ['extension/dist/cloud-build.json',JSON.stringify(info)],['extension/dist/extension.js',bundle],['extension/dist/daemon/cli.js',''],['extension/dist/daemon/web/index.html','<!doctype html>'],
-    ['extension/dist/daemon/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',''],
-...['win32-x64-msvc','win32-arm64-msvc','darwin-x64','darwin-arm64','linux-x64-gnu','linux-arm64-gnu'].map(t=>[`extension/dist/daemon/node_modules/@napi-rs/keyring-${t}/keyring.${t}.node`,'']),
-    ...['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','readme.md'].map(n=>['extension/'+n,'fixture']),
+    ['extension/dist/cloud-build.json',JSON.stringify(info)],['extension/dist/extension.js',bundle],['extension/dist/daemon/cli.js',daemon],['extension/dist/daemon/web/index.html','<!doctype html>'],
+    ['extension/dist/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',''],
+    ...['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','THIRD_PARTY_LICENSES.md','readme.md'].map(n=>['extension/'+n,'fixture']),
   ]);
   mutate(files,manifest,info);
   const zip = new ZipFile(); for(const [name,text] of files)zip.addBuffer(Buffer.from(text),name);
@@ -143,6 +147,7 @@ test('archive audit verifies same extension identity, flavor, endpoint and actua
     (files,manifest)=>{delete manifest.contributes.configuration.properties['blackhole.daemonEntry'];files.set('extension/package.json',JSON.stringify(manifest));},
     files=>files.set('extension/dist/extension.js','tampered bundle'),
     files=>files.set('extension/dist/daemon/cli.js','tampered daemon'),
+    files=>files.set('extension/dist/daemon/node_modules/koffi/index.js','duplicate koffi'),
     (files,manifest)=>{manifest.displayName='Wrong';files.set('extension/package.json',JSON.stringify(manifest));},
     (files,manifest)=>{manifest.blackholeBuild=resolveBuildConfig();files.set('extension/package.json',JSON.stringify(manifest));},
     files=>files.delete('extension/dist/cloud-build.json'),
@@ -178,5 +183,30 @@ test('archive audit checks the optional managed-process supervisor as a paired h
     });
     if(change==='good')await auditUniversalVsix(file,testBuild());
     else await assert.rejects(auditUniversalVsix(file,testBuild()),/supervisor/);
+  }
+});
+
+
+test('archive audit requires the exact shared renderer JS and CSS referenced by a native build', async t => {
+  fs.mkdirSync(path.join(root, '.cache/tests'), { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, '.cache/tests/shared-settings-asset-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const change of ['good', 'missing-js', 'missing-css', 'stale-js', 'stale-css', 'unhashed']) {
+    const file = path.join(dir, change + '.vsix');
+    await archive(file, testBuild(), (files, manifest, info) => {
+      const bundle = files.get('extension/dist/extension.js') + '\n// data-settings-renderer=shared-react';
+      files.set('extension/dist/extension.js', bundle);
+      info.extensionSha256 = createHash('sha256').update(bundle).digest('hex');
+      for (const [ext, key, text] of [['js', 'settingsSha256', '// shared settings fixture'], ['css', 'settingsCssSha256', '.settings-shell{display:grid}']]) {
+        const asset = 'extension/dist/settings/settings.' + ext;
+        files.set(asset, text); info[key] = createHash('sha256').update(text).digest('hex');
+        if (change === 'missing-' + ext) files.delete(asset);
+        if (change === 'stale-' + ext) files.set(asset, 'stale asset');
+        if (change === 'unhashed') delete info[key];
+      }
+      files.set('extension/dist/cloud-build.json', JSON.stringify(info));
+    });
+    if (change === 'good') await auditUniversalVsix(file, testBuild());
+    else await assert.rejects(auditUniversalVsix(file, testBuild()), /settings|renderer/);
   }
 });

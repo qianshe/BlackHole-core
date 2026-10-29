@@ -3,10 +3,10 @@ import { initializeCloudflared, type CloudflaredInstallResult } from './cloudfla
 export type CloudflaredJobState =
   | { state: 'idle' }
   | { state: 'running'; started_at: string }
-  | { state: 'done'; path: string; installed: boolean; finished_at: string }
+  | { state: 'done'; path: string; installed: boolean; version?: string; finished_at: string }
   | { state: 'error'; error: string; finished_at: string };
 
-type Installer = (configuredPath: string) => Promise<CloudflaredInstallResult>;
+type Installer = (configuredPath: string) => Promise<CloudflaredInstallResult & { version?: string }>;
 
 /**
  * One cloudflared initialization at a time, owned by the daemon: closing the
@@ -16,7 +16,12 @@ type Installer = (configuredPath: string) => Promise<CloudflaredInstallResult>;
 export class CloudflaredJob {
   private current: CloudflaredJobState = { state: 'idle' };
 
-  constructor(private readonly install: Installer = initializeCloudflared, private readonly log: (line: string) => void = () => {}) {}
+  /** `name` only labels log lines: the same job also runs the OpenAI tunnel-client install. */
+  constructor(
+    private readonly install: Installer = initializeCloudflared,
+    private readonly log: (line: string) => void = () => {},
+    private readonly name = 'cloudflared',
+  ) {}
 
   view(): CloudflaredJobState {
     return this.current;
@@ -26,15 +31,15 @@ export class CloudflaredJob {
   start(configuredPath: string): boolean {
     if (this.current.state === 'running') return false;
     this.current = { state: 'running', started_at: new Date().toISOString() };
-    this.log('cloudflared: initialization started');
+    this.log(`${this.name}: initialization started`);
     void this.install(configuredPath).then(
       (r) => {
-        this.current = { state: 'done', path: r.path, installed: r.installed, finished_at: new Date().toISOString() };
-        this.log(`cloudflared: ${r.installed ? 'installed' : 'found'} ${r.path}`);
+        this.current = { state: 'done', path: r.path, installed: r.installed, ...(r.version ? { version: r.version } : {}), finished_at: new Date().toISOString() };
+        this.log(`${this.name}: ${r.installed ? 'installed' : 'found'} ${r.path}`);
       },
       (e: unknown) => {
         this.current = { state: 'error', error: e instanceof Error ? e.message : String(e), finished_at: new Date().toISOString() };
-        this.log('cloudflared: initialization failed');
+        this.log(`${this.name}: initialization failed`);
       },
     );
     return true;

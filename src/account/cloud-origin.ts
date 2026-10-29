@@ -1,7 +1,8 @@
 // Shared by the daemon (src/account) and the VS Code extension. Pure: no build-flavor or runtime settings.
 import { createHash } from 'node:crypto';
+import { productionProfile } from '../environments/production.cjs';
 
-export const PRODUCTION_CLOUD_ORIGIN='https://blackhole.stellarbridge.dpdns.org';
+export const PRODUCTION_CLOUD_ORIGIN=productionProfile.origin;
 export type CloudEnvironment='production'|'test';
 export interface CloudEndpoint {environment:CloudEnvironment;origin:string;label:string}
 

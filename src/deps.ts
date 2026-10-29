@@ -19,9 +19,37 @@ import { deriveAccessToken } from './util/token.js';
 import type { SemanticProbe } from './semantic/index.js';
 import type { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import type { ProxyRuntime } from './proxy/tool.js';
+import { resolveConnectionRoutes } from './connection/resolve.js';
 
+
+export interface RuntimeIdentity {
+  runtimeId: string;
+  runtimeVersion: string;
+  buildId: string;
+  descriptorHash: string;
+  dataRootId: string;
+  webBuildId: string;
+  coreProtocol: { min: number; max: number };
+  environment: 'test' | 'production';
+  cloudOrigin: string;
+  lifecycleState: 'managed' | 'quiescing' | 'draining' | 'stopping';
+}
 export interface DaemonDeps {
   daemonId?: string;
+  maintenanceGate?: import('./lifecycle/managed-control.js').MaintenanceGate;
+  managedControl?: import('./lifecycle/managed-control.js').ManagedControl;
+  /** Shared guarded idle predicate for health reporting and signed maintenance. */
+  maintenanceIdle?: () => boolean;
+  /** Software-update readiness excludes passive page presence, not real work. */
+  upgradeReadiness?: () => { idle: boolean; blockers: string[] };
+  /** Manager-supplied identity from an already verified Core descriptor. */
+  runtimeIdentity?: RuntimeIdentity;
+  /** Browser Courier extension connection (sends text into bound web chats). */
+  courier?: import('./courier/hub.js').CourierHub;
+  /** 全会话共用的变更号与长轮询等待者（feed/history 接口用）；单元测试的依赖子集里可能没有。 */
+  feed?: import('./storage/feedLog.js').FeedLog;
+  /** The one direct/custom-ingress data-plane listener; never exposes local control APIs. */
+  directAccess?: import('./direct-access/listener.js').DirectAccessListener;
   /** Extension/config fingerprint supplied by the process that spawned this daemon. */
   startFingerprint?: string;
   execution?: ExecutionEnvironment;
@@ -48,6 +76,7 @@ export interface DaemonDeps {
   settings?: SettingsStore;
   /** Settings values this daemon started with (restart-only keys are compared against them). */
   startedSettings?: Settings;
+  startedSettingsRevision?: number;
   /**
    * Semantic-search probe, resolved once at startup. `available` decides
    * whether the context_search tool is registered at all; the MCP server is
@@ -71,23 +100,34 @@ export interface DaemonDeps {
   livePipes?: () => number;
   log: (line: string) => void;
   /**
-   * Last time an extension host POSTed /api/heartbeat. The channel watchdog
-   * stops the public tunnel when this goes stale — the channel is meant to
-   * close when every VS Code window running this extension is gone. Daemon
-   * boot sets it to now (a fresh daemon assumes an operator is present).
+   * Last heartbeat from a local client. Legacy daemons use it to close idle
+   * public channels; managed Core instead uses Manager leases and guarded
+   * process idle shutdown. A suspended VS Code host must not, by itself,
+   * turn off an explicitly enabled managed channel.
    */
   lastHeartbeatAt: number;
   /** Last heartbeat per client kind ('tray', or 'other' for VS Code and unmarked callers). */
   clientBeats?: Map<string, number>;
+  /**
+   * Open Local Web pages: one entry per live GET /web-api/v1/presence response.
+   * While non-empty the channel watchdog treats an operator as present (like a
+   * VS Code window). Not a tray "other": /api/clients others_active ignores it.
+   */
+  webPresence?: Set<object>;
   /** The public channel the operator started; resumed after restarts and watchdog stops. */
   channelIntent?: import('./tunnel/resume.js').ChannelIntent;
+  /** 上次手动启动的渠道（停止不清除），渠道总开关用它决定打开哪个渠道。 */
+  lastChannel?: import('./tunnel/switch.js').LastChannel;
   /** Ends every paired phone; set by the Local Web mount (plan 6.13 R). */
   revokeRemoteDevices?: () => void;
   /** Phone access controls for the VS Code panel (plan 6.13 R4); set by mountLocalWeb. */
   remote?: {
     view(): unknown;
-    pair(): { url: string; expires_at: string | null; kind: string } | null;
+    pair(origin?: string): { url: string; expires_at: string | null; kind: string } | null;
+    probe(origin: string): Promise<import('../packages/contracts/dist/connections.js').PhoneVerification | null>;
     revoke(id: string): boolean;
+    /** 允许 / 拒绝 a phone that scanned the code; false when the request is gone */
+    decide(id: string, allow: boolean): boolean;
   };
   /** wired by daemon.ts once the graceful stop path exists (POST /api/shutdown) */
   shutdown?: () => Promise<void>;
@@ -128,4 +168,31 @@ export function mcpUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string {
 export function publicBaseUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel'>): string {
   const channelUrl = deps.tunnel.status === 'online' || deps.tunnel.status === 'unverified' ? deps.tunnel.url : undefined;
   return (channelUrl ?? deps.cfg.publicBaseUrl ?? `http://${deps.cfg.host}:${deps.cfg.port}`).replace(/\/+$/, '');
+}
+
+/**
+ * Credential-free source URL for the optional Sandbox client recommendation.
+ * It follows the same selected Sandbox route as copied prompts; direct LAN MCP
+ * and OpenAI Tunnel never leak into Sandbox guidance.
+ */
+export function bhClientSourceUrl(deps: Pick<DaemonDeps, 'cfg' | 'tunnel' | 'settings' | 'directAccess' | 'openaiTunnel'>): string | null {
+  const route = resolveConnectionRoutes(deps, mcpPath());
+  if (route.sandbox_kind === 'cloudflare' && deps.tunnel.status !== 'online') return null;
+  const raw = route.sandbox_mcp_url;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (/^(localhost|0\.0\.0\.0|127\..*|\[?::1\]?)$/i.test(url.hostname)) return null;
+    const suffix = mcpPath();
+    const basePath = url.pathname.endsWith(suffix)
+      ? url.pathname.slice(0, -suffix.length).replace(/\/+$/, '')
+      : url.pathname.replace(/\/+$/, '');
+    url.pathname = basePath + '/bh.py';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
 }

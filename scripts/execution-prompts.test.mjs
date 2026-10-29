@@ -28,8 +28,8 @@ for (const platform of ['win32', 'darwin', 'linux']) test('minimal discovery and
     assert.equal(runtime.platform, platform);
     assert.equal(runtime.arch, execution.arch);
     assert.deepEqual(runtime.execution_tools, ['exec', 'process'].filter(name => names.includes(name)));
-    assert.equal(runtime.exec_shell, execution.exec.shell.executable);
-    assert.equal(runtime.process_shell, execution.process.shell.executable);
+    assert.ok(!Object.prototype.hasOwnProperty.call(runtime, 'exec_shell'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(runtime, 'process_shell'));
     assert.equal(runtime.process_unavailable_reason, null);
     assert.match(runtime.discovery_hint, /native.*not proxy/);
     assert.deepEqual(runtime.sandbox,{...execution.sandbox,fail_closed:true});

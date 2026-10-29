@@ -1,0 +1,101 @@
+// Generates packages/vscode/THIRD_PARTY_LICENSES.md: every production npm package that
+// can end up bundled in the VSIX (daemon, extension, Local Web), with its license text.
+// Usage: node scripts/third-party-licenses.mjs [--check]
+//   --check  fail when the committed file is out of date (run in CI).
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const OUT = path.join(ROOT, 'packages/vscode/THIRD_PARTY_LICENSES.md');
+// Declared as devDependencies but bundled into shipped code by vite/esbuild.
+const BUNDLED_DEV = [{ name: 'qrcode-generator', from: 'packages/web' }];
+// Permissive licenses compatible with shipping inside an Apache-2.0 product.
+const ALLOWED = new Set(['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Apache-2.0', '0BSD', 'BlueOak-1.0.0']);
+const PLATFORM_PKG = /-(win32|darwin|linux|freebsd|android)-(x64|arm64|ia32|arm)(-[a-z]+)?$/;
+const LICENSE_FILE = /^(licen[cs]e|copying)(\.(md|txt|markdown))?$/i;
+
+function prodPackages() {
+  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  const raw = execFileSync(pnpm, ['-r', 'licenses', 'list', '--prod', '--json'], { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 64e6 });
+  const list = [];
+  for (const [license, pkgs] of Object.entries(JSON.parse(raw))) {
+    for (const p of pkgs) p.versions.forEach((version, i) => list.push({ name: p.name, version, license, dir: p.paths[i] ?? p.paths[0], homepage: p.homepage }));
+  }
+  return list;
+}
+
+function devBundled() {
+  return BUNDLED_DEV.map(({ name, from }) => {
+    const dir = fs.realpathSync(path.join(ROOT, from, 'node_modules', name));
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    return { name, version: pkg.version, license: typeof pkg.license === 'string' ? pkg.license : 'UNKNOWN', dir, homepage: pkg.homepage };
+  });
+}
+
+function licenseText(dir) {
+  const file = fs.readdirSync(dir).find((f) => LICENSE_FILE.test(f));
+  return file ? fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n').trim() : null;
+}
+
+const MIT_TEXT = `Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`;
+
+// Some published packages omit the license file; for MIT, reproduce the standard text with
+// the author declared in package.json so the required copyright notice still ships.
+function fallbackText(p) {
+  if (p.license !== 'MIT') return null;
+  const pkg = JSON.parse(fs.readFileSync(path.join(p.dir, 'package.json'), 'utf8'));
+  const author = typeof pkg.author === 'string' ? pkg.author.replace(/\s*[<(].*$/, '') : pkg.author?.name;
+  if (!author) return null;
+  return `The published package contains no license file; standard MIT text with the author declared in package.json.\n\nCopyright (c) ${author}\n\n${MIT_TEXT}`;
+}
+
+function render() {
+  const seen = new Map();
+  for (const p of [...prodPackages(), ...devBundled()]) {
+    // Workspace packages are BlackHole's own code under the root LICENSE.
+    if (p.name.startsWith('@blackhole/') || p.name === 'blackhole') continue;
+    // Per-OS native builds (installed only on their own platform) share the parent package's
+    // license, recorded in THIRD_PARTY_NOTICES.md; skipping them keeps the output OS-independent.
+    if (PLATFORM_PKG.test(p.name)) continue;
+    seen.set(`${p.name}@${p.version}`, p);
+  }
+  const pkgs = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+  const bad = pkgs.filter((p) => !ALLOWED.has(p.license));
+  if (bad.length) throw new Error(`license not on the allow list: ${bad.map((p) => `${p.name}@${p.version} (${p.license})`).join(', ')}`);
+  const out = [
+    '# Third-Party Licenses',
+    '',
+    'npm packages that may be bundled into the BlackHole VSIX (background service, VS Code extension and Local Web UI), with their license texts.',
+    'Generated by `node scripts/third-party-licenses.mjs`; do not edit by hand. Per-platform native builds and other bundled components are listed in THIRD_PARTY_NOTICES.md.',
+    '',
+    '| Package | Version | License |',
+    '|---|---|---|',
+    ...pkgs.map((p) => `| ${p.name} | ${p.version} | ${p.license} |`),
+    '',
+  ];
+  for (const p of pkgs) {
+    const text = licenseText(p.dir) ?? fallbackText(p);
+    out.push(`## ${p.name}@${p.version}`, '', `License: ${p.license}${p.homepage ? ` · ${p.homepage}` : ''}`, '');
+    out.push(text ? '```text\n' + text.replace(/```/g, "'''") + '\n```' : `No license file is included in the published package; the package declares ${p.license}.`, '');
+  }
+  return out.join('\n');
+}
+
+const text = render();
+if (process.argv.includes('--check')) {
+  const current = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8').replace(/\r\n/g, '\n') : '';
+  if (current !== text) {
+    console.error('packages/vscode/THIRD_PARTY_LICENSES.md is out of date: run node scripts/third-party-licenses.mjs');
+    process.exit(1);
+  }
+  console.log('third-party licenses up to date');
+} else {
+  fs.writeFileSync(OUT, text);
+  console.log(`wrote ${path.relative(ROOT, OUT)}`);
+}

@@ -88,7 +88,7 @@ async function startHttpUpstream(port) {
 
 function startDaemon(port, tmp, proxyConfigFile) {
   return spawn(process.execPath, [path.join(ROOT, 'scripts', 'smoke-daemon-fixture.mjs'), '--port', String(port)], {
-    env: { ...process.env, BLACKHOLE_DB: path.join(tmp, 'db.sqlite'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: proxyConfigFile, BLACKHOLE_DEBUG_PROXY: '1' },
+    env: { ...process.env, HOME: tmp, USERPROFILE: tmp, BLACKHOLE_ACCOUNT_SECRETS: 'memory', BLACKHOLE_ACCOUNT_OFFLINE: '1', BLACKHOLE_DB: path.join(tmp, '.blackhole', 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: proxyConfigFile, BLACKHOLE_DEBUG_PROXY: '1' },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
 }
@@ -96,9 +96,10 @@ function startDaemon(port, tmp, proxyConfigFile) {
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m4-'));
   fs.mkdirSync(path.join(tmp, 'workspace'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.blackhole'), { recursive: true });
   const HTTP_PORT = 28000 + Math.floor(Math.random() * 1000);
   const httpUp = await startHttpUpstream(HTTP_PORT);
-  const cfgPath = path.join(tmp, 'proxies.yaml');
+  const cfgPath = path.join(tmp, '.blackhole', 'mcp-proxies.yaml');
   const writeCfg = (body) => fs.writeFileSync(cfgPath, `proxies:\n${body}\n`);
   writeCfg(`  - name: fake
     transport: stdio
@@ -419,8 +420,9 @@ async function main() {
     {
       const tmpE = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m4e-'));
       fs.mkdirSync(path.join(tmpE, 'workspace'), { recursive: true });
+      fs.mkdirSync(path.join(tmpE, '.blackhole'), { recursive: true });
       const portE = 25000 + Math.floor(Math.random() * 4000);
-      const cfgE = path.join(tmpE, 'proxies.yaml'); // 故意不创建文件
+      const cfgE = path.join(tmpE, '.blackhole', 'mcp-proxies.yaml'); // 故意不创建文件
       const daemonE = startDaemon(portE, tmpE, cfgE);
       const baseE = `http://127.0.0.1:${portE}`;
       try {
@@ -453,8 +455,9 @@ async function main() {
     {
       const tmpJ = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m4j-'));
       fs.mkdirSync(path.join(tmpJ, 'workspace'), { recursive: true });
+      fs.mkdirSync(path.join(tmpJ, '.blackhole'), { recursive: true });
       const portJ = 20000 + Math.floor(Math.random() * 3000);
-      const cfgJ = path.join(tmpJ, 'proxies.yaml');
+      const cfgJ = path.join(tmpJ, '.blackhole', 'mcp-proxies.yaml');
       fs.writeFileSync(
         cfgJ,
         `proxies:\n  - name: off1\n    enabled: false\n    transport: stdio\n    command: node\n    args: ["${FAKE}"]\n`
@@ -489,10 +492,11 @@ async function main() {
     {
       const tmpF = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-proxy-e2e-m4f-'));
       fs.mkdirSync(path.join(tmpF, 'workspace'), { recursive: true });
+      fs.mkdirSync(path.join(tmpF, '.blackhole'), { recursive: true });
       const portF = 21000 + Math.floor(Math.random() * 3000);
-      const cfgF = path.join(tmpF, 'proxies.yaml');
+      const cfgF = path.join(tmpF, '.blackhole', 'mcp-proxies.yaml');
       const daemonF = spawn(process.execPath, [path.join(ROOT, 'scripts', 'smoke-daemon-fixture.mjs'), '--port', String(portF)], {
-        env: { ...process.env, BLACKHOLE_DB: path.join(tmpF, 'db.sqlite'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfgF, BLACKHOLE_PROXY_PROBE_MS: '1500' },
+        env: { ...process.env, HOME: tmpF, USERPROFILE: tmpF, BLACKHOLE_ACCOUNT_SECRETS: 'memory', BLACKHOLE_ACCOUNT_OFFLINE: '1', BLACKHOLE_DB: path.join(tmpF, '.blackhole', 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_PROXY_CONFIG: cfgF, BLACKHOLE_PROXY_PROBE_MS: '1500' },
         stdio: ['ignore', 'inherit', 'inherit'],
       });
       const baseF = `http://127.0.0.1:${portF}`;

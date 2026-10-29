@@ -21,7 +21,7 @@
  * installed.
  */
 import fs from 'node:fs';
-import os from 'node:os';
+import { resolveDataPaths } from '../data-paths.js';
 import path from 'node:path';
 
 import { extractKey, getCredentialSources } from './extract-key.js';
@@ -120,8 +120,7 @@ export async function resolveSemanticKey(cfg: Config, env: NodeJS.ProcessEnv = p
 
 /** Default ~/.blackhole location, shared with the DB path convention. */
 export function defaultKeyFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.BLACKHOLE_HOME?.trim() || path.join(os.homedir(), '.blackhole');
-  return path.join(dir, KEY_FILE_NAME);
+  return resolveDataPaths({ env }).semanticKey;
 }
 
 export type { SemanticMode };

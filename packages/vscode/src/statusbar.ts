@@ -135,10 +135,18 @@ export class StatusBarController implements Disposable {
     // daemon problems outrank channel state: without the daemon nothing works
     this.channelExtra = null;
     if (this.daemon.currentState !== 'running') {
+      const code = this.daemon.error;
+      const managedHint = code === 'managed_core_not_attached' || code === 'managed_core_lease_expired'
+        ? 'Core 仍可正常运行，但当前 VS Code 没有有效的客户端租约。请在命令面板执行 BlackHole: Retry Shared Core；此操作只检查并附着，不会主动停止 Core。'
+        : code === 'managed_core_identity_or_lease_mismatch'
+          ? '本窗口持有的租约与当前 Core 身份不匹配，已拒绝接管。请检查 BlackHole 输出和 Manager 维护状态，不要强杀进程或手动删除记录。'
+          : code.startsWith('maintenance_outcome_requires_inspection')
+            ? '维护结果未获确认，必须先通过原生 Manager 检查事务；禁止直接重试停止或重启。'
+            : '';
       this.set(
         `${daemonIcons[this.daemon.currentState] ?? '$(question)'} BlackHole`,
         this.daemon.currentState === 'error'
-          ? `BlackHole daemon：${this.daemon.error}`
+          ? `BlackHole daemon：${code}${managedHint ? `\n${managedHint}` : ''}`
           : `BlackHole daemon：${this.daemon.currentState}（点击打开设置）`,
         before,
       );
@@ -174,7 +182,7 @@ export class StatusBarController implements Disposable {
     } else if (t === 'unreachable') {
       this.set('$(broadcast) BlackHole', 'BlackHole daemon：运行中（渠道状态未知，点击打开设置）', before);
     } else {
-      this.set('$(circle-slash) 渠道未启动', 'BlackHole 渠道：未启动。创建会话前需先启动（点击打开设置）', before);
+      this.set('$(circle-slash) 渠道未启动', 'BlackHole 渠道：未启动。创建会话前需先启动 Cloudflare 或 OpenAI 渠道（点击打开设置）', before);
     }
     this.item.backgroundColor = t === 'error' ? new ThemeColor('statusBarItem.errorBackground') : undefined;
   }
@@ -194,12 +202,12 @@ export class StatusBarController implements Disposable {
   private set(text: string, tooltip: string | MarkdownString, before: { text: string; tooltip: string | MarkdownString | undefined }): void {
     const extra = this.channelExtra;
     if (extra) {
-      text += ` · ${extra.text}`;
+      text += ` ${extra.text}`;
       if (typeof tooltip === 'string') tooltip = `${tooltip}\n${extra.tip}`;
       else tooltip.appendMarkdown('\n\n' + extra.tip.replace(/[\\`*_[\]()#|<>]/g, (c) => '\\' + c));
     }
     const label = this.accountLabel();
-    if (label) text += ` · ${label}`;
+    if (label) text += ` ${label}`;
     const remaining = this.remainingLabel();
     const executionWarning = this.executionWarning();
     if (typeof tooltip === 'string') {

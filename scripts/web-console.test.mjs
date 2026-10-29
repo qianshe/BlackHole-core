@@ -14,6 +14,9 @@ import { createIsolatedEnv } from './fixtures/isolated-env.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 if (process.argv.includes('--fixture-daemon')) {
+  // The real Web gate requires a VERIFIED Cloud account, not merely a saved
+  // synthetic token. Mock only the child's HTTPS Cloud session endpoint.
+  await import('./fixtures/fake-cloud-auth.cjs');
   const { startDaemon } = await import('../dist/daemon.js');
   const daemon = await startDaemon({ port: Number(process.env.BLACKHOLE_PORT), dbPath: process.env.BLACKHOLE_DB, tunnel: 'off' }, () => {});
   process.on('message', (m) => {
@@ -28,7 +31,13 @@ if (process.argv.includes('--fixture-daemon')) {
 } else {
   test('web console: approvals and session controls', { timeout: 60_000 }, async (t) => {
     const iso = await createIsolatedEnv({ name: 'web-console' });
-    const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env: { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    // The Cloud fixture and migrated credential must have byte-for-byte
+    // identical signed identity facts, including expiry seconds.
+    const expiration = Math.floor(Date.now() / 1000) + 3600;
+    const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env: {
+      ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist'),
+      BLACKHOLE_ACCOUNT_OFFLINE: '0', WEB_TEST_AUTH_EXPIRES_AT: String(expiration),
+    }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     const exited = new Promise((r) => child.once('exit', r));
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-console-'));
     t.after(async () => {
@@ -61,8 +70,14 @@ if (process.argv.includes('--fixture-daemon')) {
       r.end();
     });
 
-    const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: Math.floor(Date.now() / 1000) + 3600, loginOrder: 7 };
+    const cred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: expiration, loginOrder: 7 };
     assert.equal((await req('/api/account/migrate', { method: 'POST', body: { credential: cred } })).status, 200);
+    // The actual native host explicitly verifies a newly migrated credential.
+    // Without this the Core correctly leaves the Web in "saved"/401 state.
+    const checked = await req('/api/account/call', { method: 'POST', body: { method: 'check', args: [] } });
+    assert.equal(checked.status, 200, checked.text);
+    assert.equal(checked.json.result.state, 'verified', 'synthetic Cloud must actually verify login');
+    assert.equal((await req('/api/account/welcome')).json.state, 'verified');
     const origin = `http://${local}`;
     const login = await req('/web-api/v1/auth/local', { method: 'POST', body: {}, headers: { origin, 'x-blackhole-web': '1' } });
     assert.equal(login.status, 200);
@@ -73,6 +88,22 @@ if (process.argv.includes('--fixture-daemon')) {
     const created = await web('/sessions', 'POST', { workspace_path: work });
     assert.equal(created.status, 201, created.text);
     const sid = created.json.session.id;
+
+    // Authenticated workspace explorer: current session only, no path escape or binary preview.
+    fs.mkdirSync(path.join(work, 'src'));
+    fs.writeFileSync(path.join(work, 'src', 'sample.ts'), 'export const value = 1;\n');
+    const listing = await web(`/sessions/${sid}/workspace/entries`);
+    assert.equal(listing.status, 200, listing.text);
+    assert.ok(listing.json.entries.some((item) => item.path === 'src' && item.type === 'dir'));
+    const dirFiles = await web(`/sessions/${sid}/workspace/entries?path=src`);
+    assert.equal(dirFiles.status, 200, dirFiles.text);
+    assert.ok(dirFiles.json.entries.some((item) => item.path === 'src/sample.ts'));
+    const preview = await web(`/sessions/${sid}/workspace/file?path=src%2Fsample.ts`);
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.json.content, 'export const value = 1;\n');
+    assert.equal((await req(`/web-api/v1/sessions/${sid}/workspace/entries`, { headers: { 'x-blackhole-web': '1' } })).status, 401);
+    assert.equal((await web(`/sessions/${sid}/workspace/file?path=..%2Foutside.txt`)).status, 403);
+    assert.equal((await web(`/sessions/${sid}/workspace/file?path=missing.ts`)).status, 404);
 
     // Approvals: listed with risk tags, never with the approval pin.
     const c1 = await seed(sid);
@@ -113,8 +144,13 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await web(`/panel/sessions/${sid}/rotate`, 'POST', {})).status, 200);
     assert.notEqual((await web(`/panel/sessions/${sid}`)).json.session_id, before, 'rotate issues a new id');
     assert.equal((await web(`/panel/sessions/${sid}/pause`, 'POST', {}, { noCsrf: true })).status, 403);
-    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { mode: 'danger-full-access' })).status, 404, 'only listed actions pass');
+    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { permission_mode: 'read-only' }, { noCsrf: true })).status, 403);
+    assert.equal((await web(`/panel/sessions/${sid}/mode`, 'PATCH', { permission_mode: 'read-only' })).status, 200);
+    assert.equal((await web('/sessions')).json.sessions.find((x) => x.id === sid).permission_mode, 'read-only');
+    assert.equal((await web(`/panel/sessions/${sid}/writable_dirs`, 'PATCH', { writable_dirs: [] })).status, 404, 'only listed actions pass');
     assert.equal((await web(`/panel/sessions/${sid}/revoke`, 'POST', {})).status, 200);
-    assert.equal(await status(), 'revoked');
+    // ended sessions are gone from every list (the row itself is kept but never shown)
+    assert.equal((await web('/sessions')).json.sessions.some((x) => x.id === sid), false, 'revoked session hidden');
+    assert.equal((await web(`/sessions/${sid}`)).json.status, 'revoked');
   });
 }

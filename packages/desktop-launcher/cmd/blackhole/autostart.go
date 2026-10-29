@@ -9,12 +9,11 @@ import (
 // Autostart launches `<exe> --tray`: the daemon and tray start, no browser.
 const autostartFlag = "--tray"
 
-// dataDir mirrors the daemon rule: next to BLACKHOLE_DB, else ~/.blackhole.
+// WebView/cache remains under the same ~/.blackhole profile as the daemon.
+// Per-port maintenance coordination lives separately in runtime-state/desktop.
 func dataDir() string {
-	if db := os.Getenv("BLACKHOLE_DB"); db != "" {
-		if abs, err := filepath.Abs(db); err == nil {
-			return filepath.Dir(abs)
-		}
+	if managedUserDataDir != "" {
+		return managedUserDataDir
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".blackhole")

@@ -12,6 +12,7 @@ interface RecordState {
 }
 interface RequestState { sessionId: string; processId: string; fingerprint: string }
 export interface ManagerOptions {
+  canStart?: () => boolean;
   daemonId: string; backend: ProcessBackend; supported?: boolean;
   limits?: Partial<Record<keyof typeof PROCESS_LIMITS, number>>;
   now?: () => number;
@@ -127,13 +128,16 @@ export class ProcessManager {
     return { ...r.snapshot, terminal: view };
   }
   private snapshot(r: RecordState): ProcessSnapshot { return { ...this.summary(r), output: r.output.snapshot() }; }
+  maintenanceBusy(): boolean {
+    return [...this.records.values()].some(r => !isTerminalState(r.snapshot.state) || !!r.stopping || !!r.start);
+  }
   list(sessionId: string): ProcessSummary[] {
     return [...this.records.values()].filter(r => r.spec.sessionId === sessionId).map(r => this.summary(r));
   }
   status(sessionId: string, processId: string): ProcessSnapshot { return this.snapshot(this.record(sessionId, processId)); }
 
   start(owner: ProcessOwner, input: StartInput, authorize: (spec: ProcessSpec, signal: AbortSignal) => Promise<void>, secrets: readonly string[] = [], callId?: string): Promise<ProcessSnapshot> {
-    if (this.closing) return Promise.reject(new ProcessError('daemon_stopping', 'Daemon is shutting down'));
+    if (this.closing || this.options.canStart?.() === false) return Promise.reject(new ProcessError('daemon_stopping', 'Daemon is shutting down'));
     if (!this.supported) return Promise.reject(new ProcessError('unsupported_platform', 'Managed processes are unavailable on this daemon platform or interpreter'));
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(input.requestId) || !input.script.trim() || Buffer.byteLength(input.script) > 8192 || input.script.includes('\0')) {
       return Promise.reject(new ProcessError('invalid_request', 'Use a stable requestId and a nonempty script of at most 8192 UTF-8 bytes'));
@@ -185,7 +189,7 @@ export class ProcessManager {
       try {
         const cancelled = new Promise<never>((_, reject) => r.cancel.signal.addEventListener('abort', () => reject(new ProcessError('cancelled', 'Launch cancelled before spawn')), { once: true }));
         await Promise.race([authorize(spec, r.cancel.signal), cancelled]);
-        if (r.cancel.signal.aborted || this.closing || isTerminalState(r.snapshot.state)) throw new ProcessError('cancelled', 'Launch cancelled before spawn');
+        if (r.cancel.signal.aborted || this.closing || this.options.canStart?.() === false || isTerminalState(r.snapshot.state)) throw new ProcessError('cancelled', 'Launch cancelled before spawn');
         // Re-resolve directories immediately before native spawn; no async work between this and spawn.
         if (canonicalDirectory(spec.cwd) !== cwd || canonicalDirectory(spec.workspace) !== workspace) throw new ProcessError('cwd_changed', 'Working directory changed during launch approval');
         r.handle = this.options.backend(spec, {
@@ -208,7 +212,7 @@ export class ProcessManager {
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
         if (!isTerminalState(r.snapshot.state)) {
-          r.snapshot.state = 'failed'; r.snapshot.reason = error instanceof ProcessError ? error.code : 'spawn_failed';
+          r.snapshot.state = r.handle ? 'unknown' : 'failed'; r.snapshot.reason = error instanceof ProcessError ? error.code : 'spawn_failed';
           r.snapshot.endedAt = new Date(this.now()).toISOString();
           r.output.push('stderr', Buffer.from((error instanceof Error ? error.message : String(error)) + '\n')); r.output.end();
           this.emit(r, 'start_failed', { reason: r.snapshot.reason });

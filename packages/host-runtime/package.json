@@ -1,6 +1,7 @@
 {
   "name": "@blackhole/host-runtime",
   "version": "0.0.0",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "Short-lived bootstrap run by the desktop launcher: attach to or start the local daemon, then open the signed-in local Web UI. Bundled to dist/bootstrap.cjs.",

@@ -1,21 +1,44 @@
 {
   "$comment": "Toolchain and dependency baseline for the unified Web / desktop launcher plan (.blackhole/plan/unified-web-launcher.md, T0). Observed 2026-09-26 on the Windows x64 dev machine. 'planned' dependencies are not installed yet; lock exact versions when the owning task adds them and re-check licenses/advisories then.",
-  "observedAt": "2026-09-26",
+  "observedAt": "2026-10-26",
+  "firstPhaseDesktopInstaller": "win32-x64",
+  "versioningPolicy": {
+    "format": "MAJOR.MINOR.PATCH",
+    "testVsProduction": "Test and Production share monotonic semver validation but are strictly isolated by environment, trust roots, AppId (StellarBridge.BlackHole.Desktop.Test vs StellarBridge.BlackHole.Desktop) and update feed.",
+    "sameVersionRule": "Never overwrite an installed VSIX or running Desktop with a different build of the same semver while the host is running; bump PATCH for each new candidate or uninstall before clean test replacement."
+  },
   "go": {
     "dev": "1.26.1",
-    "releaseMinimum": "1.26.8",
+    "ci": "1.26.10",
+    "releaseMinimum": "1.26.10",
+    "goWinres": "0.3.3",
     "env": { "GOTOOLCHAIN": "local", "CGO_ENABLED": "0" },
     "verified": "vet, test, -H windowsgui build, run, cross-build windows/darwin/linux x amd64/arm64 without runtime/cgo"
   },
   "node": {
     "devMachine": "22.20.0",
+    "ci": "22.20.0",
+    "coreMinVersion": "22.13.0",
     "target": "24 LTS",
-    "gate": "dev machine upgrades to Node 24 LTS before T2 starts; T0/T1 must not use Node-24-only APIs",
+    "gate": "Core v2 requires >=22.13.0 (built-in node:sqlite); Desktop bundles one hash-pinned Node 22.20.0 executable outside the Node-free Core archive",
     "vscodeElectron": { "vscode": "1.139.1", "electron": "43.6.0", "node": "24.20.0", "modules": "148", "napi": "10" }
   },
   "pnpm": "10.0.0",
   "workspace": {
     "@blackhole/contracts": { "zod": "3.25.76" }
+  },
+  "innoSetup": {
+    "observedAt": "2026-10-12",
+    "version": "6.7.3",
+    "scope": "repository-local portable tools only; not system-installed",
+    "source": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe",
+    "sourceSha256": "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732",
+    "compilerSha256": "0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7",
+    "authenticodePublisher": "Pyrsys B.V.",
+    "authenticodeVerified": true,
+    "preparation": "scripts/prepare-inno.ps1 -ApprovedPortableTools (explicit approval required)",
+    "commercialLicense": "unverified; compiler prints Non-commercial use only; release owner must confirm before commercial release",
+    "installerExecution": "not authorized by toolchain preparation"
   },
   "planned": {
     "react": { "version": "19.3.0", "license": "MIT", "task": "T3" },
@@ -26,13 +49,7 @@
     "vitest": { "version": "5.0.2", "license": "MIT", "node": "^22.12.0 || ^24.0.0 || >=26.0.0", "task": "T3" },
     "@testing-library/react": { "version": "16.3.3", "license": "MIT", "task": "T3" },
     "@playwright/test": { "version": "1.63.0", "license": "Apache-2.0", "task": "T3" },
-    "qrcode": { "version": "1.5.4", "license": "MIT", "task": "T5" },
-    "@napi-rs/keyring": {
-      "version": "2.1.0",
-      "license": "MIT",
-      "task": "T2A",
-      "prebuiltTargets": ["win32-x64-msvc", "win32-arm64-msvc", "darwin-x64", "darwin-arm64", "linux-x64-gnu", "linux-arm64-gnu"]
-    }
+    "qrcode": { "version": "1.5.4", "license": "MIT", "task": "T5" }
   },
   "targets": {
     "win32-x64": { "localMachine": true, "ciRunner": "windows-latest" },
@@ -47,3 +64,4 @@
     "macos": "unknown - Developer ID and notarization credentials not verified; release blocker until provided"
   }
 }
+

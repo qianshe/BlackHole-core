@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { createIsolatedEnv } from './fixtures/isolated-env.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const FAKE = path.join(ROOT, 'scripts', 'fake-upstream.mjs').replace(/\\/g, '\\\\');
@@ -30,19 +31,18 @@ function makeEnv(label) {
 /** 探针机密：注入 daemon env，再由 config 用 ${BH_E2E_PROBE} 引用（验证展开） */
 const PROBE_VALUE = 'probe-secret-value-4242';
 
-function startDaemon(port, tmp, proxyConfigFile) {
+async function startDaemon(port, tmp, proxyConfigFile) {
+  const isolated = await createIsolatedEnv({ name: 'proxy-e2e', baseDir: tmp, port });
+  fs.copyFileSync(proxyConfigFile, isolated.env.BLACKHOLE_PROXY_CONFIG);
   const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'smoke-daemon-fixture.mjs'), '--port', String(port)], {
     env: {
-      ...process.env,
-      BLACKHOLE_DB: path.join(tmp, 'blackhole.db'),
-      BLACKHOLE_TUNNEL: 'off',
-      BLACKHOLE_SEMANTIC: 'off',
-      BLACKHOLE_PROXY_CONFIG: proxyConfigFile,
+      ...isolated.env,
       BH_E2E_PROBE: PROBE_VALUE,
     },
     // stdout/stderr 走管道：脱敏负向断言要能检查 daemon 日志（否则机密泄漏只能靠肉眼）
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child.testDataDir = isolated.dataDir;
   child.captured = { out: '', err: '' };
   child.stdout.on('data', (c) => { child.captured.out += c.toString(); });
   child.stderr.on('data', (c) => {
@@ -146,7 +146,7 @@ async function main() {
   const sessEntry = `  - name: fakesess\n    merge: false\n    transport: stdio\n    command: node\n    args: ["${FAKE}"]\n    env:\n      inherit: [PATH, SYSTEMROOT, TEMP, TMP]\n      set: {}\n    surface:\n      expose: [echo]\n      aliases:\n        sess_echo: echo\n`;
   fs.writeFileSync(cfgA, `proxies:\n${fakeServerEntry('fake')}\n${sharedServerEntry('fakeshared')}\n${sessEntry}\n`);
   const portA = 24000 + Math.floor(Math.random() * 8000);
-  const daemonA = startDaemon(portA, tmpA, cfgA);
+  const daemonA = await startDaemon(portA, tmpA, cfgA);
   const baseA = `http://127.0.0.1:${portA}`;
   let toolsListA = null;
 
@@ -349,7 +349,7 @@ async function main() {
         const metricsAfter = (await api(baseA, 'GET', '/proxies')).json.metrics.find((m) => m.name === 'fakeshared').restarts;
         // v2.5: fakeshared 也是 merge server → boot-warm 已拉起 child，两次调用期间应零启动
         assert.equal(metricsAfter - metricsBefore, 0, `boot-warm 后两 session 调用不得各自启动 child（实际 ${metricsAfter - metricsBefore} 次）`);
-        const readShared = () => JSON.parse(fs.readFileSync(path.join(tmpA, 'proxy-children.json'), 'utf8')).filter((r) => r.sessionId === '__shared__' && r.server === 'fakeshared');
+        const readShared = () => JSON.parse(fs.readFileSync(path.join(daemonA.testDataDir, 'proxy-children.json'), 'utf8')).filter((r) => r.sessionId === '__shared__' && r.server === 'fakeshared');
         assert.equal(readShared().length, 1, `shared child 只应有一条 pid registry 记录（实际 ${readShared().length}）`);
         // revoke 一个 session 不得回收共享 child（它不属于任何 session）
         await api(baseA, 'POST', `/sessions/${sessB.id}/revoke`);
@@ -394,7 +394,7 @@ async function main() {
       const sess2 = (await api(baseA, 'POST', '/sessions', { workspace_path: path.join(tmpA, 'workspace') })).json;
       const warm = envelopeOf(await proxyCall(cA, sess2.session_id, { command: 'call', tool: 'sess_echo', argsJson: '{"payload":"sess-warm"}' }));
       assert.equal(warm.status, 'ok');
-      const pidFile = path.join(tmpA, 'proxy-children.json');
+      const pidFile = path.join(daemonA.testDataDir, 'proxy-children.json');
       assert.ok(fs.existsSync(pidFile), 'pid registry 落盘');
       const records = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
       const childPid = records.find((r) => r.sessionId === '__shared__' && r.server === 'fakesess')?.pid;
@@ -418,7 +418,7 @@ async function main() {
       new Promise((r) => daemonA.once('exit', r)),
       sleep(8000).then(() => daemonA.kill('SIGKILL')),
     ]);
-    assert.ok(!fs.existsSync(path.join(tmpA, 'proxy-children.json')), '优雅 stop 清空 pid registry');
+    assert.ok(!fs.existsSync(path.join(daemonA.testDataDir, 'proxy-children.json')), '优雅 stop 清空 pid registry');
     ok('M1-7b daemon stop 后无残留 child');
   } catch (e) {
     daemonA.kill('SIGKILL');
@@ -431,7 +431,7 @@ async function main() {
     const cfgC = path.join(tmpC, 'proxies.yaml');
     fs.writeFileSync(cfgC, `proxies:\n${fakeServerEntry('fake')}\n`);
     const portC = 24000 + Math.floor(Math.random() * 8000);
-    const daemonC = startDaemon(portC, tmpC, cfgC);
+    const daemonC = await startDaemon(portC, tmpC, cfgC);
     const baseC = `http://127.0.0.1:${portC}`;
     const cC = await connectMcp(baseC);
     const sess = (await api(baseC, 'POST', '/sessions', { workspace_path: path.join(tmpC, 'workspace') })).json;
@@ -442,7 +442,7 @@ async function main() {
       await sleep(100);
     }
     assert.equal(warmC?.status, 'ok');
-    const childPid = JSON.parse(fs.readFileSync(path.join(tmpC, 'proxy-children.json'), 'utf8'))[0]?.pid;
+    const childPid = JSON.parse(fs.readFileSync(path.join(daemonC.testDataDir, 'proxy-children.json'), 'utf8'))[0]?.pid;
     assert.ok(Number.isInteger(childPid));
     // 强杀 daemon（Windows taskkill /F；POSIX kill -9）
     if (process.platform === 'win32') {
@@ -476,7 +476,7 @@ async function main() {
     limits:
       callTimeoutMs: 1000\n`);
     const portT = 24000 + Math.floor(Math.random() * 8000);
-    const daemonT = startDaemon(portT, tmpT, cfgT);
+    const daemonT = await startDaemon(portT, tmpT, cfgT);
     try {
       const cT = await connectMcp(`http://127.0.0.1:${portT}`);
       const sess = (await api(`http://127.0.0.1:${portT}`, 'POST', '/sessions', { workspace_path: path.join(tmpT, 'workspace') })).json;
@@ -508,7 +508,7 @@ async function main() {
       `  - name: fake2\n    transport: stdio\n    command: node\n    args: ["${FAKE}"]\n    risk:\n      echo: allow\n      slow: allow\n    surface:\n      expose: [echo, slow]\n      aliases:\n        echo_two: echo`,
     ].join('\n') + '\n');
     const portB = 24000 + Math.floor(Math.random() * 8000);
-    const daemonB = startDaemon(portB, tmpB, cfgB);
+    const daemonB = await startDaemon(portB, tmpB, cfgB);
     const baseB = `http://127.0.0.1:${portB}`;
     try {
       const cB = await connectMcp(baseB);

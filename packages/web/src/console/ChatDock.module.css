@@ -1,0 +1,122 @@
+.dock { flex: none; background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+/* 附加信息区（提问/提示/来源·模型·发送状态）：都在输入条分隔线之上 */
+/* Same column and gutter as the transcript (.calls in console.module.css). */
+.extras { --gutter: clamp(20px, 6%, 40px); width: 100%; max-width: calc(828px + 2 * var(--gutter)); margin: 0 auto; padding: var(--sp-2) var(--gutter); }
+.box { border-top: 1px solid var(--border); }
+/* Pasted images waiting to go with the next message. */
+.thumbs { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; padding: 0; }
+.thumb { position: relative; width: 56px; height: 56px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--surface-2); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb button { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; padding: 0; line-height: 16px; font-size: 13px; border: 0; border-radius: 50%; color: #fff; background: rgba(0, 0, 0, .55); cursor: pointer; }
+.thumb button:focus-visible { outline: 2px solid var(--accent); }
+/* Chat messages in the session timeline: yours on the right, agent replies full width as Markdown. */
+.msg { box-sizing: border-box; margin: var(--sp-4) 0; font-size: var(--fs-md); line-height: 1.6; color: var(--text); }
+/* Your message opens a turn: extra room above/below and a thin accent edge set it apart from the
+   agent's replies and tool rows next to it (margin-right 0 keeps it on the right edge). */
+.user { width: fit-content; max-width: 80%; margin: 28px 0 34px auto; padding: var(--sp-2) var(--sp-3); border-radius: 12px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+/* A reply is prose, not chrome: no frame. Its horizontal placement is the transcript
+   column's job (.calls), so prose and tool rows cannot drift apart. */
+.agent { max-width: 860px; }
+.msgHead { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); margin-bottom: 2px; min-width: 0; }
+.who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.when { flex: none; }
+.st { display: block; margin-top: 2px; font-size: var(--fs-xs); }
+/* Copy button under a message: your messages (shown on hover, right) and final replies (left). */
+.msgActs { display: flex; margin-top: 4px; }
+.user { position: relative; }
+.userActs { position: absolute; right: 0; top: 100%; margin-top: 2px; opacity: 0; transition: opacity var(--dur, .12s) ease; }
+.user:hover .userActs, .user:focus-within .userActs { opacity: 1; }
+.msgCopy { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); cursor: pointer; }
+.msgCopy:hover { color: var(--text); background: var(--surface-hover); }
+.msgCopy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
+.copied { color: var(--ok); }
+@media (hover: none) { .userActs { opacity: 1; } }
+/* Images sent with a message: small previews above its text; click opens the full image. */
+.sentImgs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; }
+.sentImgBtn { display: block; padding: 0; line-height: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); cursor: zoom-in; }
+.sentImgBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sentImgBtn img { display: block; max-width: 220px; max-height: 160px; object-fit: contain; }
+/* Full view of one sent image: click anywhere outside it or Esc closes. */
+.imgView { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; background: rgba(0, 0, 0, 0.82); cursor: zoom-out; }
+.imgView img { max-width: 100%; max-height: calc(100vh - 80px); object-fit: contain; border-radius: 6px; cursor: default; }
+.imgViewNo { color: #ddd; font-size: var(--fs-xs); }
+.body { white-space: pre-wrap; word-break: break-word; }
+.md { word-break: break-word; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: 0 0 10px; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 16px 0 8px; line-height: 1.3; font-weight: 600; color: var(--text-bright); }
+.md h1 { font-size: 1.35em; }
+.md h2 { font-size: 1.2em; }
+.md h3 { font-size: 1.08em; }
+.md h4, .md h5, .md h6 { font-size: 1em; }
+.md ul, .md ol { padding-left: 22px; }
+.md li + li { margin-top: 3px; }
+.md code { font: 0.9em var(--mono); padding: 1px 5px; border-radius: var(--r-sm); background: var(--surface-2); }
+.md pre { padding: 10px 12px; border-radius: var(--r-md); overflow-x: auto; background: var(--surface-2); border: 1px solid var(--border); }
+.md pre code { padding: 0; background: none; font-size: 12px; white-space: pre; }
+.md blockquote { padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-2); }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: var(--fs-sm); }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
+.md th { background: var(--surface-2); font-weight: 600; }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.md a { color: var(--accent-text); }
+.streaming .md > :last-child::after { content: ''; display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: text-bottom; background: currentColor; opacity: 0.6; animation: caret 1s steps(1) infinite; }
+/* Model of the web AI on the right of this composer: composer metadata, not conversation content. */
+.model { flex: none; max-width: 45%; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-full); font-size: var(--fs-xs); color: var(--text-2); background: var(--surface-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .streaming .md > :last-child::after { animation: none; } }
+/* Touch: the send button grows to a comfortable target on narrow screens. */
+@media (max-width: 760px) {
+  .send { width: 36px; height: 36px; }
+  .input { padding-right: 52px; }
+}
+.composer { --gutter: clamp(20px, 6%, 40px); width: 100%; max-width: calc(828px + 2 * var(--gutter)); margin: 0 auto; padding: var(--sp-2) var(--gutter) var(--sp-3); }
+.head { display: flex; align-items: center; gap: var(--sp-2); min-height: 24px; font-size: var(--fs-sm); }
+.hint { flex: 1; min-width: 0; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.select { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 6px; }
+.pill { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: var(--r-full); font-size: var(--fs-xs); background: var(--muted-soft); color: var(--muted); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+/* 发送中: the dot breathes, so the state reads at a glance while the box is disabled. */
+.pill.warn .dot { animation: pillDot 1.2s ease-in-out infinite; }
+@keyframes pillDot { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .pill.warn .dot { animation: none; } }
+/* One bordered field holds the text; the send button sits inside it, vertically
+   centred, so it never rides the last line of what you are typing. */
+.field { position: relative; }
+.input { display: block; width: 100%; resize: none; min-height: 44px; max-height: 200px; font: var(--fs-md) / var(--lh-base) var(--sans); color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 8px 50px 8px var(--sp-3); }
+.input:focus { outline: none; }
+.field:focus-within .input { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.input:disabled { opacity: 0.6; }
+.send { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; padding: 0; font: inherit; font-size: 15px; line-height: 1; color: #fff; background: var(--accent-fill); border: 1px solid var(--accent-fill); border-radius: var(--r-full); cursor: pointer; }
+.send:hover:not(:disabled) { background: var(--accent-fill-hover); }
+.send:disabled { opacity: 0.5; cursor: default; }
+.send:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* Same slot as .send, so sending and stopping never shift the composer. */
+.stop { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; padding: 0; font: inherit; font-size: 13px; line-height: 1; color: #fff; background: var(--bad); border: 1px solid var(--bad); border-radius: var(--r-full); cursor: pointer; }
+.stop:hover:not(:disabled) { opacity: 0.88; }
+.stop:disabled { opacity: 0.5; cursor: default; }
+.stop:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* The agent's question is the one framed block here: it asks for an answer, so its
+   options are buttons rather than prose. */
+.qcard { margin-bottom: var(--sp-2); border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--raised); overflow: hidden; }
+.qHead { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+.qTitle { flex: 1; min-width: 0; font-size: var(--fs-md); line-height: 1.45; }
+.qSkip { flex: none; padding: 1px 8px; font: inherit; font-size: var(--fs-xs); color: var(--accent-text); background: transparent; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.qOpt { display: flex; align-items: center; gap: var(--sp-2); width: 100%; padding: 7px var(--sp-3); font: inherit; font-size: var(--fs-md); color: var(--text); text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.qOpt:last-of-type { border-bottom: 0; }
+.qOpt:hover:not(:disabled), .qOpt:focus-visible { background: var(--surface-hover); outline: none; }
+.qOpt:disabled { opacity: 0.55; cursor: default; }
+.qN { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-full); font-size: var(--fs-xs); color: var(--text-3); }
+.qLabel { min-width: 0; }
+.qHint { margin: 0; padding: 5px var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); border-top: 1px solid var(--border); }
+/* A note is a strip above the box, never a line under it: the input stays the last row. */
+.note { margin: 0 0 var(--sp-2); padding: 4px 8px; border-radius: var(--r-sm); font-size: var(--fs-xs); color: var(--text-3); background: var(--muted-soft); }
+.st.ok, .note.ok { color: var(--ok); background: var(--ok-soft); }
+.st.warn, .note.warn { color: var(--warn); background: var(--warn-soft); }
+.st.bad, .note.bad { color: var(--bad); background: var(--bad-soft); }
+.note.muted { color: var(--text-3); }

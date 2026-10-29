@@ -52,6 +52,8 @@ export interface SearchOptions {
    * workspace-relative so they remain valid `editor` arguments.
    */
   subPath?: string;
+  /** danger-full-access: `subPath` may point outside the workspace (results use absolute paths there). */
+  allowOutside?: boolean;
   signal?: AbortSignal | null;
   onProgress?: (line: string) => void;
 }
@@ -100,13 +102,18 @@ function baselessMeta(treeDepth: number): SearchMeta {
  * is a subdirectory the agent would otherwise get paths it cannot feed
  * back to `editor`.
  */
+function relOrAbs(base: string, full: string): string {
+  const rel = path.relative(base, full);
+  return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? full.split(path.sep).join('/') : rel.split(path.sep).join('/');
+}
+
 function relativise<T extends { files: AnswerFile[] }>(result: T, workspaceRoot: string): T {
   const base = path.resolve(workspaceRoot);
   return {
     ...result,
     files: result.files.map((file) => ({
       ...file,
-      path: path.relative(base, file.full_path).split(path.sep).join('/'),
+      path: relOrAbs(base, file.full_path),
     })),
   };
 }
@@ -131,12 +138,15 @@ export async function search(opts: SearchOptions): Promise<SearchResult> {
     signal = null,
     onProgress = null,
     subPath,
+    allowOutside = false,
   } = opts;
   const log = (line: string): void => onProgress?.(line);
 
   let root: string;
   try {
-    root = subPath ? resolveInWorkspace(workspaceRoot, subPath) : workspaceRoot;
+    root = !subPath ? workspaceRoot
+      : allowOutside ? path.resolve(workspaceRoot, subPath)
+        : resolveInWorkspace(workspaceRoot, subPath);
   } catch (e) {
     return { files: [], error: `path is outside the workspace: ${e instanceof Error ? e.message : String(e)}`, _meta: baselessMeta(treeDepth) };
   }

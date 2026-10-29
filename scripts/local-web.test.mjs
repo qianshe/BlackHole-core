@@ -12,6 +12,20 @@ import { createIsolatedEnv } from './fixtures/isolated-env.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 if (process.argv.includes('--fixture-daemon')) {
+  // Cloud responses are synthetic and local to this test child. Verification
+  // succeeds only for the exact migrated fixture credential; no Internet IO.
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/api/auth/plugin/session' && url.protocol === 'https:') {
+      assert.equal(init.headers.Authorization, 'Bearer ' + 'bhp_' + 'a'.repeat(43));
+      return Response.json({ userId: 'user_1', clientId: 'c'.repeat(22),
+        sessionId: '11111111-2222-4333-8444-555555555555',
+        expiresAt: Number(process.env.WEB_TEST_AUTH_EXPIRES_AT), loginOrder: 7 });
+    }
+    if (url.protocol === 'http:' && ['127.0.0.1','localhost'].includes(url.hostname)) return nativeFetch(input, init);
+    throw Error('external_network_forbidden_fixture');
+  };
   const { startDaemon } = await import('../dist/daemon.js');
   const daemon = await startDaemon({ port: Number(process.env.BLACKHOLE_PORT), dbPath: process.env.BLACKHOLE_DB, tunnel: 'off' }, () => {});
   process.on('message', (message) => {
@@ -21,7 +35,9 @@ if (process.argv.includes('--fixture-daemon')) {
 } else {
   test('local web: ticket login, read-only data, local-only boundary', { timeout: 60_000 }, async (t) => {
     const iso = await createIsolatedEnv({ name: 'local-web' });
-    const env = { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist') };
+    const expiration = Math.floor(Date.now()/1000) + 3600;
+    const env = { ...iso.env, BLACKHOLE_WEB_DIR: path.join(ROOT, 'packages/web/dist'),
+      BLACKHOLE_ACCOUNT_OFFLINE: '0', WEB_TEST_AUTH_EXPIRES_AT: String(expiration) };
     const child = fork(fileURLToPath(import.meta.url), ['--fixture-daemon'], { env, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     const exited = new Promise((resolve) => child.once('exit', resolve));
     let client;
@@ -69,9 +85,7 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await bootstrap({ origin })).status, 403, 'browser Origin must not mint tickets');
     assert.equal((await bootstrap({ 'sec-fetch-site': 'same-origin' })).status, 403);
     assert.equal((await bootstrap({ 'x-forwarded-for': '1.2.3.4' })).status, 403);
-    const issued = await (await bootstrap()).json();
-    assert.match(issued.ticket, /^[A-Za-z0-9_-]{43}$/);
-    assert.equal(issued.path, '/ui/');
+    assert.equal((await bootstrap()).status, 401, 'Core must verify login before issuing Web tickets');
 
     // The page lives at /: browsers on this machine get it; tunnel traffic and scripts get the banner.
     const html = { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' };
@@ -79,6 +93,16 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal(root.status, 200);
     assert.match(await root.text(), /<div id="root">/);
     assert.equal(root.headers.get('cache-control'), 'no-store');
+    assert.equal(root.headers.get('cross-origin-opener-policy'), 'same-origin', 'browser opener isolation remains intact');
+    const desktop = await fetch(base + '/desktop/', { headers: html, redirect: 'manual' });
+    assert.equal(desktop.status, 200, 'native document must not redirect into the browser document');
+    assert.equal(desktop.headers.get('cross-origin-opener-policy'), null, 'native document must preserve WebView2 bindings');
+    assert.match(desktop.headers.get('content-security-policy'), /script-src 'self'.*frame-ancestors 'none'/);
+    assert.equal(desktop.headers.get('x-frame-options'), 'DENY');
+    assert.equal(desktop.headers.get('cache-control'), 'no-store');
+    for (const headers of [{'x-forwarded-for':'1.2.3.4'}, {'cf-connecting-ip':'1.2.3.4'}]) {
+      assert.equal((await fetch(base+'/desktop/',{headers,redirect:'manual'})).status,403,'native document never served through a proxy');
+    }
     assert.match(await (await fetch(base + '/')).text(), /MCP endpoint/, 'non-browser callers keep the banner');
     for (const h of [{ 'cf-connecting-ip': '1.1.1.1' }, { 'x-forwarded-for': '1.1.1.1' }]) {
       assert.match(await (await fetch(base + '/', { headers: { ...html, ...h } })).text(), /MCP endpoint/, JSON.stringify(h));
@@ -117,6 +141,28 @@ if (process.argv.includes('--fixture-daemon')) {
       });
     assert.equal((await web('/sessions')).status, 401);
 
+    // Only a read-only, same-origin status is exposed before a Core login.
+    assert.equal((await web('/auth/status')).status, 200);
+    assert.equal((await fetch(base + '/web-api/v1/auth/status')).status, 403);
+    assert.equal((await web('/auth/setup')).status, 401, 'unverified account cannot inspect channel settings');
+    assert.equal((await web('/auth/local', { method: 'POST', body: {} })).status, 401);
+    assert.equal((await web('/auth/login', { method: 'POST', body: {} })).status, 410, 'browser must not start OAuth');
+
+    const earlyCred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22),
+      sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: expiration, loginOrder: 7 };
+    assert.deepEqual(await control('/account/migrate', { credential: earlyCred }), { migrated: true });
+    assert.equal((await control('/account/call', { method: 'check', args: [] })).result.state, 'verified');
+    assert.equal((await control('/account/welcome')).state, 'verified');
+    assert.deepEqual(await (await web('/auth/status')).json(), { state: 'verified' });
+    const setupSummary = await web('/auth/setup');
+    assert.equal(setupSummary.status, 200);
+    assert.deepEqual(await setupSummary.json(), { configuration: 'absent' });
+    assert.equal((await fetch(base + '/web-api/v1/auth/setup')).status, 403);
+
+    const issued = await (await bootstrap()).json();
+    assert.match(issued.ticket, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(issued.path, '/ui/');
+
     // Exchange: exact Origin + client header, one use only.
     assert.equal((await web('/auth/exchange', { method: 'POST', body: { ticket: issued.ticket }, headers: { origin: 'http://evil.test' } })).status, 403);
     assert.equal((await web('/auth/exchange', { method: 'POST', body: { ticket: 'A'.repeat(43) } })).status, 401);
@@ -131,35 +177,14 @@ if (process.argv.includes('--fixture-daemon')) {
     const me = await (await web('/auth/session', { cookie })).json();
     assert.equal(me.authenticated, true);
 
-    // Account gate: a ticket alone opens no business data until this machine's account is signed in.
-    assert.equal(me.account_required, true);
-    assert.equal((await (await web('/sessions', { cookie })).json()).error, 'account_required');
-    assert.equal((await web('/account', { cookie })).status, 200, 'the login page can still read account state');
+    assert.equal(me.account_required, false, 'only a verified Core account received this cookie');
+    assert.equal((await web('/account', { cookie })).status, 200);
+    assert.equal((await web('/sessions', { cookie })).status, 200);
 
-    assert.equal((await web('/auth/local', { method: 'POST', body: {} })).status, 401, 'no account yet: local entry refused');
-
-    // Browser login without any session: same-origin only, rate limited, result by polling.
-    const login = (headers = {}) => web('/auth/login', { method: 'POST', body: {}, headers });
-    assert.equal((await login({ origin: 'http://evil.test' })).status, 403);
-    const started = await login();
-    assert.equal(started.status, 202);
-    const { attempt } = await started.json();
-    assert.match(attempt, /^[A-Za-z0-9_-]{43}$/);
-    let polled;
-    for (let i = 0; i < 50; i++) {
-      polled = await (await web('/auth/login/' + attempt)).json();
-      if (polled.state !== 'running') break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    assert.equal(polled.state, 'failed', 'offline fixture: the cloud sign-in cannot complete');
-    assert.equal((await web('/auth/login/' + attempt)).status, 404, 'attempt is single-use');
-    assert.equal((await web('/auth/login/' + 'B'.repeat(43))).status, 404);
-    for (let i = 0; i < 4; i++) await login();
-    assert.equal((await login()).status, 429, 'at most 5 per minute');
-
-    const earlyCred = { token: 'bhp_' + 'a'.repeat(43), userId: 'user_1', clientId: 'c'.repeat(22), sessionId: '11111111-2222-4333-8444-555555555555', expiresAt: Math.floor(Date.now() / 1000) + 3600, loginOrder: 7 };
-    assert.deepEqual(await control('/account/migrate', { credential: earlyCred }), { migrated: true });
-    assert.equal((await (await web('/auth/session', { cookie })).json()).account_required, false);
+    // Even with a valid Web cookie, the former Web OAuth entrypoints are gone.
+    assert.equal((await web('/auth/login', { method: 'POST', body: {} })).status, 410);
+    assert.equal((await web('/auth/login/' + 'B'.repeat(43))).status, 410);
+    assert.equal((await web('/auth/login/' + 'B'.repeat(43) + '/cancel', { method: 'POST', body: {} })).status, 410);
 
     // Local browser with no ticket: the machine's signed-in account lets it in; foreign origins never.
     assert.equal((await web('/auth/local', { method: 'POST', body: {}, headers: { origin: 'http://evil.test' } })).status, 403);
@@ -181,9 +206,108 @@ if (process.argv.includes('--fixture-daemon')) {
     const calls = await (await web(`/sessions/${session.id}/calls?limit=10`, { cookie })).json();
     assert.ok(calls.calls.some((c) => c.tool === 'todo'));
     assert.ok(!JSON.stringify(calls).includes(sid), 'recorded args drop the credential');
+    // page is 0-based (0 = newest, same as the VS Code sidebar); an anchor freezes deep pages.
+    const p0 = await (await web(`/sessions/${session.id}/calls?page=0&limit=1`, { cookie })).json();
+    assert.equal(p0.calls.length, 1);
+    assert.equal(p0.calls[0].id, calls.calls[0].id, 'page 0 is the newest call');
+    assert.ok(p0.max_seq > 0);
+    assert.equal(p0.window_total, p0.total);
+    const p1 = await (await web(`/sessions/${session.id}/calls?page=1&limit=1&anchor=${p0.max_seq}`, { cookie })).json();
+    assert.equal(p1.calls[0].id, calls.calls[1].id, 'page 1 continues right after page 0');
+    const below = await (await web(`/sessions/${session.id}/calls?page=0&limit=1&anchor=${p0.max_seq - 1}`, { cookie })).json();
+    assert.equal(below.calls[0].id, calls.calls[1].id, 'rows newer than the anchor are left out');
+    assert.equal(below.window_total, p0.total - 1);
+
+    // 会话时间线（session-feed 计划）：feed（full + 增量 + 长轮询）与 history 在同一个登录后的 data 路由上。
+    const feed = await (await web(`/sessions/${session.id}/feed?limit=10`, { cookie })).json();
+    assert.equal(feed.full, true);
+    assert.equal(typeof feed.boot, 'string');
+    assert.ok(feed.offset > 0);
+    assert.deepEqual(feed.calls.map((c) => c.id), calls.calls.map((c) => c.id).reverse(), 'feed 的头部窗口与 /calls 同一批调用（时间线升序）');
+    assert.ok(feed.calls.every((c) => typeof c.created_at === 'string' && 'args' in c), 'Web 与 /calls 同样的投影字段');
+    assert.ok(!JSON.stringify(feed).includes(sid), 'recorded args drop the credential');
+    assert.equal(feed.state.name, 'local web fixture');
+    const hist = await (await web(`/sessions/${session.id}/history?limit=10`, { cookie })).json();
+    assert.deepEqual(hist.items.calls.map((c) => c.id), feed.calls.map((c) => c.id), 'history 从最新开始，与 feed 头部同一批');
+    assert.equal(hist.older, null);
+    assert.equal((await web(`/sessions/nope/feed`, { cookie })).status, 404);
+    // 增量：再调一次工具，带着 offset/boot 只拿到新的那一条；空闲时长轮询在 wait 秒后返回空
+    const quiet = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}&wait=1`, { cookie })).json();
+    assert.deepEqual([quiet.full, quiet.calls, quiet.messages], [false, [], []]);
+    await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+    const inc = await (await web(`/sessions/${session.id}/feed?offset=${feed.offset}&boot=${feed.boot}`, { cookie })).json();
+    assert.equal(inc.full, false);
+    assert.ok(inc.calls.length >= 1 && inc.calls.every((c) => c.tool === 'guide'));
+    assert.ok(inc.offset > feed.offset);
     const todos = await (await web(`/sessions/${session.id}/todos`, { cookie })).json();
     assert.deepEqual(todos.items.map((i) => i.content), ['first step', 'second step']);
     assert.equal((await web('/sessions/nope/todos', { cookie })).status, 404);
+
+    // No user message: a completed guide call supplies the boundary for direct/unpaired sessions.
+    const noMarkerSession = await control('/sessions', { workspace_path: iso.home, name: 'no boundary' });
+    const noMarker = await (await web(`/sessions/${noMarkerSession.id}/current-turn-diff`, { cookie })).json();
+    assert.equal(noMarker.turnAt, null);
+    assert.deepEqual(noMarker.files, []);
+
+    // Current-turn review uses persisted Editor navigation hashes. Repeating guide starts a new
+    // direct work round without any Courier/WebAgent messages.
+    await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'turn.txt', operation: { command: 'create', content: 'before\n' } } });
+    await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'old-only.txt', operation: { command: 'create', content: 'prior\n' } } });
+    const firstGuideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+    assert.notEqual(firstGuideRound.turnAt, null, 'a guide boundary exists without sent messages');
+    assert.deepEqual(firstGuideRound.files.map((file) => file.path), ['old-only.txt', 'turn.txt']);
+    await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+    const newGuideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+    assert.deepEqual(newGuideRound.files, [], 'earlier editor writes do not leak into the next guide round');
+
+    const [{ openDb }, { CourierMessages }] = await Promise.all([
+      import('../dist/storage/db.js'), import('../dist/courier/messages.js'),
+    ]);
+    const turnStorage = openDb(iso.dbPath);
+    try {
+      const messageStore = new CourierMessages(turnStorage.db);
+      const turnAt = Date.now();
+      messageStore.add({ sessionId: session.id, kind: 'user', text: 'current turn', at: turnAt, status: 'sent', site: null, targetId: null, conversationKey: null });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'turn.txt', operation: { command: 'str_replace', old_text: 'before', new_text: 'after' } } });
+      const turnResponse = await web(`/sessions/${session.id}/current-turn-diff`, { cookie });
+      assert.equal(turnResponse.status, 200);
+      assert.equal(turnResponse.headers.get('cache-control'), 'no-store');
+      const turnDiff = await turnResponse.json();
+      assert.equal(turnDiff.turnAt, turnAt);
+      assert.equal(turnDiff.files.length, 1, 'previous-turn files are not included');
+      assert.equal(turnDiff.files[0].path, 'turn.txt');
+      assert.equal(turnDiff.files[0].status, 'ready');
+      assert.deepEqual([turnDiff.files[0].added, turnDiff.files[0].removed], [1, 1]);
+      assert.ok(turnDiff.files[0].lines.some((line) => line.type === 'remove' && line.text === 'before'));
+      assert.ok(turnDiff.files[0].lines.some((line) => line.type === 'add' && line.text === 'after'));
+      assert.equal((await fetch(`${base}/remote-api/v1/sessions/${session.id}/current-turn-diff`)).status, 404, 'the feature is Web-only');
+
+      // A delete has only hashes and summary stats in the audit row, not the deleted source text.
+      const deleteTurnAt = Date.now();
+      messageStore.add({ sessionId: session.id, kind: 'user', text: 'delete turn', at: deleteTurnAt, status: 'sent', site: null, targetId: null, conversationKey: null });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'old-only.txt', operation: { command: 'delete' } } });
+      const deleted = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+      assert.equal(deleted.turnAt, deleteTurnAt);
+      assert.deepEqual(deleted.files.map((file) => file.path), ['old-only.txt']);
+      assert.equal(deleted.files[0].status, 'deleted');
+      assert.deepEqual(deleted.files[0].lines, [], 'deleted content is not fabricated from summary stats');
+
+      // In an unpaired session an additional guide supersedes the old Courier send marker.
+      await client.callTool({ name: 'guide', arguments: { sessionId: sid } });
+      await client.callTool({ name: 'editor', arguments: { sessionId: sid, path: 'guide-only.txt', operation: { command: 'create', content: 'local round\n' } } });
+      // Calls can share one timestamp; rowid still determines whether the edit followed guide.
+      const guideMarker = turnStorage.db.prepare("SELECT created_at AS at FROM tool_calls WHERE session_id = ? AND tool = 'guide' ORDER BY rowid DESC LIMIT 1").get(session.id);
+      const lastCall = turnStorage.db.prepare('SELECT id FROM tool_calls WHERE session_id = ? ORDER BY rowid DESC LIMIT 1').get(session.id);
+      turnStorage.db.prepare('UPDATE tool_calls SET created_at = ? WHERE id = ?').run(guideMarker.at, lastCall.id);
+      const guideRound = await (await web(`/sessions/${session.id}/current-turn-diff`, { cookie })).json();
+      assert.equal(guideRound.turnAt, guideMarker.at);
+      assert.deepEqual(guideRound.files.map((file) => file.path), ['guide-only.txt'], 'old message and previous guide edits do not leak');
+      assert.equal(guideRound.files[0].status, 'ready');
+    } finally {
+      turnStorage.close();
+    }
 
     // Cross-origin and header-less callers are refused even with the cookie.
     assert.equal((await web('/sessions', { cookie, headers: { 'x-blackhole-web': '' } })).status, 403);
@@ -200,6 +324,13 @@ if (process.argv.includes('--fixture-daemon')) {
     const exBody = me; // /auth/session echoes the token for page reloads
     const csrf = exBody.csrf;
     assert.match(csrf, /^[A-Za-z0-9_-]{43}$/);
+    // A stale same-named cookie sent first (longer path, older build, another port on
+    // this host) must not hide the valid one; the CSRF token stays bound to the valid one.
+    const staleFirst = `bh_web=${'A'.repeat(43)}; ${cookie}`;
+    const staleSession = await web('/auth/session', { cookie: staleFirst });
+    assert.equal(staleSession.status, 200, 'stale cookie first still signs in');
+    assert.equal((await staleSession.json()).csrf, csrf);
+    assert.equal((await web('/auth/session', { cookie: `bh_web=${'A'.repeat(43)}; bh_web=${'B'.repeat(43)}` })).status, 401, 'only stale cookies');
     const write = (route, body, { method = 'POST', headers = {} } = {}) => web(route, { cookie, method, body, headers: { 'x-blackhole-csrf': csrf, ...headers } });
     const fsTmp = await import('node:fs');
     const wsDir = path.join(iso.home, 'proj Ü space');
@@ -211,6 +342,45 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await write('/sessions', { workspace_path: wsDir }, { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
     const textBody = await fetch(base + '/web-api/v1/sessions', { method: 'POST', headers: { 'x-blackhole-web': '1', cookie, origin, 'x-blackhole-csrf': csrf, 'content-type': 'text/plain' }, body: 'x' });
     assert.equal(textBody.status, 415);
+
+    // OpenAI tunnel in the web settings: VS Code's handlers behind cookie + CSRF (loopback peer only).
+    const oaRes = await web('/openai-tunnel', { cookie });
+    assert.equal(oaRes.status, 200);
+    const oaView = await oaRes.json();
+    assert.equal(typeof oaView.status, 'string');
+    assert.equal(typeof oaView.credential_revision, 'number');
+    assert.equal((await web('/openai-tunnel', {})).status, 401, 'openai view needs the session cookie');
+    assert.deepEqual(await (await web('/openai-tunnel/install', { cookie })).json(), { state: 'idle' }, 'install job idle (never started here)');
+    assert.equal((await web('/openai-tunnel/stop', { cookie, method: 'POST', body: { daemon_id: 'x', run_id: null } })).status, 403, 'openai writes need csrf');
+    assert.equal((await write('/openai-tunnel/stop', { daemon_id: 'not-this-daemon', run_id: null })).status, 409, 'stale daemon id');
+    const daemonId = (await control('/health')).daemon_id;
+    const badKey = await write('/openai-tunnel/credential', { daemon_id: daemonId, credential_revision: oaView.credential_revision, api_key: 'sk web secret' }, { method: 'PUT' });
+    assert.equal(badKey.status, 400);
+    const badKeyText = await badKey.text();
+    assert.match(badKeyText, /invalid_api_key/);
+    assert.ok(!badKeyText.includes('sk web secret'), 'the key is never echoed');
+    assert.equal((await fetch(base + '/remote-api/v1/openai-tunnel')).ok, false, 'not on the phone surface');
+
+    // Presence: an open Local Web page holds one long-lived response; the watchdog counts it
+    // like a VS Code window, while tray quit (/clients others_active) still ignores it.
+    assert.equal(typeof (await control('/health')).settings_revision, 'number', 'health carries the settings revision');
+    assert.equal((await web('/presence')).status, 401, 'presence needs the session cookie');
+    assert.equal((await fetch(base + '/remote-api/v1/presence')).ok, false, 'no presence on the phone surface');
+    assert.equal((await control('/clients')).web_present, false);
+    const presenceStop = new AbortController();
+    const presence = await fetch(base + '/web-api/v1/presence', { headers: { 'x-blackhole-web': '1', cookie }, signal: presenceStop.signal });
+    assert.equal(presence.status, 200);
+    assert.match(presence.headers.get('content-type') ?? '', /^text\/event-stream/);
+    const firstChunk = await presence.body.getReader().read();
+    assert.equal(firstChunk.done, false, 'the stream stays open');
+    assert.equal((await control('/clients')).web_present, true);
+    presenceStop.abort();
+    let present = true;
+    for (let i = 0; i < 40 && present; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      present = (await control('/clients')).web_present;
+    }
+    assert.equal(present, false, 'closing the page ends its presence');
     assert.equal((await write('/sessions', { workspace_path: 'x'.repeat(70 * 1024) })).status, 413);
     assert.equal((await write('/sessions', { workspace_path: wsDir, role: 'admin' })).status, 400, 'unknown keys rejected');
     assert.equal((await write('/sessions', { workspace_path: path.join(iso.home, 'missing') })).status, 400);
@@ -287,7 +457,7 @@ if (process.argv.includes('--fixture-daemon')) {
     const acc = await (await web('/account', { cookie })).json();
     assert.equal(acc.userId, 'user_1');
     assert.equal(acc.storage, 'available');
-    assert.equal(acc.signIn.state, 'failed', 'the offline browser-login attempt above');
+    assert.equal(acc.signIn.state, 'idle', 'passive Web never starts a login job');
     assert.ok(!JSON.stringify(acc).includes('bhp_'), 'token never leaves the daemon');
     assert.ok(!JSON.stringify(await control('/account')).includes('bhp_'));
     assert.equal((await post('/account/call', { method: 'migrationCredential' })).status, 400, 'only whitelisted methods');
@@ -331,7 +501,32 @@ if (process.argv.includes('--fixture-daemon')) {
     assert.equal((await write(`/sessions/${session.id}/pause`, {})).status, 404);
 
     // Logout revokes the session.
-    assert.equal((await web('/auth/logout', { cookie, method: 'POST', body: {} })).status, 200);
+    // Sent behind a stale same-named cookie: the valid session is the one revoked.
+    assert.equal((await web('/auth/logout', { cookie: staleFirst, method: 'POST', body: {} })).status, 200);
     assert.equal((await web('/sessions', { cookie })).status, 401);
+  });
+
+  test('channel watchdog: an open Local Web page counts as present; the grace period starts when it closes', async (t) => {
+    const { startChannelWatchdog, STALE_MS } = await import('../dist/tunnel/watchdog.js');
+    t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 1_000_000 });
+    let stops = 0;
+    const deps = {
+      lastHeartbeatAt: Date.now(),
+      tunnel: { status: 'online', stop: async () => { stops++; } },
+      log: () => {},
+      webPresence: new Set([{}]),
+    };
+    const dog = startChannelWatchdog(deps);
+    t.after(() => dog.stop());
+    // One watchdog tick (15 s) per step, so Date moves with each check.
+    const advance = (ms) => { for (let left = ms; left > 0; left -= 15_000) t.mock.timers.tick(Math.min(15_000, left)); };
+    advance(STALE_MS * 4);
+    assert.equal(stops, 0, 'no VS Code heartbeat, but a page is open');
+    deps.webPresence.clear();
+    deps.lastHeartbeatAt = Date.now(); // what the presence route does when the page goes away
+    advance(STALE_MS);
+    assert.equal(stops, 0, 'grace period after the page closed');
+    advance(15_000);
+    assert.equal(stops, 1, 'stale without any window or page');
   });
 }

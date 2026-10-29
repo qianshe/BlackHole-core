@@ -47,15 +47,39 @@
 .secret { font-size: var(--fs-lg); font-weight: 600; letter-spacing: 0.02em; }
 .secretMuted { color: var(--text-2); }
 
-.picker { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
-.pickerBar { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.pickerPath { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.pickerList { list-style: none; margin: 0; padding: var(--sp-1); max-height: 240px; overflow: auto; }
-.pickerItem { display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: 32px; padding: 0 var(--sp-2); border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); text-align: left; border-radius: var(--r-sm); cursor: pointer; }
-.pickerItem:hover { background: var(--surface-hover); }
-.pickerItem span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pickerNote { padding: var(--sp-2); color: var(--text-3); font-size: var(--fs-sm); }
-.flip { transform: rotate(180deg); }
+/* Core-scoped project folder browser (shared by project management and new session). */
+.folderBrowser { display: flex; flex-direction: column; gap: 11px; min-width: 0; color: var(--text); }
+.folderSectionLabel { display: block; font-size: var(--fs-xs); font-weight: 600; color: var(--text-2); }
+.folderNavigation { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.folderCrumbs { display: flex; align-items: center; gap: 2px; min-height: 29px; padding: 0; overflow-x: auto; scrollbar-width: thin; }
+.folderCrumbPiece { display: inline-flex; gap: 2px; align-items: center; flex: none; }
+.folderCrumbPiece > svg { color: var(--text-3); }
+.folderCrumb { flex: none; min-height: 27px; padding: 0 7px; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--text-2); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+.folderCrumb:not(:disabled):hover { background: var(--surface-hover); color: var(--text); }
+.folderCrumb:disabled { cursor: default; font-weight: 650; color: var(--text); opacity: 1; }
+.folderAddress { display: flex; flex-direction: column; gap: 7px; padding: 0; }
+.folderAddressRow { display: flex; gap: 8px; align-items: center; }
+.folderAddressRow input { flex: 1; min-width: 0; height: 36px; padding: 0 11px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md); color: var(--text); font: inherit; font-size: var(--fs-sm); }
+.folderAddressRow input::placeholder { color: var(--text-3); }
+.folderGo { height: 36px; padding: 0 15px; flex: none; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md); color: var(--text); font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; }
+.folderGo:not(:disabled):hover { background: var(--surface-hover); }
+.folderGo:disabled { opacity: .5; cursor: not-allowed; }
+.folderDirectory { display: flex; flex-direction: column; min-width: 0; min-height: 165px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.folderDirectoryHead { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-bottom: 1px solid var(--border); }
+.folderDirectoryTitle { display: inline-flex; align-items: center; gap: 8px; flex: none; font-size: var(--fs-sm); font-weight: 650; }
+.folderDirectoryTitle svg { color: var(--text-3); }
+.folderDirectoryList { list-style: none; min-height: 165px; max-height: min(245px, 38vh); overflow-y: auto; margin: 0; padding: 5px; scrollbar-width: thin; }
+.folderDirectoryItem { display: flex; align-items: center; gap: 10px; width: 100%; height: 38px; padding: 0 11px; border: 0; border-radius: var(--r-md); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.folderDirectoryItem:hover { background: var(--surface-hover); }
+.folderDirectoryItem svg:first-child { flex: none; color: var(--accent-text); }
+.folderDirectoryItem span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folderDirectoryItem svg:last-child { flex: none; color: var(--text-3); }
+.folderNote, .folderError { padding: 13px 12px; font-size: var(--fs-sm); line-height: 1.6; color: var(--text-3); }
+.folderError { color: var(--bad); }
+.folderCrumb:focus-visible, .folderAddressRow input:focus-visible, .folderGo:focus-visible, .folderDirectoryItem:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 540px) {
+  .folderDirectoryList { min-height: 145px; max-height: min(220px, 28vh); }
+}
 
 .projectList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
 .project { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); flex-wrap: wrap; }

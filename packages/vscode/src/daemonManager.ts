@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { connect } from 'node:net';
-import { EventEmitter, ProgressLocation, env as vscodeEnv, window, workspace, type Disposable, type ExtensionContext, type OutputChannel } from 'vscode';
+import { commands, EventEmitter, ProgressLocation, env as vscodeEnv, window, workspace, type Disposable, type ExtensionContext, type OutputChannel } from 'vscode';
 import type { ExtConfig } from './config';
 import { resolveCloudEndpoint } from './cloudEnvironment';
 import type { ControlApi, Health } from './controlApi';
+import type { ManagedCoreSession } from './managedCoreSession';
 import { pathFromEnvironment, prependToolDirectory, resolveExecutionRg } from './vscodeRipgrep';
+import { reportHostCoreFailure } from './hostCoreUi';
 
 
 type TerminalProfile = { path?: string | string[]; source?: string } | null;
@@ -30,9 +32,14 @@ export function defaultTerminalShell(): string | undefined {
 }
 export type DaemonState = 'stopped' | 'starting' | 'running' | 'error';
 
+
 /** globalState key holding the fingerprint of the last daemon spawn. */
 const FP_KEY = 'blackhole.daemonStartFingerprint';
 const START_TIMEOUT_MS = 12_000;
+// If the new daemon has already claimed loopback, startup is real but its control
+// plane may still be doing bounded local initialization. Give only that proven
+// listener a grace window; a failed spawn with no listener still fails at 12s.
+const START_LISTENER_GRACE_MS = 18_000;
 const POST_START_HEALTH_RETRIES = 4;
 const RECONCILE_BACKOFF_MS = 15_000;
 const SHUTDOWN_TIMEOUT_MS = 12_000;
@@ -41,6 +48,12 @@ const SHUTDOWN_TIMEOUT_MS = 12_000;
 const HANDOFF_HEALTH_TIMEOUT_MS = 2_000;
 const SHUTDOWN_POLL_MS = 100;
 const SHUTDOWN_SETTLE_MS = 150;
+// Explicit Manager refusals happen before a daemon shutdown is sealed. They
+// must not turn a healthy, renewable Shared Core into an 'unknown' failure.
+const MANAGED_MAINTENANCE_REFUSALS = new Set([
+  'active_work', 'active_clients', 'active_requests', 'active_handlers',
+  'settings_revision_conflict', 'core_update_required', 'manager_key_mismatch', 'lock_busy',
+]);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -75,6 +88,10 @@ export class DaemonManager implements Disposable {
   private lastAutoRestartWarning?: string;
   /** Control requests keep using the old endpoint until its shutdown is confirmed. */
   private managedPort: number;
+  private coreSession?: ManagedCoreSession;
+  private bridgePending = false;
+  private lastManagedMaintenanceRefusal = '';
+  private leaseLossPrompted = false;
 
   constructor(
     private readonly context: ExtensionContext,
@@ -101,6 +118,43 @@ export class DaemonManager implements Disposable {
     if (this.disposed || this.pendingOperations > 0 || observation.revision !== this.lifecycleRevision
       || observation.port !== this.cfg().port || observation.port !== this.managedPort
       || health.ok !== true || !health.daemon_id || typeof health.version !== 'string') return false;
+    if (this.bridgePending) return false;
+    if (this.coreSession) {
+      // HTTP health proves the Core is alive, NOT that this VS Code window
+      // currently owns a Manager lease. An initial ensure-core failure or an
+      // in-flight cold switch can leave the Core healthy with NO attachment.
+      // Never relabel that state as a forged identity mismatch, nor erase the
+      // actionable lifecycle error (e.g. bundled_core_update_required).
+      const binding = this.coreSession.bindingState;
+      if (binding === 'attaching') return false;
+      if (binding === 'unbound' || binding === 'closed') {
+        if (this.state !== 'error') this.setState('error', 'managed_core_not_attached');
+        if (binding === 'unbound' && this.lastError === 'managed_core_lease_lost'
+          && health.lifecycle_state === 'managed' && Date.now() >= this.nextReconcileAt) {
+          this.nextReconcileAt = Date.now() + RECONCILE_BACKOFF_MS;
+          void this.ensureRunning();
+        }
+        return false;
+      }
+      if (binding === 'maintenance_unknown') {
+        if (this.state !== 'error') this.setState('error', 'maintenance_outcome_requires_inspection');
+        return false;
+      }
+      if (binding === 'renewal_unconfirmed') {
+        // Manager may be busy during a legitimate lease renewal. Do not claim
+        // running, but also do not invent a positive identity conflict.
+        this.setState('starting');
+        return false;
+      }
+      if (binding === 'lease_expired') {
+        this.setState('error', 'managed_core_lease_expired');
+        return false;
+      }
+      const usable = this.coreSession.matchesHealth(health as unknown as Record<string, unknown>);
+      this.setState(usable ? 'running' : 'error', usable ? '' : 'managed_core_identity_or_lease_mismatch');
+      return usable;
+    }
+    if (health.lifecycle_state === 'managed') return false;
     const desired = this.fingerprint();
     const verified = health.version === this.context.extension.packageJSON.version
       && health.start_fingerprint === desired;
@@ -153,7 +207,8 @@ export class DaemonManager implements Disposable {
     if (!this.disposed) {
       this.setState('error', reason);
       this.log.appendLine(`daemon lifecycle failed: ${reason}`);
-      void window.showErrorMessage(`BlackHole: daemon 启动或交接失败（${reason}），详见输出面板`);
+      if (this.context.extension.packageJSON.blackholeSharedCore?.mode === 'host-node') reportHostCoreFailure(error);
+      else void window.showErrorMessage(`BlackHole: daemon 启动或交接失败（${reason}），详见输出面板`);
     }
     return false;
   }
@@ -171,6 +226,104 @@ export class DaemonManager implements Disposable {
     this.state = state;
     this.lastError = error;
     this.events.fire(state);
+  }
+
+  pauseForBridge(): void { this.bridgePending = true; }
+  allowLegacyStartup(): void { if (!this.coreSession) this.bridgePending = false; }
+  useCoreManager(session: ManagedCoreSession): void {
+    if (this.pendingOperations > 0) throw new Error('managed_runtime_switch_busy');
+    this.coreSession = session;
+    this.bridgePending = false;
+    this.reconcileNeeded = false;
+    this.requireExactReconcile = false;
+    this.managedPort = this.cfg().port;
+  }
+  private blockLegacyManagedListener(health: Health): false {
+    this.reconcileNeeded = false; this.requireExactReconcile = false;
+    this.setState('error', 'core_manager_required');
+    const key = `managed-listener:${health.daemon_id}`;
+    if (this.lastAutoRestartWarning !== key) {
+      this.lastAutoRestartWarning = key;
+      this.log.appendLine(`managed Core v${health.version} still owns the port; legacy fingerprint restart is disabled. Stop it through its matching Manager before downgrading.`);
+      void window.showWarningMessage('BlackHole：端口仍由新版共享 Core 使用。旧版不能用配置指纹重启它；请从配套新版宿主正常停止 Core 后再回退。未重复停止或另启后台。');
+    }
+    return false;
+  }
+  get isManagedCore(): boolean { return !!this.coreSession; }
+  /** Only the native VS Code host can request a signed Manager upgrade. */
+  get managedCoreSession(): ManagedCoreSession | undefined { return this.coreSession; }
+  get maintenanceRefusal(): string { return this.lastManagedMaintenanceRefusal; }
+  get managedCoreTarget(): string | undefined {
+    const r = this.coreSession?.receipt;
+    return r ? `${r.daemonId}/${r.startFingerprint}` : undefined;
+  }
+  maintainSharedCore(operation: 'stop' | 'restart', confirmed: boolean, expectedTarget: string | undefined, settingsRevision?: number): Promise<boolean> {
+    return this.runLifecycle(async () => {
+      if (!confirmed) throw new Error('maintenance_confirmation_required');
+      if (!this.coreSession || !expectedTarget || expectedTarget !== this.managedCoreTarget) throw new Error('maintenance_target_changed');
+      if (this.cfg().port !== this.managedPort) throw new Error('managed_port_change_requires_manager_configuration');
+      this.reconcileNeeded = false; this.requireExactReconcile = false;
+      this.lastManagedMaintenanceRefusal = '';
+      try {
+        const result = await this.coreSession.maintain(operation, true, settingsRevision);
+        this.setState(result.operation === 'stop' ? 'stopped' : 'running');
+        return true;
+      } catch (e) {
+        // Native/extension-host bridges may throw Error objects from another
+        // JavaScript realm; use only an exact, allowlisted error code.
+        const reason = typeof (e as { message?: unknown } | null)?.message === 'string' ? (e as { message: string }).message : '';
+        if (!MANAGED_MAINTENANCE_REFUSALS.has(reason)) throw e;
+        this.lastManagedMaintenanceRefusal = reason;
+        // A verified refusal changes neither the daemon nor the renewable lease.
+        // Read its exact identity before reporting 'running'. Unknown outcomes
+        // still propagate to runLifecycle's fail-closed error handling.
+        const live = await this.health(2_000);
+        if (live && this.coreSession.matchesHealth(live as unknown as Record<string, unknown>)) this.setState('running');
+        else this.setState('error', 'managed_core_identity_unconfirmed_after_refusal');
+        this.log.appendLine(`Shared Core maintenance refused: ${reason}; no automatic retry or shutdown was attempted.`);
+        return false;
+      }
+    });
+  }
+  async releaseManagedClientForRecovery(): Promise<void> {
+    if (this.pendingOperations) throw new Error('maintenance_in_progress');
+    await this.coreSession?.close();
+    this.setState('error', 'managed_client_detached_reload_required');
+  }
+  managedLeaseLost(reason?: string): void {
+    if (this.disposed) return;
+    const code = typeof reason === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(reason)
+      ? reason : 'unconfirmed';
+    this.log.appendLine('Shared Core lease lost: ' + code + '; no daemon shutdown was requested.');
+    this.setState('error', 'managed_core_lease_lost');
+    // An unknown signed Stop outcome must be inspected, not reattached.
+    if (code === 'maintenance_outcome_requires_inspection' || this.leaseLossPrompted) return;
+    this.leaseLossPrompted = true;
+    void window.showWarningMessage(
+      'BlackHole：本窗口的共享 Core 租约已丢失（' + code + '）。后台服务可能仍在运行，没有自动重启或停止。可以验证并重新连接当前 Core。',
+      '验证并重新连接',
+    ).then(choice => {
+      if (choice === '验证并重新连接') void commands.executeCommand('blackhole.retrySharedCore');
+    });
+  }
+
+  /** A Manager-pinned rebind has independently verified the same daemon, Core
+   * descriptor and data root. Clear the transient idle/sleep status promptly;
+   * waiting for the unfocused UI poller can otherwise leave a red icon long
+   * after the Core and lease are healthy again. */
+  managedLeaseRebound(): void {
+    if (this.disposed || !this.coreSession || this.coreSession.bindingState !== 'bound') return;
+    if (this.state === 'error' && !['managed_core_lease_lost', 'managed_core_lease_expired',
+      'managed_core_not_attached'].includes(this.lastError)) return;
+    this.lifecycleRevision++;
+    this.leaseLossPrompted = false;
+    this.log.appendLine('Shared Core lease reattached to a verified daemon after inactivity or a committed upgrade.');
+    this.setState('running');
+  }
+  private managedMutationBlocked(): false {
+    this.lastError = 'managed_stop_not_available: use coordinated Manager maintenance; Core was not stopped';
+    this.log.appendLine(this.lastError);
+    return false;
   }
 
   private entryPath(config = this.cfg()): string {
@@ -211,6 +364,7 @@ export class DaemonManager implements Disposable {
   }
 
   ensureRunning(): Promise<boolean> {
+    if (this.bridgePending) return Promise.resolve(false);
     if (this.startPending) return this.startPending;
     const task = this.runLifecycle(() => this.ensureRunningOnce());
     const shared = task.finally(() => {
@@ -220,14 +374,44 @@ export class DaemonManager implements Disposable {
     return shared;
   }
 
+  /** Explicitly selected, verified bundled Core after a previous startup
+   * refusal. Join the previous attempt before starting a fresh Manager attach,
+   * or ensureRunning() would return its stale failed promise and never write a
+   * VS Code lease. No daemon restart or implicit Core version transition.
+   * A failed/unknown attach is NOT safe to retry as an ordinary cold switch. */
+  async attachAfterVerifiedColdSelection(): Promise<boolean> {
+    if (this.disposed || this.bridgePending || !this.coreSession) return false;
+    const prior = this.startPending;
+    if (prior) {
+      const ready = await prior;
+      if (ready && this.coreSession.bindingState === 'bound') return true;
+      if (!['bundled_core_update_required', 'core_missing', 'managed_core_required', 'migration_pending', 'legacy_core_running'].includes(this.lastError)) {
+        this.log.appendLine('Shared Core cold selection did not retry an ambiguous previous startup.');
+        return false;
+      }
+    }
+    return this.ensureRunning();
+  }
+
   private async ensureRunningOnce(): Promise<boolean> {
-    if (this.disposed) return false;
+    if (this.disposed || this.bridgePending) return false;
+    if (this.coreSession) {
+      this.setState('starting');
+      const receipt = await this.coreSession.attach(this.cfg().port);
+      this.managedPort = Number(new URL(receipt.localUrl).port);
+      if (this.disposed) return false;
+      this.managedPort = this.cfg().port;
+      this.setState('running');
+      this.leaseLossPrompted = false;
+      return true;
+    }
     if (this.managedPort !== this.cfg().port) {
       if (!(await this.stopOnce(false))) return false;
       this.managedPort = this.cfg().port;
     }
     const attached = await this.health();
     if (attached) {
+      if (attached.lifecycle_state === 'managed') return this.blockLegacyManagedListener(attached);
       const desired = this.fingerprint();
       if (attached.version === this.context.extension.packageJSON.version
         && attached.start_fingerprint === desired) this.setState('running');
@@ -328,7 +512,8 @@ export class DaemonManager implements Disposable {
     let exited: string | undefined;
     try {
       fd = fs.openSync(logFile, 'a');
-      child = spawn(process.execPath, [entry, 'serve', '--port', String(c.port)], {
+      const executable = process.execPath;
+      child = spawn(executable, [entry, 'serve', '--port', String(c.port)], {
         env,
         detached: true,
         windowsHide: true,
@@ -344,49 +529,69 @@ export class DaemonManager implements Disposable {
       if (fd !== undefined) fs.closeSync(fd);
     }
 
-    const deadline = Date.now() + START_TIMEOUT_MS;
-    while (Date.now() < deadline && !this.disposed) {
-      const current = await this.health(750);
-      if (this.disposed) return false;
-      if (current) {
-        const matchesLaunch = current.daemon_id && current.version === this.context.extension.packageJSON.version
-          && current.start_fingerprint === spawnFingerprint;
-        if (matchesLaunch) {
-          // One response can arrive just before a competing window retires the
-          // listener. Confirm the same identity before claiming this launch.
-          const confirmed = await this.health(750);
-          if (!confirmed || confirmed.daemon_id !== current.daemon_id
-            || confirmed.version !== current.version || confirmed.start_fingerprint !== spawnFingerprint) {
-            await sleep(100);
-            continue;
-          }
-          this.setState('running');
-          // This PID is only our ATTEMPT: another window can win with the same
-          // fingerprint. Do not claim the observed listener belongs to our child.
-          this.log.appendLine(`daemon healthy id=${current.daemon_id} attemptedSpawnPid=${child.pid} entry=${entry} log=${logFile}`);
-          await this.context.globalState.update(FP_KEY, spawnFingerprint);
-          return true;
-        }
-        if ((launchError || exited) && current.daemon_id && typeof current.version === 'string') {
-          // Our candidate lost the port race. Attach to the actual listener so
-          // activation can reconcile it; never persist OUR candidate's fingerprint
-          // or report its PID as the live daemon's PID.
-          this.reconcileNeeded = true;
-          this.setState('starting');
-          this.log.appendLine(`daemon candidate lost port race; attached to v${current.version} id=${current.daemon_id} attemptedSpawnPid=${child.pid} log=${logFile}`);
-          return true;
-        }
+    const acceptHealth = async (current: Health | undefined): Promise<boolean> => {
+      if (!current) return false;
+      const matchesLaunch = current.daemon_id && current.version === this.context.extension.packageJSON.version
+        && current.start_fingerprint === spawnFingerprint;
+      if (matchesLaunch) {
+        // One response can arrive just before a competing window retires the
+        // listener. Confirm the same identity before claiming this launch.
+        const confirmed = await this.health(750);
+        if (!confirmed || confirmed.daemon_id !== current.daemon_id
+          || confirmed.version !== current.version || confirmed.start_fingerprint !== spawnFingerprint) return false;
+        this.setState('running');
+        // This PID is only our ATTEMPT: another window can win with the same
+        // fingerprint. Do not claim the observed listener belongs to our child.
+        this.log.appendLine(`daemon healthy id=${current.daemon_id} attemptedSpawnPid=${child.pid} entry=${entry} log=${logFile}`);
+        await this.context.globalState.update(FP_KEY, spawnFingerprint);
+        return true;
       }
-      // A port-race loser can exit while the winner is still initializing. Wait
-      // for that listener, but do not spend 12s on a failed spawn with no owner.
-      if ((launchError || exited) && !(await this.listenerOpen())) {
-        return this.startFailure(launchError ?? new Error(exited));
+      if ((launchError || exited) && current.daemon_id && typeof current.version === 'string') {
+        // Our candidate lost the port race. Attach to the actual listener so
+        // activation can reconcile it; never persist OUR candidate's fingerprint
+        // or report its PID as the live daemon's PID.
+        this.reconcileNeeded = true;
+        this.setState('starting');
+        this.log.appendLine(`daemon candidate lost port race; attached to v${current.version} id=${current.daemon_id} attemptedSpawnPid=${child.pid} log=${logFile}`);
+        return true;
       }
-      await sleep(250);
+      return false;
+    };
+
+    let terminalStartFailure = false;
+    const waitUntil = async (deadline: number, healthBudget = 750): Promise<boolean> => {
+      while (Date.now() < deadline && !this.disposed) {
+        if (await acceptHealth(await this.health(healthBudget))) return true;
+        // A port-race loser can exit while the winner is still initializing. Wait
+        // for that listener, but do not spend the whole window on a failed spawn.
+        if ((launchError || exited) && !(await this.listenerOpen())) {
+          terminalStartFailure = true;
+          return this.startFailure(launchError ?? new Error(exited));
+        }
+        await sleep(250);
+      }
+      return false;
+    };
+
+    if (await waitUntil(Date.now() + START_TIMEOUT_MS)) return true;
+    if (this.disposed || terminalStartFailure) return false;
+
+    // The daemon claims the port at the start of boot, before slower local probes
+    // finish and /api/health is mounted. A live loopback listener is positive
+    // evidence that startup is still progressing, so allow a bounded grace period.
+    // No listener => preserve the original 12s fail-fast behavior.
+    if (await this.listenerOpen()) {
+      this.log.appendLine(`daemon listener is open but control API is still initializing after ${START_TIMEOUT_MS / 1000}s; waiting up to ${START_LISTENER_GRACE_MS / 1000}s more`);
+      if (await waitUntil(Date.now() + START_LISTENER_GRACE_MS, 1_000)) return true;
+      if (this.disposed || terminalStartFailure) return false;
+      if (!(await this.listenerOpen())) return this.startFailure(new Error('daemon listener closed before health became ready'));
+      this.setState('error', 'daemon control API did not become healthy (see log file)');
+      void window.showErrorMessage(`BlackHole: daemon 已占用本机端口，但控制面在 ${(START_TIMEOUT_MS + START_LISTENER_GRACE_MS) / 1000}s 内仍未就绪，日志见 ${logFile}`);
+      return false;
     }
-    if (this.disposed) return false;
+
     this.setState('error', 'daemon did not become healthy (see log file)');
-    void window.showErrorMessage(`BlackHole: daemon 启动后 12s 内未就绪，日志见 ${logFile}`);
+    void window.showErrorMessage(`BlackHole: daemon 启动后 ${START_TIMEOUT_MS / 1000}s 内未就绪，日志见 ${logFile}`);
     return false;
   }
 
@@ -449,6 +654,8 @@ export class DaemonManager implements Disposable {
    * for a few bounded attempts so the operator's intent remains "stop it".
    */
   stop(preserveReplacement = false): Promise<boolean> {
+    if (this.bridgePending) return Promise.resolve(false);
+    if (this.coreSession) return Promise.resolve(this.managedMutationBlocked());
     if (this.stopPending) return this.stopPending;
     // An explicit Stop revokes any outstanding permission to auto-reconcile.
     if (!preserveReplacement) { this.reconcileNeeded = false; this.requireExactReconcile = false; }
@@ -459,6 +666,7 @@ export class DaemonManager implements Disposable {
   }
 
   private async stopOnce(preserveReplacement = false): Promise<boolean> {
+    if (this.coreSession || this.bridgePending) return this.managedMutationBlocked();
     const attempts = preserveReplacement ? 1 : 3;
     for (let attempt = 0; attempt < attempts; attempt++) {
       const target = await this.waitForHealthOrClosed();
@@ -477,6 +685,7 @@ export class DaemonManager implements Disposable {
         this.log.appendLine('warning: daemon listener stayed open but /health was unavailable for 12s (health probes allowed up to 2s each)');
         return false;
       }
+      if (target.lifecycle_state === 'managed') return this.managedMutationBlocked();
       if (!target.daemon_id) {
         this.setState('error', 'daemon health has no identity; refusing unguarded shutdown');
         this.log.appendLine('warning: daemon health omitted daemon_id; refusing unsafe shutdown');
@@ -517,6 +726,8 @@ export class DaemonManager implements Disposable {
   }
 
   restart(activation = false): Promise<boolean> {
+    if (this.bridgePending) return Promise.resolve(false);
+    if (this.coreSession) return Promise.resolve(this.managedMutationBlocked());
     this.reconcileNeeded = true;
     if (!activation) this.requireExactReconcile = true;
     if (this.requireExactReconcile) activation = false;
@@ -539,6 +750,7 @@ export class DaemonManager implements Disposable {
     }
     this.restartActivation = activation;
     this.restartPending = this.runLifecycle(async () => {
+      if (this.bridgePending || this.coreSession) return this.managedMutationBlocked();
       for (let attempt = 0; attempt < 3 && !this.disposed; attempt++) {
         const changingPort = this.managedPort !== this.cfg().port;
         // Port changes cannot preserve an old-port replacement using the same DB.
@@ -548,6 +760,7 @@ export class DaemonManager implements Disposable {
         if (!(await this.ensureRunningOnce())) return false;
         const desired = this.fingerprint();
         const current = await this.healthAfterStart();
+        if (current?.lifecycle_state === 'managed') return this.blockLegacyManagedListener(current);
         if (this.managedPort === this.cfg().port) {
           if (await this.liveFingerprintMatches(desired, current)) return true;
           if (this.restartActivation && current && this.sameInstalledCode(desired, current)) {
@@ -671,6 +884,10 @@ export class DaemonManager implements Disposable {
    * window; explicit configuration changes still require the full fingerprint.
    */
   syncConfigRestart(activation = false): Promise<void> {
+    if (this.bridgePending || this.coreSession) {
+      if (this.coreSession && !activation) this.log.appendLine('Shared Core configuration is Manager-owned; no automatic restart or per-window launch override was applied. Use explicit coordinated maintenance; port changes require Manager configuration, not a window restart.');
+      return Promise.resolve();
+    }
     if (!activation) { this.requireExactReconcile = true; this.reconcileNeeded = true; }
     if (this.requireExactReconcile) activation = false;
     if (this.syncPending) {
@@ -694,7 +911,7 @@ export class DaemonManager implements Disposable {
     if (this.startPending) await this.startPending;
     if (this.restartPending) await this.restartPending;
     if (this.stopPending) await this.stopPending;
-    if (this.disposed) return;
+    if (this.disposed || this.bridgePending || this.coreSession) return;
     if (this.managedPort !== this.cfg().port) {
       const ok = await this.restart(activation);
       if (!ok && !this.disposed) void window.showErrorMessage('BlackHole: 端口变更交接失败，旧 daemon 未确认停止，未启动新实例');
@@ -703,6 +920,7 @@ export class DaemonManager implements Disposable {
     const fp = this.fingerprint();
     const current = await this.health(1_000);
     if (!current) return; // not running; next ensureRunning spawns with current config
+    if (current.lifecycle_state === 'managed') { this.blockLegacyManagedListener(current); return; }
     if (await this.liveFingerprintMatches(fp, current)) return;
     if (activation && this.sameInstalledCode(fp, current)) {
       this.reconcileNeeded = false;
@@ -742,5 +960,6 @@ export class DaemonManager implements Disposable {
     this.disposed = true;
     this.lifecycleRevision++;
     this.events.dispose();
+    void this.coreSession?.close().catch(() => this.log.appendLine('Shared Core detach unconfirmed; lease expiry remains the fallback.'));
   }
 }

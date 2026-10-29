@@ -1,0 +1,200 @@
+name: Shared Core release preparation
+
+# Manual-only preparation pipeline for the shared-core channel: builds
+# matched test Seed/Core, bridge VSIX and unsigned Desktop candidate from one
+# commit, runs the packaged joint smokes, and emits SBOM, hashes, signatures
+# (ephemeral test key) and download metadata as review artifacts.
+# It never installs, signs with production keys, deploys, or publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      run_joint_smokes:
+        description: 'Run packaged joint smokes (bridge/Desktop/VSIX adapters)'
+        type: boolean
+        required: false
+        default: true
+      archive_candidate_binaries:
+        description: 'Archive matched Test Core, VSIX and Desktop installer binaries for controlled review (never public release)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-core-prepare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Matched test artifacts and joint verification (Windows-x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      BH_SEED_CORE_KEY_ID: test-local
+      BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
+      BLACKHOLE_TEST_CLOUD_ORIGIN: ${{ vars.BLACKHOLE_TEST_CLOUD_ORIGIN }}
+      BLACKHOLE_TEST_CLOUD_PUBLIC_KEY: ${{ vars.BLACKHOLE_TEST_CLOUD_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: packages/desktop-launcher/go.sum
+      - name: Require reviewed source (pending Defender investigation blocks candidate builds)
+        env:
+          BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
+        run: node scripts/desktop-release-gate.mjs --mode candidate
+      - run: pnpm install --frozen-lockfile
+      - name: Pinned native resource compiler
+        run: go install github.com/tc-hib/go-winres@v0.3.3
+      - name: Prepare pinned portable Inno compiler in disposable runner
+        shell: pwsh
+        run: ./scripts/prepare-inno.ps1 -ApprovedPortableTools
+      - name: Bundled npm license notices are current
+        run: node scripts/third-party-licenses.mjs --check
+      - name: Ephemeral test signing key (CI only, never a production root)
+        shell: pwsh
+        run: node scripts/generate-test-core-key.mjs .tmp/ci-keys
+      - name: Validate explicit public Test service profile
+        run: node scripts/prepare-ci-test-profile.mjs
+      - name: Fresh component builds (test environment)
+        shell: pwsh
+        run: |
+          pnpm build
+          pnpm --dir packages/web build
+          node packages/host-runtime/build.mjs --environment test
+          Push-Location packages/vscode; node esbuild.mjs --environment test; Pop-Location
+      - name: Endpoint upgrade guard and read-only acceptance preflight tests
+        run: node --test packages/host-runtime/test/core-upgrade-endpoint.test.mjs scripts/shared-core-acceptance-preflight.test.mjs
+      - name: Assemble and sign the test Seed Core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Path .tmp/ci-artifacts -ErrorAction Stop | Out-Null
+          node scripts/assemble-core-runtime.mjs --output .tmp/ci-artifacts/seed-layout --without-node
+          $version = (Get-Content src/version.ts -Raw | Select-String -Pattern "VERSION = '([^']+)'").Matches[0].Groups[1].Value
+          node scripts/package-core-runtime.mjs --input .tmp/ci-artifacts/seed-layout --output .tmp/ci-artifacts/core-bridge.zip --private-key .tmp/ci-keys/private.pem --key-id test-local --runtime-version $version --build-id "bridge-$version" --platform win32 --arch x64 --environment test --cloud-origin $env:BLACKHOLE_TEST_CLOUD_ORIGIN --runtime-provider host-node --node-min-version 22.13.0 --daemon-version $version --web-build-id $version
+          node scripts/verify-core-runtime.mjs --archive .tmp/ci-artifacts/core-bridge.zip --public-key .tmp/ci-keys/public.pem --key-id test-local --platform win32 --arch x64 --environment test
+      - name: Package offline-code VSIX with the same Node-free Core v2
+        shell: pwsh
+        env:
+          BH_SEED_CORE_ARCHIVE: .tmp/ci-artifacts/core-bridge.zip
+          BH_SEED_CORE_PUBLIC_KEY: .tmp/ci-keys/public.pem
+        run: node scripts/package-vsix.mjs --environment test --core-package offline-code --out .tmp/ci-artifacts/blackhole-bridge-test.vsix
+      - name: Thin VSIX uses the same Core reference without shipping code or Node
+        shell: pwsh
+        env:
+          BH_SEED_CORE_ARCHIVE: .tmp/ci-artifacts/core-bridge.zip
+          BH_SEED_CORE_PUBLIC_KEY: .tmp/ci-keys/public.pem
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          node scripts/package-vsix.mjs --environment test --core-package thin --core-url "https://github.com/qianshe/BlackHole-core/releases/download/v$version/BlackHole-Core-$version-win32-x64-test.zip" --out .tmp/ci-artifacts/blackhole-thin-test.vsix
+          node scripts/host-vsix-manager-smoke.mjs .tmp/ci-artifacts/blackhole-bridge-test.vsix .tmp/ci-artifacts/blackhole-thin-test.vsix
+      - name: Package matched unsigned Desktop and compile the real Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $node = (Get-Command node).Source
+          $license = Join-Path (Split-Path $node) 'LICENSE'
+          $nodeHash = (Get-FileHash $node -Algorithm SHA256).Hash.ToLowerInvariant()
+          $licenseHash = (Get-FileHash $license -Algorithm SHA256).Hash.ToLowerInvariant()
+          node scripts/package-desktop.mjs --seed .tmp/ci-artifacts/core-bridge.zip --public-key .tmp/ci-keys/public.pem --key-id test-local --manager packages/host-runtime/dist/core-manager-cli.mjs --output .tmp/ci-artifacts/desktop --environment test --iscc .tmp/toolchains/inno-6.7.3/compiler/ISCC.exe --node-exe $node --node-sha256 $nodeHash --node-license $license --node-license-sha256 $licenseHash
+      - name: Installer preparation checks with isolated data
+        run: node --test packages/host-runtime/test/installer-preflight.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs
+      - name: Refuse blocked executable identities before packaged execution
+        env:
+          BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          node scripts/desktop-release-gate.mjs --mode candidate --artifact .tmp/ci-artifacts/desktop/blackhole.exe --artifact ".tmp/ci-artifacts/desktop/installer/BlackHole-Desktop-$version-test-unsigned-setup.exe"
+      - name: Real packaged Desktop and Core with a disposable user root
+        run: node scripts/desktop-update-auto-verify.mjs .tmp/ci-artifacts/desktop
+      - name: Packaged daemon smoke
+        run: node scripts/core-runtime-smoke.mjs .tmp/ci-artifacts/seed-layout --host-node
+      - name: Joint adapter smokes
+        if: inputs.run_joint_smokes
+        shell: pwsh
+        run: |
+          node scripts/bridge-cold-switch-smoke.mjs .tmp/ci-artifacts/core-bridge.zip .tmp/ci-keys/public.pem packages/host-runtime/dist/core-manager-cli.mjs
+          go -C packages/desktop-launcher test -c -o ../../.tmp/ci-artifacts/coremanager.test.exe ./internal/coremanager
+          node scripts/desktop-manager-smoke.mjs .tmp/ci-artifacts/core-bridge.zip .tmp/ci-keys/public.pem .tmp/ci-artifacts/coremanager.test.exe
+          node scripts/vscode-manager-smoke.mjs .tmp/ci-artifacts/core-bridge.zip .tmp/ci-keys/public.pem .tmp/ci-artifacts/desktop/blackhole.exe
+          node --test --experimental-test-isolation=none packages/host-runtime/test/core-upgrade.test.mjs
+          node --test --experimental-test-isolation=none scripts/core-product-upgrade.test.mjs
+      - name: SBOM, hashes, test signatures and download metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $audit = Get-Content .tmp/ci-artifacts/desktop/distribution-audit.json -Raw | ConvertFrom-Json
+          $installerRel = "desktop/installer/BlackHole-Desktop-$version-test-unsigned-setup.exe"
+          node scripts/release-metadata.mjs --write-manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --environment test --version $version --source-head $env:GITHUB_SHA --build-id $audit.core.buildId --seed-archive core-bridge.zip --descriptor-sha256 $audit.seedDescriptorHash --signing-key-id test-local --vsix-file blackhole-bridge-test.vsix --vsix-core-package offline-code --desktop-launcher desktop/blackhole.exe --desktop-installer $installerRel
+          node scripts/shared-core-acceptance-preflight.mjs --manifest .tmp/ci-artifacts/artifact-manifest.json --environment test
+          node scripts/generate-sbom.mjs --output .tmp/ci-artifacts/sbom.cdx.json --artifacts .tmp/ci-artifacts/artifact-manifest.json
+          node scripts/sign-artifacts.mjs sign --manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --private-key .tmp/ci-keys/private.pem --key-id test-local --environment test --output .tmp/ci-artifacts/signatures.json
+          node scripts/sign-artifacts.mjs verify --manifest .tmp/ci-artifacts/artifact-manifest.json --artifacts-dir .tmp/ci-artifacts --signatures .tmp/ci-artifacts/signatures.json --public-key .tmp/ci-keys/public.pem
+          node scripts/release-metadata.mjs --manifest .tmp/ci-artifacts/artifact-manifest.json --channel test --base-url https://downloads.example.invalid/blackhole --signatures .tmp/ci-artifacts/signatures.json --public-key .tmp/ci-keys/public.pem --output .tmp/ci-artifacts/download-metadata.json
+          $gates = Get-Content release/desktop-gates.json -Raw | ConvertFrom-Json
+          $status = @{
+            schemaVersion = 1
+            channel = 'test-candidate'
+            publicReleaseAuthorized = $false
+            sourceHead = $env:GITHUB_SHA
+            version = $version
+            buildId = $audit.core.buildId
+            descriptorSha256 = $audit.seedDescriptorHash
+            toolchain = @{ node = (node -v); go = (go version); inno = $audit.installer.compilerVersion }
+            licensesChecked = $true
+            securityReview = $gates.securityReview
+            installerAcceptance = $gates.installerTransaction
+            platformSigning = $gates.platformSigning
+          }
+          $status | ConvertTo-Json -Depth 6 | Set-Content -Path .tmp/ci-artifacts/candidate-review-status.json -Encoding UTF8
+      - name: Upload preparation artifacts (review only, not a release)
+        uses: actions/upload-artifact@v6
+        with:
+          name: shared-core-preparation-${{ github.sha }}
+          path: |
+            .tmp/ci-artifacts/sbom.cdx.json
+            .tmp/ci-artifacts/artifact-manifest.json
+            .tmp/ci-artifacts/signatures.json
+            .tmp/ci-artifacts/download-metadata.json
+            .tmp/ci-artifacts/candidate-review-status.json
+            .tmp/ci-artifacts/desktop/distribution-audit.json
+            .tmp/ci-artifacts/desktop/installer/compiler.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload authorized test candidate bundle (controlled review only, never public release)
+        if: inputs.archive_candidate_binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: shared-core-test-candidate-binaries-${{ github.sha }}
+          path: |
+            .tmp/ci-artifacts/core-bridge.zip
+            .tmp/ci-artifacts/blackhole-bridge-test.vsix
+            .tmp/ci-artifacts/blackhole-thin-test.vsix
+            .tmp/ci-artifacts/desktop/installer/BlackHole-Desktop-*-test-unsigned-setup.exe
+            .tmp/ci-artifacts/artifact-manifest.json
+            .tmp/ci-artifacts/signatures.json
+            .tmp/ci-artifacts/sbom.cdx.json
+            .tmp/ci-artifacts/candidate-review-status.json
+          if-no-files-found: error
+          retention-days: 7

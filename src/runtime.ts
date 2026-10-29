@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import type { Config } from './config.js';
 import type { SessionRow } from './storage/db.js';
 import type { ShellAdapter } from './workspace/shell.js';
@@ -14,7 +15,8 @@ export class SessionRuntime {
 
   constructor(session: SessionRow, readonly shell: ShellAdapter) {
     this.session = session;
-    this.cwd = session.cwd ?? session.workspace_path;
+    // a stale or garbled persisted cwd must not break every later spawn (Win32 267)
+    this.cwd = session.cwd && isDirectory(session.cwd) ? session.cwd : session.workspace_path;
     this.autoApprove = String(session.auto_approve ?? '') === '1' || session.auto_approve === true;
   }
 
@@ -51,4 +53,9 @@ export class SessionRuntime {
   }
 
   get workspace(): string { return this.session.workspace_path; }
+}
+
+/** True for an existing directory; any error counts as missing. */
+export function isDirectory(p: string): boolean {
+  try { return statSync(p).isDirectory(); } catch { return false; }
 }

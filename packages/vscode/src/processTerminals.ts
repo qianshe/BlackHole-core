@@ -50,9 +50,9 @@ export class ProcessTerminalController implements Disposable {
     if (this.dismissed.has(key)) return undefined;
     const view: View = { key, item, write: new EventEmitter<string>(), opened: false, disposed: false, buffered: '', lastState: '', stopBusy: false };
     this.views.set(key, view);
-    this.send(view, `BlackHole · ${item.name}\nprocessId: ${item.processId}\ncwd: ${item.cwd}\n只读后台进程输出；Ctrl+C 或关闭终端都会停止此任务。\n\n`);
+    this.send(view, `BlackHole ${item.name}\nprocessId: ${item.processId}\ncwd: ${item.cwd}\n只读后台进程输出；Ctrl+C 或关闭终端都会停止此任务。\n\n`);
     try {
-      view.terminal = window.createTerminal({ name: `BlackHole · ${item.name} · ${item.processId.slice(-8)}`, isTransient: true, pty: {
+      view.terminal = window.createTerminal({ name: `BlackHole ${item.name} ${item.processId.slice(-8)}`, isTransient: true, pty: {
         onDidWrite: view.write.event,
         open: () => {
           if (this.disposed || view.disposed || item.daemonId !== this.daemonId) return;
@@ -125,7 +125,7 @@ export class ProcessTerminalController implements Disposable {
         this.cursors[item.processId] = item.output.next;
         const stateKey = `${item.state}:${item.exitCode}:${item.reason}`;
         if (stateKey !== view.lastState && ['exited', 'failed', 'unknown'].includes(item.state)) {
-          this.send(view, `\n[${item.state} · exit ${item.exitCode ?? 'unknown'}${item.reason ? ' · ' + item.reason : ''}]\n`);
+          this.send(view, `\n[${item.state} exit ${item.exitCode ?? 'unknown'}${item.reason ? ' ' + item.reason : ''}]\n`);
         }
         view.lastState = stateKey;
       }
@@ -143,7 +143,7 @@ export class ProcessTerminalController implements Disposable {
     await this.poll();
     const items = this.items.filter(item => !activeOnly || !['exited', 'failed'].includes(item.state));
     if (!items.length) { void window.showInformationMessage('BlackHole：当前工作区没有可用的后台进程。'); return undefined; }
-    const choice = await window.showQuickPick(items.map(item => ({ label: item.name, description: `${item.state} · ${item.processId}`, item })), { placeHolder: activeOnly ? '选择要停止的后台进程' : '选择要显示的后台进程' });
+    const choice = await window.showQuickPick(items.map(item => ({ label: item.name, description: `${item.state} ${item.processId}`, item })), { placeHolder: activeOnly ? '选择要停止的后台进程' : '选择要显示的后台进程' });
     return choice?.item;
   }
   async show(): Promise<void> {
@@ -175,7 +175,7 @@ export class ProcessTerminalController implements Disposable {
     try {
       const reply = await this.api.processStop({ clientId: this.clientId, daemonId: view.item.daemonId, workspaces: this.roots(), processId: view.item.processId });
       const confirmed = reply.state === 'exited' || reply.state === 'failed';
-      if (!this.disposed) this.send(view, `\n[停止请求结果：${reply.state}${reply.reason ? ' · ' + reply.reason : ''}]\n`);
+      if (!this.disposed) this.send(view, `\n[停止请求结果：${reply.state}${reply.reason ? ' ' + reply.reason : ''}]\n`);
       await this.poll();
       if (closeAfter && confirmed && !this.disposed && !view.disposed) view.terminal?.dispose();
       else if (closeAfter && !confirmed && !this.disposed && !view.disposed) this.send(view, '\n[停止未确认，已保留终端供查证]\n');

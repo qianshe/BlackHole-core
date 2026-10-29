@@ -1,10 +1,12 @@
 // Phone access over the public channel (plan 6.13 R1–R3).
 //
-// - Off unless the `remoteAccess` setting is on, and only for an https public
-//   address; a request must carry Host = that address.
+// - Always on for the currently enabled public HTTP(S) origin; a request must
+//   carry Host = that origin.
 // - A phone pairs once with a one-time code shown as a QR code on this computer
-//   (128-bit, 5 minutes). It then holds a device credential (256-bit, HttpOnly,
-//   Secure, SameSite=Strict, Path=/remote-api) bound to that origin.
+//   (128-bit, 5 minutes). Scanning only files a request: someone on this
+//   computer must click 允许 within 2 minutes. The phone then holds a 256-bit,
+//   HttpOnly, SameSite=Strict device credential bound to that origin. HTTPS also
+//   sets Secure; explicit HTTP direct intentionally omits Secure.
 // - Devices end on revoke, when phone access is turned off, on account
 //   sign-out or switch, after 180 days unused, and when the public address
 //   changes. A temporary (quick) channel's devices end with that tunnel.
@@ -18,6 +20,33 @@ export const DEVICE_IDLE_MS = 180 * 24 * 3600_000;
 const MAX_DEVICES = 20;
 const MAX_CODES = 4;
 const TOUCH_EVERY_MS = 5 * 60_000;
+/** How long a scanned code waits for 允许 on the computer. */
+export const APPROVE_TTL_MS = 2 * 60_000;
+const MAX_REQUESTS = 4;
+
+/** A phone that scanned a code and waits for the computer to allow it. */
+interface PairRequest {
+  id: string;
+  tokenHash: string;
+  name: string;
+  origin: string;
+  kind: ChannelKind;
+  userId: string | null;
+  created: number;
+  exp: number;
+  state: 'pending' | 'approved' | 'denied';
+}
+export interface PairRequestView {
+  id: string;
+  name: string;
+  created_at: string;
+  expires_at: string;
+}
+export type ClaimResult =
+  | { state: 'pending' }
+  | { state: 'denied' }
+  | { state: 'expired' }
+  | { state: 'approved'; secret: string; device: DeviceRow };
 
 export type ChannelKind = 'quick' | 'fixed';
 export interface PublicChannel {
@@ -46,15 +75,21 @@ export interface DeviceView {
 const hashOf = (secret: string): string => createHash('sha256').update(secret).digest('hex');
 const iso = (t: number): string => new Date(t).toISOString();
 
-/** Origin of an https URL, or null. */
-export function httpsOrigin(raw: string | undefined | null): string | null {
+/** Origin of a public http(s) URL, or null. */
+export function publicOrigin(raw: string | undefined | null): string | null {
   if (!raw) return null;
   try {
     const u = new URL(raw);
-    return u.protocol === 'https:' && u.hostname ? u.origin : null;
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname ? u.origin : null;
   } catch {
     return null;
   }
+}
+
+/** Backward-compatible helper for managed channels that must remain HTTPS. */
+export function httpsOrigin(raw: string | undefined | null): string | null {
+  const origin = publicOrigin(raw);
+  return origin && new URL(origin).protocol === 'https:' ? origin : null;
 }
 
 /** A short, readable device name from the User-Agent ("iPhone Safari"). */
@@ -67,6 +102,7 @@ export function deviceName(ua: string | undefined): string {
 
 export class RemoteAccess {
   private codes = new Map<string, { exp: number; origin: string }>();
+  private requests = new Map<string, PairRequest>();
   private rows: DeviceRow[];
 
   constructor(private readonly state: Pick<MachineStateRepo, 'get' | 'set'>) {
@@ -91,18 +127,23 @@ export class RemoteAccess {
   }
 
   /**
-   * Drop devices that can no longer be used: idle for 180 days, a quick
-   * channel that is gone or changed, a fixed address that changed. A fixed
-   * channel that is merely stopped keeps its devices.
+   * Drop devices that can no longer be used: idle for 180 days, or a quick
+   * channel whose ephemeral origin is no longer current. Fixed HTTPS origins
+   * are independent entry points: switching the preferred fixed origin must
+   * not revoke devices paired to another fixed origin. check() still binds a
+   * credential to its exact origin, so retaining the row does not broaden access.
    */
-  prune(channel: PublicChannel | null, now = Date.now()): void {
+  prune(channels?: PublicChannel | PublicChannel[] | null, now = Date.now()): void {
+    const active = channels === undefined ? undefined : Array.isArray(channels) ? channels : channels ? [channels] : [];
+    const activeOrigins = active === undefined ? undefined : new Set(active.map((c) => c.origin));
+    const activeQuick = active === undefined ? undefined : new Set(active.filter((c) => c.kind === 'quick').map((c) => c.origin));
     const keep = this.rows.filter((r) => {
       if (now - r.last_seen_at > DEVICE_IDLE_MS) return false;
-      if (r.kind === 'quick') return !!channel && channel.kind === 'quick' && channel.origin === r.origin;
-      if (channel && channel.kind === 'fixed' && channel.origin !== r.origin) return false;
+      if (r.kind === 'quick' && activeQuick !== undefined) return activeQuick.has(r.origin);
       return true;
     });
-    for (const [k, c] of this.codes) if (c.exp <= now || !channel || c.origin !== channel.origin) this.codes.delete(k);
+    for (const [k, c] of this.codes) if (c.exp <= now || (activeOrigins !== undefined && !activeOrigins.has(c.origin))) this.codes.delete(k);
+    for (const [k, r] of this.requests) if (r.exp <= now || (activeOrigins !== undefined && !activeOrigins.has(r.origin))) this.requests.delete(k);
     if (keep.length !== this.rows.length) {
       this.rows = keep;
       this.save();
@@ -111,7 +152,7 @@ export class RemoteAccess {
 
   /** New one-time pairing code for the current channel. */
   issueCode(channel: PublicChannel, now = Date.now()): { code: string; expiresAt: number } {
-    this.prune(channel, now);
+    this.prune(undefined, now);
     while (this.codes.size >= MAX_CODES) {
       const oldest = this.codes.keys().next().value;
       if (oldest === undefined) break;
@@ -123,15 +164,68 @@ export class RemoteAccess {
     return { code, expiresAt };
   }
 
-  /** Swap a pairing code (single use) for a device credential. */
-  pair(code: unknown, channel: PublicChannel, name: string, userId: string | null, now = Date.now()): { secret: string; device: DeviceRow } | null {
+  /**
+   * Swap a pairing code (single use) for a pending request. The phone gets no
+   * access until someone on this computer allows it; `token` is what the phone
+   * polls with.
+   */
+  requestPair(code: unknown, channel: PublicChannel, name: string, userId: string | null, now = Date.now()): { id: string; token: string; expiresAt: number } | null {
     if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(code)) return null;
     const key = hashOf(code);
     const c = this.codes.get(key);
     if (!c) return null;
     this.codes.delete(key);
     if (c.exp <= now || c.origin !== channel.origin) return null;
-    this.prune(channel, now);
+    this.prune(undefined, now);
+    while (this.requests.size >= MAX_REQUESTS) {
+      const oldest = this.requests.keys().next().value;
+      if (oldest === undefined) break;
+      this.requests.delete(oldest);
+    }
+    const token = randomBytes(32).toString('base64url');
+    const id = randomUUID();
+    const exp = now + APPROVE_TTL_MS;
+    this.requests.set(id, { id, tokenHash: hashOf(token), name: name.slice(0, 60), origin: channel.origin, kind: channel.kind, userId, created: now, exp, state: 'pending' });
+    return { id, token, expiresAt: exp };
+  }
+
+  /** Requests still waiting for an answer on this computer. */
+  pending(channels: PublicChannel | PublicChannel[] | null, now = Date.now()): PairRequestView[] {
+    this.prune(channels, now);
+    return [...this.requests.values()].filter((r) => r.state === 'pending').map((r) => ({ id: r.id, name: r.name, created_at: iso(r.created), expires_at: iso(r.exp) }));
+  }
+
+  /** 允许 / 拒绝 from this computer. False when the request is gone. */
+  decide(id: string, allow: boolean, now = Date.now()): boolean {
+    const r = this.requests.get(id);
+    if (!r || r.state !== 'pending' || r.exp <= now) return false;
+    r.state = allow ? 'approved' : 'denied';
+    return true;
+  }
+
+  /** The phone asks whether it was allowed; an allowed request turns into a device once. */
+  claim(token: unknown, channel: PublicChannel, now = Date.now()): ClaimResult {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return { state: 'expired' };
+    const hash = hashOf(token);
+    const r = [...this.requests.values()].find((x) => x.tokenHash === hash);
+    if (!r || r.origin !== channel.origin) return { state: 'expired' };
+    if (r.state === 'denied') {
+      this.requests.delete(r.id);
+      return { state: 'denied' };
+    }
+    if (r.state === 'pending') {
+      if (r.exp <= now) {
+        this.requests.delete(r.id);
+        return { state: 'expired' };
+      }
+      return { state: 'pending' };
+    }
+    this.requests.delete(r.id);
+    return { state: 'approved', ...this.addDevice(channel, r.name, r.userId, now) };
+  }
+
+  private addDevice(channel: PublicChannel, name: string, userId: string | null, now: number): { secret: string; device: DeviceRow } {
+    this.prune(undefined, now);
     while (this.rows.length >= MAX_DEVICES) this.rows.sort((a, b) => a.last_seen_at - b.last_seen_at).shift();
     const secret = randomBytes(32).toString('base64url');
     const device: DeviceRow = { id: randomUUID(), hash: hashOf(secret), name: name.slice(0, 60), origin: channel.origin, kind: channel.kind, user_id: userId, created_at: now, last_seen_at: now };
@@ -143,7 +237,7 @@ export class RemoteAccess {
   /** The device holding this credential on this origin, or null. */
   check(secret: unknown, channel: PublicChannel, now = Date.now()): DeviceRow | null {
     if (typeof secret !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
-    this.prune(channel, now);
+    this.prune(undefined, now);
     const hash = hashOf(secret);
     const row = this.rows.find((r) => r.hash === hash);
     if (!row || row.origin !== channel.origin) return null;
@@ -165,6 +259,7 @@ export class RemoteAccess {
   revokeAll(): number {
     const n = this.rows.length;
     this.codes.clear();
+    this.requests.clear();
     if (n) {
       this.rows = [];
       this.save();

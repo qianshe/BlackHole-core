@@ -1,0 +1,37 @@
+/* The original BlackHole compact dialog: centered, not a workspace drawer. */
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(650px, calc(100dvh - 32px));
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+}
+.body { min-height: 0; overflow-y: auto; padding: 14px 19px 15px; }
+.intro { margin: 0 0 12px; color: var(--text-3); font-size: var(--fs-sm); line-height: 1.55; }
+.footer {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 9px; padding: 12px 19px;
+  border-top: 1px solid var(--border); background: var(--raised);
+}
+.selected { display: flex; flex: 1; min-width: 0; gap: 7px; align-items: center; color: var(--text-3); font-size: var(--fs-xs); }
+.selected svg { flex: none; color: var(--ok); }
+.selected span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.error { width: 100%; margin: 0; color: var(--bad); font-size: var(--fs-sm); }
+.actions { display: flex; flex: none; gap: 8px; align-items: center; }
+.cancel, .confirm { min-height: 36px; padding: 0 15px; border-radius: var(--r-md); font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; }
+.cancel { color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); }
+.cancel:hover:not(:disabled) { background: var(--surface-hover); }
+.confirm { color: #fff; background: var(--accent); border: 1px solid var(--accent); }
+.confirm:hover:not(:disabled) { background: var(--accent-hover); }
+.cancel:disabled, .confirm:disabled { opacity: .5; cursor: not-allowed; }
+.cancel:focus-visible, .confirm:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 540px) {
+  .body { padding: 12px 14px; }
+  .footer { padding: 12px 14px; }
+  .selected { flex-basis: 100%; }
+}

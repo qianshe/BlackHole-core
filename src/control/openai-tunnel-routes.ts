@@ -20,11 +20,23 @@ export function nativeLoopbackRequest(req: Pick<Request, 'headers' | 'socket'>):
   return NON_NATIVE_HEADERS.every((h) => req.headers[h] === undefined);
 }
 
-export function mountOpenAITunnel(app: Router, deps: DaemonDeps, daemonId: string): void {
+/** A loopback TCP peer (no network hop), whatever headers the caller sends. */
+export function loopbackPeer(req: Pick<Request, 'socket'>): boolean {
+  return LOOPBACK_PEERS.has(req.socket?.remoteAddress ?? '');
+}
+
+/**
+ * The OpenAI tunnel routes behind a caller-specific guard (returns an error code
+ * to refuse). The control API admits native loopback programs (VS Code); Local Web
+ * admits its own signed-in page from a loopback peer, after that router's cookie,
+ * Origin, CSRF and account checks. Never mounted on the phone surface.
+ */
+export function openAITunnelRouter(deps: DaemonDeps, daemonId: () => string, guard: (req: Request) => string | null): Router {
   const r = Router();
   r.use((req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!nativeLoopbackRequest(req)) { res.status(403).json({ error: 'native_loopback_required' }); return; }
+    const denied = guard(req);
+    if (denied) { res.status(403).json({ error: denied }); return; }
     if (req.method !== 'GET' && !req.is('application/json')) { res.status(415).json({ error: 'unsupported_media_type' }); return; }
     next();
   });
@@ -40,7 +52,7 @@ export function mountOpenAITunnel(app: Router, deps: DaemonDeps, daemonId: strin
     if (!b || typeof b !== 'object' || Array.isArray(b)) throw new OpenAITunnelError(400, 'invalid_request');
     const o = b as Record<string, unknown>;
     if (typeof o.daemon_id !== 'string' || !o.daemon_id) throw new OpenAITunnelError(400, 'invalid_request');
-    if (o.daemon_id !== daemonId) throw new OpenAITunnelError(409, 'daemon_changed');
+    if (o.daemon_id !== daemonId()) throw new OpenAITunnelError(409, 'daemon_changed');
     return o;
   };
   const revision = (v: unknown): number => {
@@ -65,7 +77,8 @@ export function mountOpenAITunnel(app: Router, deps: DaemonDeps, daemonId: strin
     const view = manager().start({ settingsRevision: revision(b.settings_revision), credentialRevision: revision(b.credential_revision) });
     // An explicit start comes from a heartbeat sender: keep the watchdog fed (like /tunnel/start).
     deps.lastHeartbeatAt = Date.now();
-    return view;
+    // 启动成功才记为「上次使用」，供渠道总开关再次打开。
+    return view.then((v) => { deps.lastChannel?.set('openai'); return v; });
   }));
   r.post('/stop', handle((req) => {
     const b = body(req);
@@ -90,5 +103,9 @@ export function mountOpenAITunnel(app: Router, deps: DaemonDeps, daemonId: strin
     if (type === 'entity.too.large') { res.status(413).json({ error: 'body_too_large' }); return; }
     res.status(400).json({ error: 'invalid_json' });
   });
-  app.use('/openai-tunnel', r);
+  return r;
+}
+
+export function mountOpenAITunnel(app: Router, deps: DaemonDeps, daemonId: string): void {
+  app.use('/openai-tunnel', openAITunnelRouter(deps, () => daemonId, (req) => (nativeLoopbackRequest(req) ? null : 'native_loopback_required')));
 }

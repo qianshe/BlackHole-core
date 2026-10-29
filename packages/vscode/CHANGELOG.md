@@ -1,18 +1,10 @@
 # Change Log
 
-## 0.3.174 — 2026-09-26
+## 0.4.30 — 2026-10-28（生产环境购买验收版）
 
-- Local Web: create sessions from the page (pick a folder, set permissions and optional auto-approve) and copy the session ID for your AI.
-- Local Web: new **Projects** page to keep frequently used folders, pin or rename them, and start a session from any of them.
+- 接入独立日历套餐订单，已有订阅未到期也可主动购买；服务端保留剩余时长并顺延周、月、季、年周期。
+- 付款确认绑定具体订单，支持继续付款、核对与重启恢复；已有权益或网页返回不再被当作本次付款成功。
+- 购买记录和命令面板统一进入账号设置，保留历史订单及原退款入口。
+- 收银台支持真实浏览器的安全策略与表单跳转。生产支付产品权限和真实交易需完成最终验收；不自动扣款。
 
-## 0.3.173 — 2026-09-26
-
-- Add a read-only local Web page: run **BlackHole: 打开本地 Web** from the Command Palette or click the browser button in the BlackHole sidebar title bar. It signs in automatically and shows sessions, tool calls and Todo progress with filters, search and auto-refresh. Not available in VS Code Remote windows.
-
-## 0.3.171 — 2026-09-25
-
-- Add Handoff support for continuing work in a new conversation with fresh Connector or Sandbox connection details.
-- Improve plan, execute-plan, review, and handoff workflows for saved plans, progress updates, code review, and task continuation.
-- Collapse completed Todo lists while keeping an immediate completion receipt, hiding historical completed lists, and restoring the list when new work appears.
-- Improve multi-window daemon upgrades, cross-platform command execution, background tasks, native dialogs, and Handoff/sidebar layout.
-- Fix upgrade races, stale daemon readiness, Todo recovery edge cases, shell discovery failures, and unwanted Windows background console windows.
+历史版本记录见 [CHANGELOG-HISTORY.md](CHANGELOG-HISTORY.md)。

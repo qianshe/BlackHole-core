@@ -28,7 +28,7 @@ exec 输出和 cwd → process 启动并通过 HTTP 确认就绪 → list → st
 ## CI
 
 `.github/workflows/vscode-extension.yml`（显示名称 Core Runtime CI）在原生 Windows、
-Ubuntu 22.04、macos-latest、macos-15-intel、macos-26 上运行同一核心入口。
+Ubuntu 22.04、macos-15、macos-15-intel 上运行同一核心入口。
 保留既有原生沙箱及集成回归测试，删除远程打包/自动发布和 packed discovery 步骤。
 PR、main push 或手动 workflow_dispatch 触发；tag 不再触发此工作流。
 本地 `test:execution:packed` 仍可选用。

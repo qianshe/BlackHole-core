@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately / 私密报告安全漏洞
+    url: https://github.com/qianshe/BlackHole-core/security/advisories/new
+    about: Do not disclose credentials or security exploits in public issues.
+  - name: Usage guide / 使用帮助
+    url: https://blackhole.stellarbridge.dpdns.org/en/faq
+    about: Installation, configuration and supported connection workflows.

@@ -115,17 +115,18 @@ check('mergeAnchors 非空覆盖 / 空保留', () => {
 // 11) first-open lifecycle: the settings webview must announce readiness before
 // the host publishes init/proxy frames. This guards the cold-start offline race.
 check('设置页首开使用 ready 握手，且 poller 在 ready 前不推状态', () => {
-  const panelSrc = fs.readFileSync(path.join(pkgDir, 'src', 'configPanel.ts'), 'utf8');
-  assert.match(panelSrc, /\| \{ type: 'ready' \}/);
-  assert.match(panelSrc, /private webviewReady = false;/);
-  assert.match(panelSrc, /if \(this\.disposed \|\| !this\.webviewReady\) return;/);
-  assert.match(panelSrc, /vs\.postMessage\(\{ type: 'ready' \}\);/);
-  const hostListener = panelSrc.indexOf('this.webview.webview.onDidReceiveMessage');
-  const htmlAssign = panelSrc.indexOf('this.webview.webview.html = this.html()');
+  // The shared settings host replaced the legacy panel; the handshake contract
+  // lives there (host gates frames on 'settings:ready') and in the page entry.
+  const hostSrc = fs.readFileSync(path.join(pkgDir, 'src', 'sharedConfigPanel.ts'), 'utf8');
+  const hostListener = hostSrc.indexOf('this.pane.webview.onDidReceiveMessage');
+  const htmlAssign = hostSrc.indexOf('this.pane.webview.html = ');
   assert.ok(hostListener >= 0 && htmlAssign > hostListener, 'host listener must be registered before assigning webview html');
-  const browserListener = panelSrc.indexOf("window.addEventListener('message'");
-  const readyPost = panelSrc.indexOf("vs.postMessage({ type: 'ready' });");
-  assert.ok(browserListener >= 0 && readyPost > browserListener, 'browser must install its message listener before sending ready');
+  assert.match(hostSrc, /settings:ready/);
+  assert.match(hostSrc, /private ready = false;/);
+  const pageSrc = fs.readFileSync(path.join(here, '..', 'packages', 'web', 'src', 'settings', 'vscode.tsx'), 'utf8');
+  const browserListener = pageSrc.indexOf("window.addEventListener('message'");
+  const readyPost = pageSrc.indexOf("native.postMessage({ type: 'settings:ready', clientId });");
+  assert.ok(browserListener >= 0 && readyPost > browserListener, 'page must install its message listener before sending ready');
 });
 
 if (process.exitCode) {

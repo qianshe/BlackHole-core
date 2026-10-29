@@ -96,7 +96,11 @@ func Locate(e Env) (Runtime, error) {
 
 	candidates := [][2]string{}
 	if dir := e.Getenv("BLACKHOLE_RUNTIME_DIR"); dir != "" {
-		candidates = append(candidates, [2]string{filepath.Join(dir, "bootstrap.cjs"), filepath.Join(dir, "daemon", "cli.js")})
+		bootstrap, daemon := filepath.Join(dir, "bootstrap.cjs"), filepath.Join(dir, "daemon", "cli.js")
+		if !e.Exists(bootstrap) || !e.Exists(daemon) {
+			return rt, fmt.Errorf("%w: BLACKHOLE_RUNTIME_DIR is incomplete; refusing another runtime/environment", ErrAssetMissing)
+		}
+		candidates = append(candidates, [2]string{bootstrap, daemon})
 	}
 	if e.ExeDir != "" {
 		candidates = append(candidates, [2]string{filepath.Join(e.ExeDir, "runtime", "bootstrap.cjs"), filepath.Join(e.ExeDir, "runtime", "daemon", "cli.js")})

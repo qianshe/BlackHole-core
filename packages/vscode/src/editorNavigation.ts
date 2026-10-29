@@ -156,7 +156,7 @@ export function editorNavigationPreview(call: CallRow): EditorNavigationPreview 
   const { record, legacy } = found;
   // View is read-only context: keep it in the call feed without a file-open affordance.
   if (record.kind === 'view') return undefined;
-  const range = record.startLine ? ` · L${record.startLine}${record.endLine && record.endLine !== record.startLine ? `-${record.endLine}` : ''}` : '';
+  const range = record.startLine ? ` L${record.startLine}${record.endLine && record.endLine !== record.startLine ? `-${record.endLine}` : ''}` : '';
   const enabled = !['started', 'awaiting', 'denied'].includes(call.status);
   return {
     kind: record.kind,

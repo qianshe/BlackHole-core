@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { openDb } from '../dist/storage/db.js';
+import { createIsolatedEnv } from './fixtures/isolated-env.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -44,10 +45,11 @@ async function waitForExit(child, timeoutMs = 8_000) {
 }
 
 test('daemon startup tolerates a retiring SQLite writer and stale shutdowns cannot kill its replacement', { timeout: 30_000 }, async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-daemon-race-'));
+  const isolated = await createIsolatedEnv({ name: 'daemon-race' });
+  const dir = isolated.dataDir;
   const dbPath = path.join(dir, 'blackhole.db');
   const proxyPath = path.join(dir, 'mcp-proxies.yaml');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => isolated.cleanup());
   const initial = openDb(dbPath);
   const busy = initial.db.prepare('PRAGMA busy_timeout').get();
   assert.equal(Number(Object.values(busy)[0]), 5_000, 'openDb installs a bounded SQLite busy timeout');
@@ -72,7 +74,7 @@ test('daemon startup tolerates a retiring SQLite writer and stale shutdowns cann
   const port = await freePort();
   const fingerprint = 'daemon-startup-race-fixture';
   const env = {
-    ...process.env,
+    ...isolated.env,
     BLACKHOLE_DB: dbPath,
     BLACKHOLE_PORT: String(port),
     BLACKHOLE_TUNNEL: 'off',
@@ -134,12 +136,13 @@ test('daemon startup tolerates a retiring SQLite writer and stale shutdowns cann
 
 
 test('concurrent daemon starts claim the loopback port before touching shared SQLite', { timeout: 30_000 }, async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-daemon-singleton-'));
+  const isolated = await createIsolatedEnv({ name: 'daemon-singleton' });
+  const dir = isolated.dataDir;
   const dbPath = path.join(dir, 'blackhole.db');
   const proxyPath = path.join(dir, 'mcp-proxies.yaml');
   const port = await freePort();
   const baseEnv = {
-    ...process.env,
+    ...isolated.env,
     BLACKHOLE_DB: dbPath,
     BLACKHOLE_PORT: String(port),
     BLACKHOLE_TUNNEL: 'off',
@@ -159,7 +162,7 @@ test('concurrent daemon starts claim the loopback port before touching shared SQ
   const a = launch('race-a'), b = launch('race-b');
   t.after(() => {
     for (const item of [a, b]) if (item.child.exitCode === null) item.child.kill('SIGKILL');
-    fs.rmSync(dir, { recursive: true, force: true });
+    isolated.cleanup();
   });
 
   const base = `http://127.0.0.1:${port}`;

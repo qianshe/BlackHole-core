@@ -1,6 +1,7 @@
 // Local Web sessions: persisted across restarts, sliding expiry, tied to the machine's cloud account.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { WebSessionStore, WEB_SESSION_TTL_MS } from '../dist/web/web-sessions.js';
 
 const memState = () => { const m = new Map(); return { get: (k) => m.get(k), set: (k, v) => m.set(k, v), raw: m }; };
@@ -36,12 +37,16 @@ test('lapsed login pauses; same account resumes; another account ends every sess
   assert.equal(s.size, 0);
 });
 
-test('a session issued before any account adopts the first account', () => {
-  const s = new WebSessionStore(memState());
-  const { secret } = s.issue(null);
-  assert.equal(s.check(secret, null).ok, true);
-  assert.equal(s.check(secret, 'u1').ok, true);
-  assert.equal(s.check(secret, null).ok, false, 'now bound to u1');
+test('guest sessions cannot be issued, and old unbound sessions cannot upgrade into an account', () => {
+  const store = memState();
+  const s = new WebSessionStore(store);
+  assert.throws(() => s.issue(null), /verified_account_required/);
+  const secret = 'Z'.repeat(43);
+  const h = createHash('sha256').update(secret).digest('hex');
+  store.set('web.sessions.v1', JSON.stringify([{ h, exp: Date.now()+3600000, seen: Date.now(), user: null }]));
+  const migrated = new WebSessionStore(store);
+  assert.deepEqual(migrated.check(secret, 'u1'), { ok: false, error: 'unauthenticated' });
+  assert.equal(migrated.size, 0, 'legacy unbound cookie is discarded');
 });
 
 test('revoke, revokeAll, malformed input and corrupt storage', () => {

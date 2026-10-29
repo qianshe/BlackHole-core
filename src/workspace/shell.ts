@@ -329,7 +329,9 @@ export async function runShell(opts: ExecOptions, adapter: ShellAdapter): Promis
         exit_code: code,
         stdout: cleanStdout,
         stderr: err.text(),
-        cwd: marker && marker.cwd ? marker.cwd : opts.cwd,
+        // cmd reports %CD% through the console code page; keep only a real directory.
+        // POSIX shells (incl. Git Bash's /d/... paths) report their own cwd verbatim.
+        cwd: marker && marker.cwd && (adapter.name !== 'cmd' || isDir(marker.cwd)) ? marker.cwd : opts.cwd,
         duration_ms: Date.now() - started,
         timed_out: timedOut,
         truncated: out.truncated || err.truncated,
@@ -339,4 +341,8 @@ export async function runShell(opts: ExecOptions, adapter: ShellAdapter): Promis
   cleanup?.();
   try { plan.cleanup(); } catch { result.stderr += '\nCould not remove the private command temp directory.'; }
   return result;
+}
+
+function isDir(p: string): boolean {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }

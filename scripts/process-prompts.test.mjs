@@ -54,10 +54,11 @@ test('process diagnostics distinguish launch, sandbox-runner and command failure
   assert.deepEqual(processSandboxDiagnostic('command_exited','seatbelt'),{});
 });
 test('both connection templates delegate to guide rather than duplicating the process contract', () => {
-  for (const file of ['src/prompt.ts', 'packages/vscode/src/templates.ts']) {
-    const source = fs.readFileSync(file, 'utf8'); assert.match(source, /Read guide with this sessionId/);
+  for (const file of ['src/courier/prompt.ts', 'packages/vscode/src/templates.ts']) {
+    const source = fs.readFileSync(file, 'utf8'); assert.match(source, /Call \`guide\` with this sessionId/);
     assert.doesNotMatch(source, /process\.start|processId|BACKGROUND PROCESSES/);
   }
+  assert.match(fs.readFileSync('src/prompt.ts', 'utf8'), /renderBootstrap/);
 });
 for (const supported of [false, true]) test('registered MCP guide and tool discovery agree on process availability: ' + supported, async () => {
   const server = new McpServer({ name: 'process-prompt-fixture', version: '1' });

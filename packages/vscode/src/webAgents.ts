@@ -1,4 +1,5 @@
 import { ConfigurationTarget, commands, window, workspace, type QuickPickItem } from 'vscode';
+import { WEB_AGENT_PRESETS } from '../../contracts/src/web-agent-presets';
 
 /**
  * Predefined web AI agents — public websites the user can open inside VS Code's
@@ -10,14 +11,7 @@ export interface WebAgent {
   description: string;
 }
 
-export const AGENTS: WebAgent[] = [
-  { name: 'ChatGPT',   url: 'https://chatgpt.com',        description: 'OpenAI ChatGPT' },
-  { name: 'WorkBuddy', url: 'https://www.workbuddy.cn',   description: 'WorkBuddy 工作助手' },
-  { name: 'Manus',     url: 'https://manus.im',           description: 'Manus AI agent' },
-  { name: 'Trae CN',   url: 'https://work.trae.cn',       description: 'Trae (国内版)' },
-  { name: 'Trae AI',   url: 'https://work.trae.ai',       description: 'Trae (国际版)' },
-  { name: 'Arena',     url: 'https://arena.ai',           description: 'LMArena AI' },
-];
+export const AGENTS: WebAgent[] = [...WEB_AGENT_PRESETS];
 
 /**
  * Agents shown in the picker = AGENTS filtered by the blackhole.webAgents

@@ -1,51 +1,127 @@
+import type { ConnectionHealth as WireHealth, McpRouteCandidate, RouteKind, SelectedRoute } from '../../contracts/src/connections';
 export type TemplateKind = 'connector' | 'sandbox';
+export type ConnectionHealth = WireHealth;
+export type ConnectionRouteCandidate = McpRouteCandidate;
 
-/** POSIX quoting for the remote sandbox bootstrap, including apostrophes. */
-const shellQuote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
+/** Pure projection. Configuration, selection and running-channel state stay separate. */
+export interface ConnectionTarget {
+  publicUrl: string | null;
+  mcpUrl: string | null;
+  mcpKind: RouteKind | null;
+  sandboxMcpUrl: string | null;
+  mcpCandidates: McpRouteCandidate[];
+  selectedRoute: SelectedRoute | null;
+  /** Saved daemon value for the selected OpenAI route, usable while offline. */
+  tunnelId: string | null;
+  needsChoice: boolean;
+  reason: string | null;
+  openai: 'ready' | 'starting' | 'off';
+  connector: boolean;
+  sandbox: boolean;
+}
 
-function scriptUrl(mcpUrl: string, sessionId: string): string {
+function originOf(url: string | null): string | null {
+  if (!url) return null;
+  try { return new URL(url).origin; } catch { return null; }
+}
+
+export function connectionTarget(h: ConnectionHealth | null | undefined): ConnectionTarget {
+  const routes = h?.connection_routes;
+  if (routes) {
+    const sandboxMcpUrl = routes.sandbox_mcp_url ?? null;
+    const status = routes.openai;
+    const kind = routes.preferred_mcp_kind;
+    const selectedRoute = routes.selected_route ?? (routes.reason === 'openai_selected' ? 'openai' : kind && kind !== 'loopback' ? kind : null);
+    return {
+      publicUrl: originOf(sandboxMcpUrl),
+      mcpUrl: routes.preferred_mcp_url ?? null,
+      mcpKind: kind ?? null,
+      sandboxMcpUrl,
+      mcpCandidates: Array.isArray(routes.mcp_candidates) ? routes.mcp_candidates : [],
+      selectedRoute,
+      tunnelId: selectedRoute === 'openai' ? routes.saved_tunnel_id ?? null : null,
+      needsChoice: routes.needs_choice === true,
+      reason: routes.reason ?? null,
+      openai: status === 'ready' || status === 'starting' ? status : 'off',
+      connector: routes.connector_ready === true,
+      sandbox: !!sandboxMcpUrl,
+    };
+  }
+  // Compatibility for older daemons only; never override a modern route snapshot.
+  const publicUrl = (h?.tunnel === 'online' && h.tunnel_url) || h?.public_base_url || null;
+  const status = h?.openai_tunnel?.status;
+  const openai = status === 'ready' || status === 'recovering' ? 'ready' : status === 'starting' ? 'starting' : 'off';
+  return {
+    publicUrl,
+    mcpUrl: h?.mcp_url ?? null,
+    mcpKind: null,
+    sandboxMcpUrl: publicUrl ? h?.mcp_url ?? null : null,
+    mcpCandidates: [],
+    selectedRoute: publicUrl ? (h?.tunnel === 'online' ? 'cloudflare' : 'custom') : openai === 'ready' ? 'openai' : null,
+    tunnelId: h?.openai_tunnel?.active_tunnel_id ?? null,
+    needsChoice: false,
+    reason: null,
+    openai,
+    connector: !!publicUrl || openai === 'ready',
+    sandbox: !!publicUrl,
+  };
+}
+
+export const SANDBOX_NEEDS_PUBLIC_URL = '沙箱提示词需要能同时提供 /bh.md 与 MCP 的公网地址；局域网 MCP 直连和 OpenAI Tunnel 不能直接用于沙箱提示词，请选择 Cloudflare 或自定义公网入口。';
+
+export type PromptPayload =
+  | { kind: 'user'; text: string }
+  | { kind: 'handoff'; text: string };
+
+function manualUrl(mcpUrl: string): string {
   const url = new URL(mcpUrl);
   if (!['http:', 'https:'].includes(url.protocol) || !/\/mcp\/[^/]+\/?$/.test(url.pathname)) {
     throw new Error('Expected an HTTP(S) MCP URL ending in /mcp/<token>');
   }
-  url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/mcp/')) + '/bh.py';
-  url.search = new URLSearchParams({ sessionid: sessionId }).toString();
+  url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/mcp/')) + '/bh.md';
+  url.search = '';
   url.hash = '';
   return url.href;
 }
 
 /**
- * Two transport adapters, one operating manual. The copy action supplies kind;
- * never infer it from the platform name, URL or presence of a show tool.
- * The connector needs only an @mention and sessionId to reach guide. The
- * script download embeds both endpoint and sessionId, so no duplicate MCP URL
- * or full operating instructions belong in the template. Startup lives in guide.
+ * Connection bootstrap only. It identifies the BlackHole transport and session;
+ * the operating manual and project instructions live in guide.
+ */
+export function renderBootstrap(
+  kind: TemplateKind,
+  mcpUrl: string,
+  sessionId: string,
+  connectorName = 'BlackHole',
+): string {
+  if (kind === 'connector') {
+    return [
+      `@${connectorName.trim() || 'BlackHole'}`,
+      `sessionId: ${sessionId}`,
+      'Call `guide` with this sessionId before workspace work and follow it.',
+    ].join('\n');
+  }
+  return [
+    `BlackHole MCP Manual: ${manualUrl(mcpUrl)}`,
+    `sessionId: ${sessionId}`,
+    '',
+    'Read this Manual, familiarize yourself with the BlackHole MCP, and prepare to use it with this sessionId for the work that follows. Refer back to it whenever needed.',
+  ].join('\n');
+}
+
+/**
+ * First-message composition. A copied prompt has no payload; a real user message
+ * or saved Handoff is appended explicitly and is never inferred from session metadata.
  */
 export function renderPrompt(
   kind: TemplateKind,
   mcpUrl: string,
   sessionId: string,
-  task?: string | null,
+  payload?: PromptPayload,
   connectorName = 'BlackHole',
-  purpose: 'task' | 'handoff' = 'task',
 ): string {
-  const taskText = typeof task === 'string' && task.trim() ? task.trim() : '<paste your task here>';
-  // Handoff contains its own final task field. Label the envelope as context,
-  // without parsing/rewording the saved text or changing ordinary task prompts.
-  const body = purpose === 'handoff' ? `Handoff context:\n${taskText}` : `Task: ${taskText}`;
-  if (kind === 'connector') {
-    return [
-      `@${connectorName.trim() || 'BlackHole'}`,
-      `sessionId: ${sessionId}`,
-      'Read guide with this sessionId. Comply with its instructions throughout the session.',
-      body,
-    ].join('\n');
-  }
-  return [
-    'bh.py provides access to the BlackHole workspace from this sandbox.',
-    `sessionId: ${sessionId}`,
-    `Bootstrap once: curl -fsSL ${shellQuote(scriptUrl(mcpUrl, sessionId))} -o bh.py && python3 bh.py call guide '{}'`,
-    'Comply with the instructions returned by guide throughout the session.',
-    body,
-  ].join('\n');
+  const bootstrap = renderBootstrap(kind, mcpUrl, sessionId, connectorName);
+  if (!payload) return bootstrap;
+  const body = payload.kind === 'handoff' ? `Handoff context:\n${payload.text}` : payload.text;
+  return `${bootstrap}\n\n${body}`;
 }

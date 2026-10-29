@@ -1,3 +1,4 @@
+import { MaintenanceGate, ManagedControl } from './lifecycle/managed-control.js';
 import { randomUUID } from 'node:crypto';
 import { ProcessManager, ownerFingerprint } from './process/manager.js';
 import { loadProcessBackend, processRuntimeCapability } from './process/backend.js';
@@ -6,35 +7,50 @@ import express from 'express';
 import type { EntitlementGate } from './cloud/entitlement-gate.js';
 import { ENTITLEMENT_ORIGIN } from './cloud/entitlement-public-key.js';
 import { AccountService } from './account/service.js';
-import { openSecretBackend } from './account/secret-store.js';
+import { accountSecretFile, openSecretBackend, type SecretBackend } from './account/secret-store.js';
 import { openUrl } from './account/open-url.js';
 import fs from 'node:fs';
 import type { Server } from 'node:http';
 import path from 'node:path';
 import { loadConfig, type Config } from './config.js';
 import { mountControl } from './control/api.js';
-import { mcpPath, mcpUrl, type DaemonDeps } from './deps.js';
+import { CourierHub } from './courier/hub.js';
+import { DirectAccessListener, directAccessConfig } from './direct-access/listener.js';
+import { CourierMessages, purgeCourierMessagesOlderThan } from './courier/messages.js';
+import { importCourierMessagesJson } from './courier/messagesImport.js';
+import { CourierPairs } from './courier/pairs.js';
+import { mountCourier } from './courier/mount.js';
+import { connectionTarget, renderPrompt, SANDBOX_NEEDS_PUBLIC_URL } from './courier/prompt.js';
+import { renderSandboxManual } from './courier/manual.js';
+import { mcpPath, mcpUrl, type DaemonDeps, type RuntimeIdentity } from './deps.js';
+import { resolveConnectionRoutes } from './connection/resolve.js';
 import { OpenAITunnelManager } from './tunnel/openai-manager.js';
-import { openOpenAITunnelCredential } from './tunnel/openai-credential.js';
+import { openAITunnelSecretFile, openOpenAITunnelCredential } from './tunnel/openai-credential.js';
 import { mountMcp } from './mcp/router.js';
 import { ApprovalPins, PanelRegistry } from './panel/keys.js';
 import { mountPanel } from './panel/index.js';
 import { mountLocalWeb, sendRemotePage, sendRootPage } from './web/local-web.js';
-import { ChannelIntent, migrateDecoupledTabs } from './tunnel/resume.js';
+import { ChannelIntent, migrateDecoupledTabs, resumeChannel } from './tunnel/resume.js';
+import { LastChannel } from './tunnel/switch.js';
 import { resolveConfirmation } from './control/api.js';
 import { ConfirmationsRepo } from './storage/confirmations.js';
 import { maintainDb, openDb, type Storage } from './storage/db.js';
 import { EventsRepo } from './storage/events.js';
 import { MachineStateRepo } from './storage/machineState.js';
-import { applySettingsToConfig, SettingsStore } from './settings/store.js';
+import { applySettingsToConfig, savedCloudflaredBinary, SettingsStore } from './settings/store.js';
+import { putCourierSite, removeCourierSite } from './settings/service.js';
 import { SessionsRepo } from './storage/sessions.js';
 import { ChangeTracker } from './storage/changes.js';
 import { SessionActivity } from './session-activity.js';
 import { TodosRepo } from './storage/todos.js';
 import { HandoffsRepo } from './storage/handoffs.js';
 import { ToolCallsRepo } from './storage/toolCalls.js';
+import { FeedLog } from './storage/feedLog.js';
 import { TunnelManager } from './tunnel/manager.js';
 import { startChannelWatchdog } from './tunnel/watchdog.js';
+import { startManagedIdleSupervisor } from './lifecycle/idle-supervisor.js';
+import { startRunHeartbeat } from './lifecycle/run-heartbeat.js';
+import { assertManagedCoreUpgradeable, managedCoreUpgradeBlockers } from './lifecycle/idle-work.js';
 import { detectExecutionEnvironment } from './execution.js';
 import { probeSemantic } from './semantic/index.js';
 import { setAccessTokenOverride } from './util/token.js';
@@ -48,6 +64,17 @@ export interface Daemon {
   stop(): Promise<void>;
 }
 
+function managedRuntimeIdentity(): RuntimeIdentity | undefined {
+  const encoded = process.env.BLACKHOLE_MANAGED_RUNTIME_IDENTITY?.trim();
+  if (!encoded) return undefined;
+  let value: Record<string, unknown>; try { value = JSON.parse(encoded) as Record<string, unknown>; } catch { throw new Error('managed_runtime_identity_invalid'); }
+  for (const field of ['runtimeId', 'runtimeVersion', 'buildId', 'descriptorHash', 'dataRootId', 'webBuildId', 'cloudOrigin']) if (typeof value[field] !== 'string' || !value[field]) throw new Error(`managed_runtime_identity_invalid:${field}`);
+  if (value.environment !== 'test' && value.environment !== 'production') throw new Error('managed_runtime_identity_invalid:environment');
+  if (value.lifecycleState !== 'managed' && value.lifecycleState !== 'quiescing' && value.lifecycleState !== 'draining' && value.lifecycleState !== 'stopping') throw new Error('managed_runtime_identity_invalid:lifecycleState');
+  const protocol = value.coreProtocol as { min?: unknown; max?: unknown } | undefined; if (!protocol || !Number.isInteger(protocol.min) || !Number.isInteger(protocol.max)) throw new Error('managed_runtime_identity_invalid:coreProtocol');
+  return value as unknown as RuntimeIdentity;
+}
+
 export async function startDaemon(overrides: Partial<Config> = {}, log: (line: string) => void = console.error, entitlement?: EntitlementGate): Promise<Daemon> {
   const cfg = loadConfig(overrides);
   // Claim the loopback port before opening or migrating SQLite. The listening
@@ -55,21 +82,38 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // enter recovery/retention writes and corrupt each other's startup state.
   const app = express();
   app.disable('x-powered-by');
+  const maintenanceGate = new MaintenanceGate();
+  maintenanceGate.install(app);
+  app.use(maintenanceGate.middleware);
   const server = await new Promise<Server>((resolve, reject) => {
     const s = app.listen(cfg.port, cfg.host, () => resolve(s));
     s.once('error', (err) => reject(err));
   });
   let startupStorage: Storage | undefined;
+  let startupAccount: AccountService | undefined;
   try {
   const storage = openDb(cfg.dbPath);
   startupStorage = storage;
+
+  // 回复线程从旧 JSON 一次性导入 SQLite，必须先于 FeedLog 取种子（session-feed 计划 §11 的启动顺序）。
+  importCourierMessagesJson(storage.db, path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-messages.json'), log);
+  // 全会话共用的变更号。必须先于 markStaleStartedAsUnknown（它要给每个被中断的调用取 rev）。
+  const feed = FeedLog.open(storage.db);
 
   const sessions = new SessionsRepo(storage.db);
   // 变更门控：任何会话级写入（事件/任务清单）→ epoch +1，扩展据此拉取
   const changes = new ChangeTracker();
   const panels = new PanelRegistry();
   const events = new EventsRepo(storage.db, cfg.eventPayloadCapBytes, () => changes.bump());
-  const toolCalls = new ToolCallsRepo(storage.db);
+  // Drafts: reserved in memory until the first tool call uses the credential.
+  sessions.onDraftsChanged = () => changes.bump();
+  // 名称/状态变化 → feed 重建会话 state（state provider 在 hub 建好后设置，之前的通知是空操作）
+  sessions.onStateChange = (id) => { feed.touchState(id); };
+  sessions.onDraftStored = (row) => events.append(row.id, 'session_created', {
+    workspace_path: row.workspace_path, permission_mode: row.permission_mode, name: row.name,
+    expires_at: row.expires_at, writable_dirs: row.writable_dirs, from_draft: true,
+  });
+  const toolCalls = new ToolCallsRepo(storage.db, feed);
   const machineState = new MachineStateRepo(storage.db);
   // 'always' approval grants persist across daemon restarts (machine_state);
   // session grants stay in memory by design
@@ -85,7 +129,14 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // Daemon-owned settings win over the launcher's environment once migrated.
   const settings = new SettingsStore(machineState);
   applySettingsToConfig(cfg, settings.get(), new Set(Object.keys(overrides).filter((k) => (overrides as Record<string, unknown>)[k] !== undefined)));
-  const startedSettings = settings.get().values;
+  const startedRecord = settings.get();
+  // Managed settings own an explicitly cleared executable path too; a stale
+  // launcher environment must not silently reintroduce the old binary.
+  if (process.env.BLACKHOLE_MANAGED_RUNTIME_IDENTITY && startedRecord.seeded.includes('cloudflaredPath')) cfg.cloudflaredBin = startedRecord.values.cloudflaredPath || undefined;
+  const startedSettings = { ...startedRecord.values, publicBaseUrl: cfg.publicBaseUrl ?? '',
+    cloudflaredPath: cfg.cloudflaredBin ?? '', skillsDir: cfg.skillsDir ?? '', semanticMode: cfg.semantic,
+    gitUsrBinPath: process.env.BLACKHOLE_GIT_USR_BIN ?? '', namedTunnelName: cfg.tunnelName,
+    tunnelProbeProxy: cfg.tunnelProbeProxy ?? '' };
 
   const stale = toolCalls.markStaleStartedAsUnknown();
   if (stale > 0) log(`recovery: marked ${stale} in-flight tool call(s) as unknown`);
@@ -103,6 +154,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   let purgedConf = 0;
   let purgedEvents = 0;
   let purgedTodos = 0;
+  let purgedReplies = 0;
   for (const s of sessions.list()) {
     if (s.status === 'revoked' || s.status === 'archived') {
       purgedCalls += toolCalls.purgeSession(s.id);
@@ -117,8 +169,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   purgedEvents += events.purgeSessionScopedOlderThan(cutoff);
   purgedEvents += events.purgeMachineProtocolCountersOlderThan(cutoff);
   purgedTodos += todos.purgeOlderThan(cutoff);
-  if (purgedCalls + purgedConf + purgedEvents + purgedTodos > 0) {
-    log(`storage: retention purge — ${purgedCalls} tool call(s), ${purgedConf} confirmation(s), ${purgedEvents} event(s), ${purgedTodos} todo board(s)`);
+  purgedReplies += purgeCourierMessagesOlderThan(storage.db, cutoff);
+  if (purgedCalls + purgedConf + purgedEvents + purgedTodos + purgedReplies > 0) {
+    log(`storage: retention purge — ${purgedCalls} tool call(s), ${purgedConf} confirmation(s), ${purgedEvents} event(s), ${purgedTodos} todo board(s), ${purgedReplies} chat message(s)`);
   }
   const maintenance = maintainDb(storage.db, cfg.dbPath);
   if (maintenance.reclaimed) log(`storage: reclaimed database space (${Math.round(maintenance.freeRatio * 100)}% free pages)`);
@@ -203,12 +256,14 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     execution.process.reason = processRuntime.reason ?? 'runtime_asset_missing';
     log(`warning: process tool unavailable — ${execution.process.reason}`);
   }
-  const processes = new ProcessManager({ daemonId, supported: execution.process.available, backend: await loadProcessBackend(execution.process.shell),
+  const processes = new ProcessManager({ daemonId, canStart: () => maintenanceGate.accepting, supported: execution.process.available, backend: await loadProcessBackend(execution.process.shell),
     event: (id, type, data) => { const row = sessions.get(id); if (row && row.status !== 'revoked' && row.status !== 'archived') events.append(id, type, data); } });
   const deps: DaemonDeps = {
     execution,
     daemonId,
+    maintenanceGate,
     startFingerprint: process.env.BLACKHOLE_START_FINGERPRINT?.trim() || undefined,
+    runtimeIdentity: managedRuntimeIdentity(),
     processes,
     entitlement,
     cfg,
@@ -223,6 +278,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     machineState,
     settings,
     startedSettings,
+    startedSettingsRevision: startedRecord.revision,
     semantic,
     // MCP-Apps panel cards: memory-only registries — a daemon restart kills
     // every card (the agent's next show re-attaches a fresh one)
@@ -240,10 +296,12 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   deps.tunnel = new TunnelManager(cfg.port, {
     enabled: cfg.tunnel !== 'off',
-    bin: cfg.cloudflaredBin,
+    // The saved executable is used only when the user explicitly starts a
+    // channel. Changing the path does not require restarting active work.
+    bin: () => savedCloudflaredBinary(settings.get(), cfg.cloudflaredBin),
     namedUrl: cfg.publicBaseUrl,
     tunnelName: cfg.tunnelName,
-    probeProxy: cfg.tunnelProbeProxy,
+    probeProxy: () => settings.get().values.channelProxyUrl || cfg.tunnelProbeProxy,
     log,
     onEvent: (status, detail) => {
       events.append(null, 'tunnel_status', { status, ...detail });
@@ -251,6 +309,7 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     },
   });
   deps.channelIntent = new ChannelIntent(machineState);
+  deps.lastChannel = new LastChannel(machineState);
   // One-time migration (plan §5.1): tabs no longer gate channels.
   if (migrateDecoupledTabs(machineState, settings.get().values.channelMode)) {
     log('channel: dropped the Cloudflare channel remembered under the custom tab (tabs no longer switch channels)');
@@ -268,9 +327,21 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     res.json({ ok: true, service: 'blackhole' });
   });
 
-  // Public agent surface, ported from the legacy daemon: the zero-dependency
-  // python client and the per-session rules doc. The extension's no-connector
-  // prompt template tells web agents to fetch both over the tunnel.
+  // Public agent surface for sandboxes without a native MCP client. The prompt
+  // points only at the generated Manual; bh.py remains an optional reference
+  // client linked from that Manual.
+  app.get('/bh.md', (req, res) => {
+    const directOrigin = deps.directAccess?.requestOrigin(req);
+    const endpoint = directOrigin ? directOrigin + mcpPath() : resolveConnectionRoutes(deps, mcpPath()).sandbox_mcp_url ?? mcpUrl(deps);
+    const client = new URL(endpoint);
+    client.pathname = client.pathname.slice(0, client.pathname.lastIndexOf('/mcp/')) + '/bh.py';
+    client.search = '';
+    client.hash = '';
+    res.set('Cache-Control', 'no-store');
+    res.set('Content-Disposition', 'inline; filename="BLACKHOLE.md"');
+    res.type('text/markdown; charset=utf-8').send(renderSandboxManual(endpoint, client.href));
+  });
+
   app.get('/bh.py', (req, res) => {
     const scriptDir = path.dirname(process.argv[1] ?? '.');
     const candidates = [
@@ -289,7 +360,9 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     for (const file of candidates) {
       try {
         let body = fs.readFileSync(file, 'utf8');
-        body = body.replace("_INJECTED_URL = ''", `_INJECTED_URL = ${pyStr(mcpUrl(deps))}`);
+        const directOrigin = deps.directAccess?.requestOrigin(req);
+        const endpoint = directOrigin ? directOrigin + mcpPath() : resolveConnectionRoutes(deps, mcpPath()).sandbox_mcp_url ?? mcpUrl(deps);
+        body = body.replace("_INJECTED_URL = ''", `_INJECTED_URL = ${pyStr(endpoint)}`);
         if (sessionId) body = body.replace("_INJECTED_SESSIONID = ''", `_INJECTED_SESSIONID = ${pyStr(sessionId)}`);
         res.type('text/x-python; charset=utf-8').send(body);
         return;
@@ -300,26 +373,34 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     res.status(404).type('text/plain').send('bh.py not found (set BLACKHOLE_BH_PY)');
   });
 
-  // Plan 6.11: the daemon owns the cloud account; the OS credential store is probed read-only.
+  // Plan 6.11: the daemon owns the cloud account; credentials live in user-only files under the data dir.
   const accountOrigin = entitlement?.cloudOrigin ?? ENTITLEMENT_ORIGIN;
+  const dataDir = path.dirname(path.resolve(cfg.dbPath));
+  // A bad origin disables the account only; it must never stop the daemon from serving.
+  const openAccountSecrets = (origin: string): SecretBackend => {
+    try { return openSecretBackend(accountSecretFile(dataDir, origin)); }
+    catch { log('account: cloud origin rejected; signing in is unavailable'); return { kind: 'unavailable', reason: 'cloud_origin_invalid' }; }
+  };
   deps.account = new AccountService({
     origin: accountOrigin,
-    dataDir: path.dirname(path.resolve(cfg.dbPath)),
+    dataDir,
     machineState,
-    secrets: await openSecretBackend(AccountService.serviceName(accountOrigin)),
+    secrets: openAccountSecrets(accountOrigin),
     gate: entitlement,
     openExternal: openUrl,
     // Isolated tests only: refuse every cloud request so fixtures never reach a real service.
     ...(process.env.BLACKHOLE_ACCOUNT_OFFLINE === '1' ? { fetch: (async () => { throw new TypeError('offline'); }) as typeof fetch } : {}),
     log,
   });
+  startupAccount = deps.account;
   void deps.account.start();
 
   // OpenAI Secure MCP Tunnel (plan §5): parallel to the Cloudflare channel, started only on request.
   deps.openaiTunnel = new OpenAITunnelManager({
     settings: () => settings.get(),
-    credential: await openOpenAITunnelCredential(),
+    credential: await openOpenAITunnelCredential(undefined, openAITunnelSecretFile(dataDir)),
     target: () => `http://127.0.0.1:${cfg.port}${mcpPath()}`,
+    proxy: () => settings.get().values.channelProxyUrl || undefined,
     log,
     onEvent: (status, detail) => {
       events.append(null, 'openai_tunnel_status', { status, ...detail });
@@ -330,6 +411,93 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   const mcp = mountMcp(app, deps);
   // Local Web: read-only page for this machine only (ticket login from VS Code).
   // Registered before /api so its native-only bootstrap route is matched first.
+  // Courier: ping/WebSocket for the browser extension, plus its native send API.
+  const courier = new CourierHub({
+    log,
+    canAccept: () => maintenanceGate.accepting,
+    messages: new CourierMessages(storage.db, feed),
+    pairs: new CourierPairs(path.join(path.dirname(path.resolve(cfg.dbPath)), 'courier-pairs.json'), log),
+    onStarted: (id, text) => { deps.sessions.commitDraft(id, text); },
+    onIdle: (id) => deps.sessionActivity?.endTurn(id),
+    initialPrompt: (id, message, kind = 'connector') => {
+      const s = deps.sessions.get(id);
+      if (!s) return { code: 'session_inactive', message: '这个 BlackHole 会话已结束' };
+      const routes = resolveConnectionRoutes(deps, mcpPath());
+      const target = connectionTarget({ mcp_url: mcpUrl(deps), connection_routes: routes });
+      if (kind === 'sandbox') {
+        if (!target.sandboxMcpUrl) return { code: 'no_channel', message: SANDBOX_NEEDS_PUBLIC_URL };
+        return { text: renderPrompt('sandbox', target.sandboxMcpUrl, s.credential_id, { kind: 'user', text: message }) };
+      }
+      if (!target.connector) {
+        const messageText = target.reason === 'direct_unavailable'
+          ? '当前选择局域网直连，但监听不可用；不会改用 Cloudflare'
+          : target.reason === 'custom_unavailable'
+            ? '当前选择自定义地址，但尚未配置可用地址；不会改用其它渠道'
+            : target.openai === 'starting'
+              ? 'OpenAI Tunnel 正在启动'
+              : '当前选择的连接方式尚未就绪';
+        return { code: 'no_channel', message: messageText };
+      }
+      return { text: renderPrompt('connector', '', s.credential_id, { kind: 'user', text: message }, deps.settings?.get().values.connectorName || 'BlackHole') };
+    },
+    onChange: () => changes.bump(),
+    onStateChange: (id) => { feed.touchState(id); },
+    sessions: () => deps.sessions.list().map((s) => ({ id: s.id, name: s.name?.trim() || path.basename(s.workspace_path) || s.workspace_path, named: !!s.name?.trim(), status: 'draft' in s ? 'draft' : s.status })),
+    // Sites added in Courier (检测此页面): kept in the daemon-owned courierSites setting.
+    sites: {
+      list: () => deps.settings?.get().values.courierSites ?? [],
+      put: (site) => putCourierSite(deps, site),
+      remove: (id) => removeCourierSite(deps, id),
+    },
+    // Subscription: the local entitlement ticket (verified offline; renewed only when missing/expired).
+    ...(entitlement ? { access: {
+      valid: () => entitlement.valid(),
+      check: () => entitlement.access(),
+      // Cached account view (no cloud call): remainingSeconds of the last verified snapshot.
+      until: async () => { const v = await deps.account?.view(); return v && 'remainingSeconds' in v && typeof v.remainingSeconds === 'number' ? Date.now() + v.remainingSeconds * 1000 : null; },
+    } } : {}),
+  });
+  deps.courier = courier;
+  deps.feed = feed;
+  // feed 的会话 state 快照：名称/状态来自会话表，配对与聊天目标来自 hub。草稿的 status 按 hub 的会话列表同样写成 'draft'。
+  feed.setStateProvider((id) => {
+    const s = deps.sessions.get(id);
+    if (!s) return null;
+    const t = courier.targetOf(id);
+    return {
+      name: s.name ?? null,
+      status: 'draft' in s ? 'draft' : s.status,
+      link: courier.link(id),
+      // Courier 是否在线：网页的输入框靠它区分「Courier 没连上」和「配对的网页不在 Courier 里」
+      connected: courier.connected,
+      target: t ? { targetId: t.targetId, site: t.site, label: t.label, busy: t.busy, turnState: t.turnState, ready: t.ready, open: t.open, draft: t.draft, model: t.model, modelAttribution: t.modelAttribution, card: t.card } : null,
+    };
+  });
+  entitlement?.onChange(() => courier.pushAccess());
+  // A session deleted in any UI: Courier unbinds it; its pairing and thread are removed.
+  // The reason travels to Courier: a deleted session may also delete its bound web chat (only if the
+  // user turned that on in Courier), an archived one never does.
+  deps.sessions.onSessionEnded = (id, reason) => {
+    courier.forget(id, { reason: reason ?? 'unpaired' });
+    // 只有草稿被丢弃才是「会话行消失」：唤醒等待者并让它们返回 404。revoked/archived 的行还在，
+    // 状态变化由 SessionsRepo.onStateChange 下发（session-feed 计划 §4.3）。
+    if (reason === 'discarded') feed.close(id);
+  };
+  mountCourier(app, server, courier, (data) => events.append(null, 'courier_send', data), () => maintenanceGate.accepting);
+  if (deps.runtimeIdentity && process.env.BLACKHOLE_MANAGER_PUBLIC_KEY) {
+    const requireIdle = (): void => {
+      if (!deps.shutdown || !deps.livePipes) throw new Error('activity_unknown');
+    };
+    deps.maintenanceIdle = (): boolean => { try { requireIdle(); return true; } catch { return false; } };
+    deps.upgradeReadiness = () => {
+      try { const blockers=managedCoreUpgradeBlockers(deps); return {idle:blockers.length===0,blockers}; }
+      catch { return {idle:false,blockers:['activity_unknown']}; }
+    };
+    deps.managedControl = new ManagedControl({ publicKeyPem: process.env.BLACKHOLE_MANAGER_PUBLIC_KEY,
+      identity: deps.runtimeIdentity, daemonId, startFingerprint: deps.startFingerprint ?? '', gate: maintenanceGate,
+      settingsRevision: () => settings.get().revision, assertIdle: requireIdle,
+      assertUpgradeable: () => assertManagedCoreUpgradeable(deps) });
+  }
   const control = mountControl(express.Router(), deps);
   mountLocalWeb(app, deps, undefined, control);
   app.use('/api', control);
@@ -360,11 +528,19 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // long-lived SSE streams (MCP GET) must not be cut by the default 5-min cap
   server.requestTimeout = 0;
 
+  // One stable data-plane port for direct access and a user-managed reverse
+  // proxy. The control plane is still exclusively on the main loopback socket.
+  const mainAddr = server.address();
+  const directAccess = new DirectAccessListener(app, mainAddr && typeof mainAddr === 'object' ? mainAddr.port : cfg.port, log);
+  deps.directAccess = directAccess;
+  await directAccess.apply(directAccessConfig(settings.get().values));
+
   // no tunnel auto-start at boot: the channel is started on demand by the
   // extension sidebar / CLI (`tunnel start`), persistent or temporary.
   // The watchdog closes the public channel once every heartbeat sender is gone;
   // the detached daemon keeps serving locally until an explicit Stop.
   const watchdog = startChannelWatchdog(deps);
+  if (deps.runtimeIdentity?.lifecycleState === 'managed') resumeChannel(deps);
   // Lifetime sweep is independent of MCP requests, VS Code polling and channel heartbeats.
   const processSweep = setInterval(() => processes.reconcile(owner => {
     const row = sessions.get(owner.sessionId);
@@ -385,8 +561,19 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
   // so settings can observe `starting` immediately instead of daemon startup hanging.
   void proxy.startEnabled().catch((error) => log(`proxy: startup sweep failed: ${error instanceof Error ? error.message : String(error)}`));
 
+  const idleSupervisor = startManagedIdleSupervisor(deps);
+  // Independent of the idle supervisor: the lease must stay fresh whenever
+  // this managed Core is alive, including while the idle stop is pending.
+  const runHeartbeat = startRunHeartbeat(deps);
   const stop = async (): Promise<void> => {
+    log('daemon shutdown: begin');
+    await deps.account?.stop();
+    idleSupervisor.stop();
+    runHeartbeat.stop();
     clearInterval(processSweep);
+    courier.close();
+    feed.shutdown(); // 放走所有挂起的长轮询请求，server.close() 才能完成
+    await directAccess.close();
     await processes.dispose();
     watchdog.stop();
     proxyWatcher?.close();
@@ -396,13 +583,16 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
     await deps.proxy?.manager.closeAll(); // upstream child 在进程退出前关闭（plan §8.1）
     deps.proxy?.attachments.clear(); // attachment 可见引用随 stop 全清（plan §9）
     await mcp.closeAll();
+    log('daemon shutdown: channels and MCP closed');
     for (const rt of deps.runtimes.values()) rt.pwsh?.dispose();
     deps.runtimes.clear();
     // close() only stops accepting; kept-alive clients could still reach this
     // retiring daemon's /health after a replacement starts. Drop them now.
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
+    courier.close(); // a Courier socket still open would hold server.close() forever (upgraded sockets are not HTTP connections)
     await closed;
+    log('daemon shutdown: HTTP listener closed');
     events.append(null, 'daemon_stopped', {});
     deps.sessionActivity?.dispose();
     storage.close();
@@ -411,8 +601,10 @@ export async function startDaemon(overrides: Partial<Config> = {}, log: (line: s
 
   return { cfg, deps, stop };
   } catch (error) {
+    await startupAccount?.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     try { startupStorage?.close(); } catch { /* preserve the startup error */ }
     throw error;
   }
 }
+

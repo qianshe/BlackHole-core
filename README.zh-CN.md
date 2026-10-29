@@ -1,5 +1,3 @@
-> **私有迁移候选版本。** 当前保持 Private。导入范围、验收结果和已知失败见 [MIGRATION-STATUS.md](MIGRATION-STATUS.md)。本次导入不等于公开发布或生产部署。
-
 <div align="right">
 
 **简体中文** | [English](README.md)
@@ -9,6 +7,12 @@
 # BlackHole
 
 **以受控方式，让网页 AI 使用你的本地开发工作区。**
+
+[![Core Runtime CI](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml/badge.svg?branch=main)](https://github.com/qianshe/BlackHole-core/actions/workflows/vscode-extension.yml)
+
+[使用指南](packages/vscode/README.md) · [贡献指南](CONTRIBUTING.md) · [CI](.github/CI.md) · [发布验收](RELEASE-VALIDATION.md) · [安全报告](SECURITY.md)
+
+本仓库公开维护 BlackHole 的本地运行时与客户端，Cloud 后端独立维护。仓库边界见[项目说明](MIGRATION-STATUS.md)，授权见[许可证](#许可证)。
 
 BlackHole 通过 MCP Streamable HTTP 将网页 AI 连接到本地 daemon。AI 可以在选定的工作区内查看文件、修改代码和调用工具，你则在 VS Code 中管理会话、权限、审批和活动记录。
 
@@ -22,7 +26,7 @@ BlackHole daemon（仅监听 loopback）
 选定的工作区、shell 和已配置的 MCP 上游
 ```
 
-[VS Code 插件](packages/vscode/README.md)是推荐的用户入口。本 README 同时介绍项目架构和源码开发流程。请阅读[许可证范围](#许可证范围)，不要默认整个仓库适用同一许可证。
+[VS Code 插件](packages/vscode/README.md)是推荐的用户入口。本 README 同时介绍项目架构和源码开发流程。
 
 ## 快速开始
 
@@ -147,7 +151,7 @@ proxy(sessionId, command = list | explain | call | cancel, tool?, argsJson?, opt
 - Shell 命令和 MCP 上游可能访问外部服务，其权限和隐私条款仍然适用。
 - 可选语义搜索会向 Devin Fast Context 发送所需路径和代码片段。默认凭据策略要求明确配置；自动发现本机 Devin/Windsurf 凭据需要主动开启。
 - BlackHole Cloud 处理登录、订阅检查、订阅卡兑换及支付／退款。这些操作本身不会上传工作区文件。
-- 账号 bearer token 使用 VS Code SecretStorage 保存。插件仅在内存中保留活动工作区会话 key；daemon 将其凭证材料保存为哈希。插件没有独立的产品遥测或广告跟踪器。
+- 认证数据保存在用户本机。凭据和运行数据不得进入源码提交、构建附件或问题报告；报告与披露要求见[安全说明](SECURITY.md)。
 
 不要在公开问题报告中提交连接 URL、key、token、Cookie、卡密或敏感工作区内容。
 
@@ -161,7 +165,7 @@ proxy(sessionId, command = list | explain | call | cancel, tool?, argsJson?, opt
 
 ## 源码开发
 
-源码贡献者需要 **Node.js 22.5 或更新版本**，以及 `package.json` 声明的 pnpm 版本。这是开发要求，不是普通插件用户的额外安装要求。
+源码开发使用 [Core CI](.github/workflows/vscode-extension.yml) 固定的 Node.js 版本，以及 `package.json` 声明的 pnpm 版本。普通插件用户使用 VS Code 自带的运行时，无需另行安装这些开发工具。
 
 ```bash
 pnpm install --frozen-lockfile
@@ -177,20 +181,16 @@ pnpm start
 
 默认监听 `127.0.0.1:7306`。从源码构建不会绕过账号、权益或权限检查。
 
-这个独立 Core 仓库不要求取得私有 Cloud 源码或部署配置。公开客户端构建配置位于 `scripts/environment-config.mjs`。默认测试配置使用合成的 `example.org` 地址与一次性公钥，仅用于构建和打包验证，不能登录真实服务。对接自己的测试服务时，向构建／打包入口同时传入 `--cloud-origin` 和 `--cloud-public-key`；不要把签名私钥放进客户端配置。正式服务地址与公钥信任保持不变。
+Core 可以独立构建，不依赖私有 Cloud 仓库。正式客户端配置位于 [src/environments/production.json](src/environments/production.json)。测试构建使用显式地址／公钥参数对，或本机 `config/environments/test.json`；离线 fixture 不可生成可安装包。配置优先级与产物检查见[发布验收](RELEASE-VALIDATION.md)。
 
-在本地构建或打包插件。首次打包通用 VSIX 前，需要显式下载锁定版本的跨平台 keyring 二进制；脚本按 npm registry 的 SHA-512 integrity 校验下载内容，只写入被忽略的本地构建／缓存目录。
+明确选择需要的安装包：
 
 ```bash
-pnpm --filter @blackhole/web build
-pnpm --filter blackhole-vscode build          # 合成测试配置
-node scripts/fetch-keyring-prebuilds.mjs      # 通用 VSIX 的一次性准备
-pnpm --filter blackhole-vscode package        # 测试 VSIX，不用于真实 Cloud 登录
-pnpm --filter blackhole-vscode build:production
-pnpm --filter blackhole-vscode package:production
+pnpm package:vsix:production  # 官方正式服务
+pnpm package:vsix:test        # 需要独立测试服务配置
 ```
 
-打包生成不包含 `cloudflared` 的通用 VSIX，不再区分内置隧道程序包和轻量包。构建、打包不会自动提升版本号、安装插件、重启正在运行的 daemon 或部署云服务。测试与正式端点及其信任配置都是固定的构建时环境配置，不是面向用户的设置项。
+打包生成不包含 `cloudflared` 的通用 VSIX，不会自动安装插件、提升版本、重启 daemon、发布版本或部署 Cloud。源码配置可以维护，产物中的端点与验签公钥在构建时确定。
 
 ### CLI 参考
 
@@ -232,7 +232,7 @@ pnpm test:contracts
 
 完整门禁包含仅限 Windows 的行为 smoke 测试。POSIX 子集不能替代实际系统／架构验收。真实隧道、浏览器和外部语义服务检查是依赖运行环境的单独测试；不能把本地单元测试通过等同于真实支付或生产部署验收。
 
-包括 `docs/vscode/development.md` 在内的贡献者资料通过根目录 `docs/` 索引维护。这些是维护者本地资料，不随仓库或 VSIX 分发，使用插件也不需要它们。
+开发流程见[贡献指南](CONTRIBUTING.md)，自动检查见 [CI 说明](.github/CI.md)，发版前检查见[发布验收](RELEASE-VALIDATION.md)。维护者的私有笔记和迁移档案不属于本仓库。
 
 ## 交流与反馈
 
@@ -242,8 +242,8 @@ pnpm test:contracts
 
 按版本记录的变化见[插件更新日志](packages/vscode/CHANGELOG.md)。
 
-## 许可证范围
+## 许可证
 
-`packages/vscode` 下的源码采用 **Apache-2.0**，另行标识的第三方组件除外。请阅读该目录的 [LICENSE](packages/vscode/LICENSE)、[NOTICE](packages/vscode/NOTICE) 和[第三方声明](packages/vscode/THIRD_PARTY_NOTICES.md)。
+BlackHole 采用 [Apache License 2.0](LICENSE) 许可，署名信息见 [NOTICE](NOTICE)。第三方组件沿用各自的许可证，见[第三方声明](packages/vscode/THIRD_PARTY_NOTICES.md)和[打包的 npm 依赖许可证](packages/vscode/THIRD_PARTY_LICENSES.md)。
 
-该许可证不授予 `packages/vscode` 之外组件的许可，包括 BlackHole 云服务、支付／账号／订阅后端及部署配置。不要默认整个仓库或托管服务适用同一开源许可证。打包组件仍遵循各自适用的条款。
+许可证只覆盖本仓库。托管的 BlackHole 云服务（账号、订阅和支付）不在其中；BlackHole 名称和标志不随许可证授予，派生作品请使用其他名称。

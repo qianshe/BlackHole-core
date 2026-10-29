@@ -5,41 +5,87 @@
   --sidebar-w: 284px;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) 5px minmax(0, 1fr);
+  padding: 6px;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
 }
 .app.collapsed {
-  --sidebar-w: 60px;
+  --sidebar-w: 48px;
+}
+
+/* VS Code Sash pattern: a generous invisible grab area and a single hairline
+   on hover/focus/drag. The 5px gutter separates rounded workbench surfaces. */
+.sidebarSplitter {
+  position: relative;
+  z-index: 12;
+  min-width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.sidebarSplitter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 12px;
+  transform: translateX(-50%);
+}
+.sidebarSplitter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  pointer-events: none;
+  transition: background-color .12s ease;
+}
+.sidebarSplitter:hover::after,
+.sidebarSplitter:focus-visible::after,
+.sidebarResizing .sidebarSplitter::after { background: var(--accent); }
+.sidebarSplitter:focus-visible { outline: none !important; }
+.sidebarResizing { cursor: col-resize; user-select: none; }
+.app.collapsed .sidebarSplitter { pointer-events: none; }
+@media(max-width:760px) {
+  .sidebarSplitter { pointer-events: none; }
 }
 
 /* ── sidebar ─────────────────────────────────────────────── */
 .sidebar {
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
 }
+/* One geometry for both states: collapsing only narrows the column (48px) and hides labels.
+   Collapsed, every icon is centred 24px from the left edge, so nothing moves or resizes on toggle;
+   rows keep their height (header 56, nav 40, account 48). */
 .sideTop {
-  height: 58px;
+  height: 56px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  gap: 9px;
+  padding: 0 14px;
+  gap: 10px;
   flex: 0 0 auto;
 }
 .brand {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   background: var(--text-bright);
   color: var(--bg);
-  font: 800 11px var(--mono);
+  font: 800 12px var(--mono);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -54,40 +100,58 @@
   border: 0;
   background: transparent;
   color: var(--text-3);
-  width: 34px;
-  height: 34px;
-  border-radius: 7px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 8px;
   display: grid;
   place-items: center;
+  cursor: pointer;
 }
 .collapse:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
-.collapsed .sideTop {
-  padding: 0 13px;
-  flex-direction: column;
-  height: auto;
-  padding-top: 12px;
-  gap: 6px;
+/* Collapsed: the brand stays put (8px padding + 16px = centre at 24px) and expands on click. */
+.brandBtn {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
 }
-.collapsed .collapse {
-  margin-left: 0;
+.brandHover {
+  display: none;
+}
+.brandBtn:hover,
+.brandBtn:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.brandBtn:hover .brandText,
+.brandBtn:focus-visible .brandText {
+  display: none;
+}
+.brandBtn:hover .brandHover,
+.brandBtn:focus-visible .brandHover {
+  display: grid;
+  place-items: center;
 }
 
 .navBtn {
-  margin: 0 10px;
-  min-height: 44px;
+  margin: 0 10px 2px;
+  height: 40px;
+  flex: 0 0 auto;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
-  padding: 0 12px;
+  padding: 0 11px;
   display: grid;
   grid-template-columns: 18px 1fr auto;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .navBtn:hover,
 .navBtn[aria-current='page'] {
@@ -96,7 +160,7 @@
 }
 .primaryNav {
   composes: navBtn;
-  margin: 2px 10px 4px;
+  margin: 4px 10px 8px;
   background: var(--raised);
   color: var(--text-bright);
 }
@@ -107,22 +171,128 @@
   color: var(--text-3);
 }
 .navSummary {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .navSummaryOk {
   composes: navSummary;
   color: var(--ok);
 }
+/* 渠道总开关：与 VS Code 侧边栏同一套状态色（绿=开、黄=启动中/未验证、红描边=失败）。 */
+.chSwitch {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-3) 28%, transparent);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.chSwitch::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--raised);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-3) 35%, transparent);
+  transition: transform 0.15s;
+}
+.chSwitch[aria-checked='true']::after {
+  transform: translateX(12px);
+  background: #fff;
+  box-shadow: none;
+}
+.chSwitch[data-state='on'] {
+  background: var(--ok);
+  border-color: transparent;
+}
+.chSwitch[data-state='warn'],
+.chSwitch[data-state='starting'] {
+  background: var(--warn);
+  border-color: transparent;
+}
+.chSwitch[data-state='starting']::after {
+  animation: chSwitchPulse 1s ease-in-out infinite;
+}
+.chSwitch[data-state='error'] {
+  border-color: var(--bad);
+}
+.chSwitch:disabled {
+  cursor: progress;
+}
+.chSwitch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+@keyframes chSwitchPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chSwitch,
+  .chSwitch::after {
+    transition: none;
+  }
+  .chSwitch[data-state='starting']::after {
+    animation: none;
+  }
+}
+/* 侧栏「公网渠道」行：开关是独立的按钮（不能嵌在导航按钮里），浮在行右侧，导航按钮给它留出位置。 */
+.navRow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.navBtnWithSwitch {
+  padding-right: 48px;
+}
+.collapsed .navBtnWithSwitch {
+  padding-right: 11px;
+}
+.navRowSwitch {
+  position: absolute;
+  right: 22px;
+  top: 13px;
+}
+.collapsed .navRowSwitch {
+  display: none;
+}
+/* 渠道页状态行里的总开关：和状态文字垂直居中。 */
+.channelSummarySwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .kbd {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
 }
+/* collapsed rail: logo, nav items and account are all 40x40, 4px apart */
+/* Collapsed rows keep height and margins; only the width shrinks to the icon cell. */
+.collapsed .sideTop {
+  padding: 0 8px;
+}
+.collapsed .navBtn,
+.collapsed .primaryNav {
+  margin-left: 4px;
+  margin-right: 4px;
+}
+.collapsed .sideBottom {
+  padding: 8px 4px;
+}
 .collapsed .navBtn {
-  grid-template-columns: 18px;
-  justify-content: center;
+  width: 40px;
   padding: 0;
-  margin: 0 10px;
+  grid-template-columns: 40px;
+  justify-items: center;
+  gap: 0;
 }
 .collapsed .navLabel,
 .collapsed .navSummary,
@@ -140,11 +310,12 @@
 }
 .collapsed .sideScroll {
   visibility: hidden;
+  pointer-events: none;
 }
 .sectionLabel {
   padding: 12px 14px 5px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   display: flex;
@@ -170,7 +341,7 @@
   position: relative;
 }
 .projectHead {
-  width: 100%;
+  width: calc(100% - 30px);
   min-height: 40px;
   border: 0;
   background: transparent;
@@ -208,7 +379,7 @@
   display: grid;
 }
 .projectCount {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .more {
@@ -241,9 +412,9 @@
 }
 .sessionRow {
   width: 100%;
-  min-height: 40px;
+  min-height: 32px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
@@ -259,6 +430,16 @@
   background: var(--sel);
   color: var(--text-bright);
 }
+.sessionRow[aria-current='true'] .rowMeta {
+  color: var(--text-2);
+}
+.rowTitle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .rowLabel {
   flex: 1;
   min-width: 0;
@@ -266,8 +447,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.rowHandoff {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
 .rowMeta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -275,6 +470,12 @@
   composes: rowMeta;
   color: var(--warn);
 }
+.rowMetaRun {
+  composes: rowMeta;
+  color: var(--run);
+}
+.sessionRow[aria-current='true'] .rowMetaWarn { color: var(--warn); }
+.sessionRow[aria-current='true'] .rowMetaRun { color: var(--run); }
 .recentList {
   list-style: none;
   margin: 0;
@@ -315,17 +516,18 @@
 }
 
 .sideBottom {
-  padding: 8px;
+  padding: 8px 10px;
   border-top: 1px solid var(--border);
   position: relative;
 }
 .accountBtn {
   width: 100%;
-  min-height: 48px;
+  height: 48px;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  padding: 6px 8px;
+  padding: 0 4px;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 32px 1fr auto;
   gap: 9px;
@@ -358,7 +560,7 @@
   text-overflow: ellipsis;
 }
 .accountSub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .accountSubWarn {
@@ -370,8 +572,11 @@
   color: var(--bad);
 }
 .collapsed .accountBtn {
-  grid-template-columns: 32px;
-  justify-content: center;
+  width: 40px;
+  padding: 0;
+  grid-template-columns: 40px;
+  justify-items: center;
+  gap: 0;
 }
 .collapsed .accountMain,
 .collapsed .accountMore {
@@ -387,7 +592,7 @@
   z-index: 40;
   background: var(--raised);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-pop);
   padding: 6px;
   min-width: 200px;
@@ -409,14 +614,14 @@
 }
 .menuMeta {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 2px;
 }
 .menuItem {
   width: 100%;
   min-height: 38px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -440,6 +645,11 @@
   composes: menuItem;
   color: var(--bad);
 }
+.menuGroupLabel {
+  padding: 4px 9px 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
 .menuSep {
   height: 1px;
   background: var(--border);
@@ -451,8 +661,15 @@
   min-width: 0;
   min-height: 0;
   background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+.mainSession {
+  background: var(--bg);
+  border: 0;
 }
 .mainBody {
   flex: 1;
@@ -461,41 +678,44 @@
 .sessionView {
   height: 100%;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
 }
 .sessionHead {
-  padding: 22px 26px 16px;
-  border-bottom: 1px solid var(--border);
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  padding: 6px 14px;
+  border-bottom: 0.5px solid var(--border);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--surface);
 }
+.sessionHead .btn { min-height: 28px; border-radius: var(--r-md); }
 .sessionTop {
   display: flex;
-  align-items: flex-start;
-  gap: 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
 }
 .sessionTitle {
   min-width: 0;
-}
-.eyebrow {
-  font: 11px var(--mono);
-  color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 1 1 auto;
 }
 .title {
-  margin: 4px 0;
+  margin: 0;
   color: var(--text-bright);
-  font-size: 22px;
+  font-size: 14px;
   line-height: 1.3;
   font-weight: 620;
   letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .path {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 .controls {
   margin-left: auto;
@@ -529,10 +749,11 @@
   color: var(--text-3);
 }
 .facts {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 7px;
   color: var(--text-3);
   font-size: 12px;
 }
@@ -553,7 +774,7 @@
 
 .btn {
   min-height: 34px;
-  border-radius: 7px;
+  border-radius: 8px;
   padding: 0 12px;
   font-size: 12px;
   border: 1px solid var(--border-strong);
@@ -575,12 +796,12 @@
 }
 .btnPrimary {
   composes: btn;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
 }
 .btnPrimary:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: var(--accent-fill-hover);
   color: #fff;
 }
 .btnDanger {
@@ -594,15 +815,80 @@
   color: var(--text-2);
 }
 
-/* workspace = feed + inspector */
+/* Three rounded workbench surfaces. The feed and the existing ChatDock remain
+   unchanged in their own column; only the surrounding grid layout differs. */
 .workspace {
+  height: 100%;
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 5px min(var(--inspector-w, 300px), max(230px, calc(100% - 365px)));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--bg);
 }
+.workspace::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1 / -1;
+  z-index: 4;
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
+  pointer-events: none;
+}
+.workspace.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.splitter {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  position: relative;
+  width: 5px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+  background: transparent;
+}
+.splitter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 12px;
+  transform: translateX(-50%);
+}
+.splitter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  pointer-events: none;
+  transition: background-color 0.12s ease;
+}
+.splitter:hover::after,
+.splitter:focus-visible::after,
+.resizing .splitter::after { background: var(--accent); }
+.splitter:focus-visible { outline: none !important; }
 .feed {
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
   overflow: auto;
+  background: var(--surface);
+}
+/* The original composer stays in column 1, directly under its feed. */
+.dockCell {
+  grid-column: 1;
+  grid-row: 3;
+  min-width: 0;
+  background: var(--surface);
+  border-radius: 0 0 var(--r-md) var(--r-md);
 }
 .feedHead {
   min-height: 44px;
@@ -624,7 +910,7 @@
 }
 .count {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 .feedActions {
   margin-left: auto;
@@ -638,7 +924,7 @@
   color: var(--text-2);
   border-radius: 6px;
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 12px;
   min-height: 28px;
 }
 .mini:hover {
@@ -656,12 +942,69 @@
 
 .calls {
   list-style: none;
-  margin: 0;
-  padding: 0;
+  /* One content column for the whole transcript, identical to the composer's:
+     828px of content at most, centred, with a gutter that grows with the pane (20-40px,
+     6% of the width) so a narrowed pane still breathes. Tool band, prose and the input
+     box share both edges exactly (ChatDock uses the same gutter). */
+  --gutter: clamp(20px, 6%, 40px);
+  width: 100%;
+  max-width: calc(828px + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: 0 var(--gutter);
 }
+/* Back to bottom: the zero-height sticky wrapper keeps it out of the flow, so it can
+   appear and vanish without shifting the transcript. */
+.jumpWrap {
+  position: sticky;
+  bottom: var(--sp-4);
+  height: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.jump {
+  position: absolute;
+  right: var(--sp-4);
+  bottom: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--raised);
+  color: var(--text-2);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.jump:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.jump:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+/* Narrow layout scrolls the workspace and the composer owns the bottom edge: no button. */
+@media (max-width: 1100px) {
+  .jumpWrap {
+    display: none;
+  }
+}
+/* Tool rail: adjacent calls read as one flush band with a left rule, while replies
+   are inset cards (ChatDock.module.css) — tool output and reply text get a visible
+   boundary instead of running together. */
 .call {
   position: relative;
-  border-bottom: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 3.5%, transparent);
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.call + .call {
+  margin-top: 3px;
 }
 .callRow {
   width: 100%;
@@ -669,16 +1012,23 @@
   background: transparent;
   text-align: left;
   display: grid;
-  grid-template-columns: 76px 140px minmax(0, 1fr) 84px;
+  /* glyph · tool+target(+diff) · duration: the state column is one character wide */
+  grid-template-columns: 18px minmax(0, 1fr) 56px;
   align-items: center;
   gap: 10px;
-  min-height: 46px;
-  padding: 0 16px;
-  color: var(--text);
+  min-height: 28px;
+  padding: 0 14px;
+  border-radius: 8px;
+  color: var(--text-2);
+  opacity: 0.85;
 }
 .callRow:hover,
 .callOpen .callRow {
-  background: var(--surface-2);
+  opacity: 1;
+}
+.callRow:hover,
+.callOpen .callRow {
+  background: var(--sel);
 }
 .fresh .callRow {
   animation: fresh 2.4s var(--ease);
@@ -688,28 +1038,79 @@
     background: var(--accent-soft);
   }
 }
-.status {
+/* Codex-style status: a single glyph, tinted by tone; the words live in
+   aria-label/title so colour is never the only signal. */
+.bullet {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  justify-content: center;
+  font: 12px var(--mono);
+  color: var(--text-3);
 }
+.bullet[data-tone='ok'] {
+  color: var(--ok);
+}
+.bullet[data-tone='run'] {
+  color: var(--run);
+  animation: bulletPulse 1.6s var(--ease) infinite;
+}
+.bullet[data-tone='warn'] {
+  color: var(--warn);
+}
+.bullet[data-tone='bad'] {
+  color: var(--bad);
+}
+@keyframes bulletPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bullet[data-tone='run'] {
+    animation: none;
+  }
+}
+.callMain {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+/* The verb phrase is the point ("运行 npm test"), the tool id is its label. */
 .tool {
-  font: 11px var(--mono);
-  color: var(--text-bright);
+  flex: 0 0 auto;
+  font: 12px var(--mono);
+  color: var(--text-3);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .desc {
-  font: 11px var(--mono);
-  color: var(--text-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 12px var(--mono);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.diff {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  font: 12px var(--mono);
+  white-space: nowrap;
+  color: var(--text-3);
+}
+.diff:empty {
+  display: none;
+}
+.diffAdd {
+  color: var(--ok);
+}
+.diffDel {
+  color: var(--bad);
+}
 .duration {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
   text-align: right;
 }
@@ -723,36 +1124,63 @@
   background: var(--warn-soft);
   color: var(--warn);
   padding: 0 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .approveLink:hover {
   text-decoration: underline;
 }
+/* Output hangs off the row like Codex's └ connector instead of starting a new block. */
 .callBody {
-  padding: 4px 16px 14px 102px;
+  position: relative;
+  padding: 5px 14px 12px 42px;
   display: grid;
-  gap: 10px;
+  gap: 9px;
 }
-.block {
+.callBody::before {
+  content: '└';
+  position: absolute;
+  left: 22px;
+  top: 6px;
+  font: 12px var(--mono);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.clipWrap {
+  min-width: 0;
+}
+.clipMore {
+  display: inline-block;
+  margin: 6px 0 0;
+  padding: 2px 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  overflow: hidden;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-3);
+  font: 12px var(--mono);
+}
+.clipMore:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+/* Codex has no boxes: the branch line and the indent are the structure. */
+.block {
+  min-width: 0;
 }
 .blockHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px 4px 10px;
-  font-size: 11px;
+  gap: 8px;
+  padding: 0 0 2px;
+  font: 12px var(--mono);
+  letter-spacing: 0.04em;
   color: var(--text-3);
-  border-bottom: 1px solid var(--border);
 }
 .pre {
   margin: 0;
-  padding: 10px;
-  font: 11px/1.55 var(--mono);
+  padding: 2px 0 0;
+  font: 12px/1.6 var(--mono);
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
@@ -763,43 +1191,80 @@
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  font: 11px var(--mono);
+  padding-top: 1px;
+  font: 12px var(--mono);
   color: var(--text-3);
+  opacity: 0.9;
 }
-.pager {
+.older {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 14px;
+  padding: 10px;
   font-size: 12px;
   color: var(--text-3);
 }
+.draftRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
 .feedNote {
   padding: 8px 16px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
 /* inspector */
+/* Wide: a transparent wrapper (the inspector stays a grid item); the toggle only
+   exists on narrow screens (see the max-width: 1100px block). */
+.inspectorDock {
+  display: contents;
+}
+.inspectorToggle {
+  display: none;
+  position: relative;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-2);
+  box-shadow: var(--shadow-pop);
+  cursor: default;
+}
+.inspectorToggle:hover,
+.inspectorDock:focus-within .inspectorToggle {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.inspectorToggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.inspectorBadge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  border: 1.5px solid var(--surface);
+}
 .inspector {
-  border-left: 1px solid var(--border);
+  grid-column: 3;
+  grid-row: 1 / -1;
+  border: 0.5px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--surface-2);
   overflow: auto;
   min-width: 0;
-}
-.inspectorTitle {
-  margin: 0;
-  min-height: 44px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-  color: var(--text);
 }
 .group {
   padding: 14px;
@@ -807,7 +1272,7 @@
 }
 .groupTitle {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -825,7 +1290,7 @@
   display: grid;
   grid-template-columns: 64px 1fr;
   gap: 6px 8px;
-  font-size: 11.5px;
+  font-size: 12px;
   margin: 0;
 }
 .kv dt {
@@ -842,7 +1307,7 @@
 }
 .muted {
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
   margin: 0;
 }
 .todos {
@@ -856,14 +1321,14 @@
   align-items: flex-start;
   padding: 5px 0;
   color: var(--text-2);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .check {
   width: 14px;
   height: 14px;
   margin-top: 2px;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -886,13 +1351,13 @@
 }
 .todoState {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   white-space: nowrap;
 }
 .progress {
   height: 3px;
-  border-radius: 2px;
+  border-radius: 4px;
   background: var(--border);
   overflow: hidden;
   margin: 2px 0 8px;
@@ -915,7 +1380,7 @@
   gap: 7px;
   padding: 9px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .approvalHead strong {
   color: var(--warn);
@@ -923,7 +1388,7 @@
 .approvalHead span:last-child {
   margin-left: auto;
   color: var(--text-3);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
 }
 .tags {
   display: flex;
@@ -932,7 +1397,7 @@
   padding: 8px 10px 0;
 }
 .tag {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 4px;
   border: 1px solid var(--border-strong);
@@ -959,8 +1424,8 @@
   padding: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
-  font: 11px/1.55 var(--mono);
+  border-radius: 6px;
+  font: 12px/1.55 var(--mono);
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
@@ -970,7 +1435,7 @@
 .cmd mark {
   background: var(--bad-soft);
   color: var(--bad);
-  border-radius: 2px;
+  border-radius: 4px;
 }
 .cmd .mark_yellow {
   background: var(--warn-soft);
@@ -1013,7 +1478,7 @@
 .channelsHead h1 {
   margin: 0;
   color: var(--text-bright);
-  font-size: 22px;
+  font-size: 18px;
 }
 .channelsHead p {
   margin: 4px 0 0;
@@ -1041,9 +1506,10 @@
   margin: 12px 0 0;
   padding: 0;
 }
+/* Fixed status and action columns, so every channel row lines up whatever buttons it has. */
 .channelRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px auto;
+  grid-template-columns: minmax(0, 1fr) 230px 250px;
   gap: 22px;
   align-items: center;
   padding: 16px 2px;
@@ -1059,18 +1525,18 @@
 .channelDesc {
   margin-top: 3px;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .channelUrl {
   margin-top: 7px;
   color: var(--text-2);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .channelMeta {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-3);
   display: grid;
   gap: 4px;
@@ -1086,7 +1552,7 @@
   flex-wrap: wrap;
 }
 .provider {
-  font-size: 11px;
+  font-size: 12px;
   border: 1px solid var(--border-strong);
   color: var(--text-3);
   padding: 0 5px;
@@ -1170,6 +1636,11 @@
   max-height: none;
   border: 0;
 }
+.overlayDrawer {
+  composes: overlay;
+  padding: 0;
+  place-items: stretch end;
+}
 .overlay:not([open]) {
   display: none;
 }
@@ -1199,7 +1670,7 @@
 .dialogTitle {
   margin: 0;
   color: var(--text-bright);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 650;
 }
 .dialogBody {
@@ -1236,12 +1707,12 @@
   max-height: 260px;
 }
 .approvalNote {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-3);
   line-height: 1.6;
 }
 .expires {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--text-3);
 }
 
@@ -1299,13 +1770,13 @@
 .result small {
   display: block;
   color: var(--text-3);
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .resultKind {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 .searchFoot {
@@ -1313,12 +1784,13 @@
   gap: 14px;
   padding: 8px 16px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
 /* settings modal */
 .modal {
+  position: relative;
   width: min(1040px, calc(100vw - 48px));
   height: min(800px, calc(100vh - 48px));
   background: var(--raised);
@@ -1329,18 +1801,23 @@
   grid-template-columns: 210px minmax(0, 1fr);
   overflow: hidden;
 }
+.settingsModalCollapsed { grid-template-columns: 58px minmax(0, 1fr); }
+.settingsNavHead { min-height: 34px; display: flex; align-items: center; gap: 6px; }
+.settingsNavHead h2 { flex: 1; min-width: 0; margin: 0; color: var(--text-bright); font-size: 15px; }
+.settingsScrim { display: none; }
+.settingsPageTitleHidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.settingsNavToggle { width: 30px; height: 30px; min-width: 30px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); }
+.settingsPageMenu { width: 40px; height: 40px; display: inline-grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--text-3); }
+.settingsNavToggle:hover, .settingsPageMenu:hover { background: var(--surface-hover); color: var(--text-bright); }
 .settingsNav {
   border-right: 1px solid var(--border);
   padding: 14px 10px;
   overflow: auto;
   background: var(--sidebar);
 }
-.settingsNav h2 {
-  margin: 3px 9px 14px;
-  color: var(--text-bright);
-  font-size: 17px;
-}
 .settingsNav ul {
+  display: grid;
+  gap: 3px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1349,21 +1826,31 @@
   width: 100%;
   min-height: 38px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
   padding: 0 10px;
 }
+.settingsNavBtn { display: flex; align-items: center; gap: 9px; }
+.settingsNavIcon { width: 20px; flex: 0 0 20px; display: grid; place-items: center; }
+.settingsNavIcon svg { display: block; }
+.settingsNavLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.settingsNavCollapsed { padding-left: 8px; padding-right: 8px; }
+.settingsNavCollapsed .settingsNavHead h2 { display: none; }
+.settingsNavCollapsed .settingsNavToggle { margin: 0 auto; }
+.settingsNavCollapsed .settingsNavBtn { justify-content: center; padding-left: 0; padding-right: 0; }
+.settingsNavCollapsed .settingsNavLabel { display: none; }
 .settingsNavBtn:hover {
   background: var(--surface-hover);
 }
-.settingsNavBtn[aria-current='true'] {
+.settingsNavBtn[aria-current='page'] {
   background: var(--sel);
   color: var(--text-bright);
 }
 .settingsContent {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   position: relative;
   scroll-behavior: smooth;
@@ -1375,22 +1862,29 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 28px 12px;
+  min-height: 64px;
   background: var(--raised);
   border-bottom: 1px solid var(--border);
 }
 .settingsHead h2 {
+  min-width: 0;
   margin: 0;
   color: var(--text-bright);
-  font-size: 19px;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settingsBody {
-  padding: 0 0 40px;
+  min-width: 0;
+  padding: 0;
 }
 /* the VS Code panel copy lives inside the dialog: drop its own page title and width cap */
 .settingsBody :global(.bhp) {
   max-width: none;
-  padding: 8px 28px 0;
+  padding: 0 28px;
   background: transparent;
 }
 .settingsBody :global(.bhp > h1) {
@@ -1406,10 +1900,11 @@
   color: var(--text-3);
   width: 34px;
   height: 34px;
-  border-radius: 7px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
 }
+.settingsHead .close { flex: 0 0 32px; width: 32px; height: 32px; }
 .close:hover {
   background: var(--surface-hover);
   color: var(--text-bright);
@@ -1425,7 +1920,7 @@
   box-shadow: var(--shadow-pop);
   border-radius: 8px;
   padding: 9px 14px;
-  font-size: 12.5px;
+  font-size: 13px;
   z-index: 60;
   color: var(--text-bright);
   max-width: min(560px, calc(100vw - 32px));
@@ -1444,58 +1939,160 @@
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     overflow: auto;
   }
+  .splitter {
+    display: none;
+  }
   .feed {
+    grid-column: 1;
+    grid-row: 2;
     overflow: visible;
   }
+  /* No room for the side column: the details never stack under the replies.
+     They float from a top-right icon (sticky, zero height so it takes no space)
+     and open on hover / keyboard focus; leaving closes them. */
+  .inspectorDock {
+    display: block;
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: end;
+    align-self: start;
+    position: sticky;
+    top: 8px;
+    height: 0;
+    margin-right: 12px;
+    z-index: 7;
+  }
+  .inspectorToggle {
+    display: inline-flex;
+  }
   .inspector {
-    border-left: 0;
-    border-top: 1px solid var(--border);
-    order: -1;
-    overflow: visible;
+    display: none;
+    position: absolute;
+    top: 28px;
+    right: 0;
+    width: min(360px, calc(100vw - 80px));
+    max-height: min(70vh, 640px);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-pop);
+  }
+  .inspectorDock:hover .inspector,
+  .inspectorDock:focus-within .inspector {
+    display: block;
+  }
+  /* single column: the composer trails the feed and stays pinned to the bottom
+     of the scrolling workspace, as it was before the grid slot */
+  .dockCell {
+    grid-column: 1;
+    grid-row: 3;
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+  }
+  .narrowApprovals {
+    display: flex;
   }
 }
 @media (max-width: 760px) {
   .app,
   .app.collapsed {
-    grid-template-columns: 60px minmax(0, 1fr);
+    grid-template-columns: 48px 5px minmax(0, 1fr);
   }
   /* expanded on a narrow screen: the sidebar floats over the content as a drawer */
   .app:not(.collapsed) .sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: 6px auto 6px 6px;
     width: 284px;
     z-index: 45;
     box-shadow: var(--shadow-pop);
   }
   .sessionTop {
     flex-direction: column;
+    align-items: flex-start;
   }
   .controls {
     margin-left: 0;
     flex-wrap: wrap;
   }
   .callRow {
-    grid-template-columns: 64px minmax(0, 1fr) 64px;
+    grid-template-columns: 60px minmax(0, 1fr) auto 52px;
+    gap: 8px;
+    padding-block: 6px;
   }
-  .callRow .desc {
-    grid-column: 2 / 4;
-    grid-row: 2;
+  .callMain {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .callMain .desc {
+    width: 100%;
   }
   .callBody {
     padding-left: 16px;
   }
+  /* Keep Web settings visually modal, even when the mobile drawer layout is active. */
+  .overlay[aria-label='设置'] { padding: 12px; }
+  .overlay[aria-label='设置'] .modal {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow-pop);
+  }
   .modal {
-    grid-template-columns: 1fr;
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
+  /* Narrow settings use a left drawer below the single menu control, not a tab strip. */
   .settingsNav {
-    display: none;
+    position: absolute;
+    inset: 56px auto 0 0;
+    z-index: 5;
+    width: min(270px, calc(100% - 40px));
+    box-sizing: border-box;
+    padding: 8px;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    overflow: auto;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform .16s ease, visibility .16s step-end;
+    box-shadow: none;
   }
+  .settingsNavOpen {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform .16s ease;
+    box-shadow: var(--shadow-pop);
+  }
+  .settingsNavHead,
+  .settingsNav h2 { display: none; }
+  .settingsNav ul { display: grid; gap: 4px; }
+  .settingsNavBtn { width: 100%; min-height: 44px; white-space: normal; }
+  .settingsScrim:not([hidden]) {
+    display: block;
+    position: absolute;
+    inset: 56px 0 0;
+    z-index: 4;
+    border: 0;
+    padding: 0;
+    background: rgb(0 0 0 / 45%);
+  }
+  .settingsHead { min-height: 56px; }
+  .settingsPageMenu { width: 40px; height: 40px; }
+  .settingsBody :global(.bhp) { padding: 0 12px; }
   .channelRow {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+  .channelRow .rowActions {
+    justify-content: flex-start;
   }
 }
 
@@ -1506,6 +2103,11 @@
   outline-offset: 2px;
 }
 .searchInput:focus-visible {
+  outline: none;
+}
+/* the settings body takes focus on open (keyboard scrolling) without drawing a ring */
+.settingsContent[tabindex]:focus,
+.settingsContent[tabindex]:focus-visible {
   outline: none;
 }
 
@@ -1524,6 +2126,24 @@
     padding: 0;
   }
 }
+.narrowApprovals {
+  display: none;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.narrowApprovals span:last-child {
+  margin-left: auto;
+}
 .moreApprovals {
   composes: mini;
   width: 100%;
@@ -1538,3 +2158,274 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* after the base rule so it wins: approvals bar and wrapping toolbar on narrow screens */
+@media (max-width: 1100px) {
+  .narrowApprovals {
+    display: flex;
+    /* clear the floating details icon at the top right */
+    padding-right: 52px;
+  }
+}
+@media (max-width: 760px) {
+  .feedHead {
+    flex-wrap: wrap;
+    padding: 8px 16px;
+  }
+  .feedActions {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .miniSearch {
+    flex: 1 1 100%;
+    width: auto;
+  }
+  .feedActions select {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+/* session row "···" menu (after .menu/.more: composes needs them defined first) */
+.sessionItem {
+  position: relative;
+}
+.sessionItem .sessionRow {
+  padding-right: 34px;
+}
+.sessionMore {
+  composes: more;
+  top: 3px;
+  right: 4px;
+}
+.sessionItem:hover .sessionMore,
+.sessionItem:focus-within .sessionMore,
+.sessionRow[aria-current='true'] + div .sessionMore {
+  opacity: 1;
+}
+@media (hover: none) {
+  .sessionMore,
+  .more {
+    opacity: 1;
+  }
+}
+.rowMenu {
+  composes: menu;
+  right: 0;
+  top: 36px;
+  width: 200px;
+}
+
+/* The feed keeps its own scroll position after older entries load (see feed/scrollAnchor.ts); the browser's scroll anchoring would stack on top of it. */
+.feed { overflow-anchor: none; }
+
+/* Session inspector tabs and the current-turn review. */
+.inspectorTabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  gap: 0;
+  padding: 0 4px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.inspectorPinnedTabs {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.inspectorFileTabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.inspectorFileTabs::-webkit-scrollbar { display: none; }
+.inspectorFileTab {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-items: center;
+  border-right: 0.5px solid var(--border);
+}
+.inspectorFileTab:has([aria-selected='true']) { background: var(--surface); }
+.inspectorFileTabName {
+  min-width: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px 0 9px;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font: 12px var(--sans);
+}
+.inspectorFileTabName[aria-selected='true'] { color: var(--text-bright); }
+.inspectorFileClose {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+}
+.inspectorFileClose:hover { background: var(--surface-hover); color: var(--text); }
+.inspectorPending {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.inspectorTab {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 5px 0 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inspectorTab:hover { background: var(--surface-hover); color: var(--text-2); }
+.inspectorTab[aria-selected='true'] { border-bottom-color: var(--accent); color: var(--text-bright); }
+.inspectorTab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.inspectorPanel { min-width: 0; }
+.turnChanges { min-width: 0; padding-bottom: 10px; }
+.turnEmpty { padding: 18px 14px; color: var(--text-3); font-size: 12px; line-height: 1.5; text-align: center; }
+.turnNotice { margin: 10px 12px 0; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--surface-2)); color: var(--warn); font-size: 12px; line-height: 1.45; }
+.turnStats { display: flex; align-items: center; gap: 8px; padding: 12px 14px 9px; color: var(--text-2); font-size: 12px; }
+.turnStats b { font-family: var(--mono); font-weight: 600; }
+.turnSpacer { flex: 1; }
+.turnUnavailable { color: var(--text-3); font-size: 12px; }
+.turnFileHeading { padding: 8px 14px 6px; color: var(--text-3); font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.turnFiles { min-width: 0; border-top: 1px solid var(--border); }
+.turnFile { display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text-2); text-align: left; cursor: pointer; }
+.turnFile:hover { background: var(--surface-hover); }
+.turnFileSelected { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); color: var(--text-bright); }
+.turnFile:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.turnFilePath { flex: 1; min-width: 0; overflow: hidden; color: inherit; font: 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.turnFileDelta { display: flex; flex: 0 0 auto; gap: 5px; font: 12px var(--mono); }
+.turnFileUnavailable { color: var(--text-3); font: 12px var(--mono); }
+.turnDiff { min-width: 0; margin: 0 10px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+/* The expanded block no longer repeats the file path, so this message must carry the inner
+   padding the removed title used to provide; the stats counter keeps plain turnUnavailable. */
+.turnDiffMessage { composes: turnUnavailable; padding: 10px 12px; line-height: 1.5; }
+.turnDiffCode { max-height: min(52vh, 520px); overflow: auto; color: var(--text-2); font: 12px/1.55 var(--mono); }
+.turnDiffHunk { padding: 5px 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--accent); white-space: pre; }
+/* One line-number column: a context or added line shows the new line number and a removed
+   line stays blank, so the gutter counts like the file after the change instead of jumping
+   between an old and a new column. */
+.turnDiffLine { display: grid; width: max-content; min-width: 100%; grid-template-columns: 34px 14px minmax(max-content, 1fr); padding: 0 8px; white-space: pre; }
+.turnDiffAdded { background: color-mix(in srgb, var(--ok) 9%, transparent); }
+.turnDiffRemoved { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.turnDiffNo { padding-right: 6px; color: var(--text-3); text-align: right; user-select: none; }
+/* The rule between the sign gutter and the code, at the same x on every row. */
+.turnDiffSign { color: var(--text-3); text-align: center; user-select: none; box-shadow: inset -1px 0 0 var(--border-strong); }
+.turnDiffText { white-space: pre; }
+.turnRefreshing { padding: 8px 14px 0; color: var(--text-3); font-size: 12px; text-align: right; }
+
+
+/* Read-only workspace tree and editor-like file tabs. */
+.workspaceExplorer { min-width: 0; padding: 8px 4px 14px; }
+.workspaceRoot {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px; color: var(--text-2);
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.workspaceFolder { min-width: 0; }
+.workspaceRow {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; height: 30px; min-width: 0;
+  border: 0; padding-right: 10px; background: transparent;
+  color: var(--text-2); font: 12px var(--sans);
+  text-align: left; cursor: pointer;
+}
+.workspaceRow:hover { background: var(--surface-hover); color: var(--text-bright); }
+.workspaceName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceChevron { display: grid; place-items: center; transition: transform .12s ease; }
+.workspaceChevron[data-expanded='true'] { transform: rotate(90deg); }
+.workspaceFileGlyph { width: 17px; flex: 0 0 17px; color: var(--text-3); text-align: center; }
+.workspaceNote { margin: 6px 10px 12px; color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; }
+.workspaceNote button { color: var(--accent); border: 0; background: transparent; text-decoration: underline; }
+.workspacePreview { min-width: 0; padding: 8px 10px; }
+.workspacePreviewHeading {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  color: var(--text-2); font: 12px var(--mono); overflow-wrap: anywhere;
+}
+.workspacePreviewHeading span { min-width: 0; flex: 1; }
+.workspacePreviewHeading small { flex: 0 0 auto; font-size: 12px; color: var(--text-3); }
+.workspaceCode {
+  display: flex; max-width: 100%; min-width: 0;
+  overflow: auto; background: var(--surface);
+  border: 0.5px solid var(--border); border-radius: var(--r-sm);
+}
+.workspaceLineNumbers {
+  position: sticky; left: 0;
+  flex: 0 0 auto; min-width: 32px; margin: 0;
+  padding: 8px 7px; text-align: right;
+  background: var(--surface-2); border-right: 0.5px solid var(--border);
+  user-select: none; color: var(--text-3); font: 12px/1.6 var(--mono);
+}
+.workspaceCodeText {
+  width: max-content; flex: 0 0 auto; margin: 0;
+  padding: 8px 10px; color: var(--text-2);
+  white-space: pre; font: 12px/1.6 var(--mono);
+}
+@media (prefers-reduced-motion:reduce) { .workspaceChevron { transition:none; } }
+
+/* Sidebar update rail: one compact row above the account button. Ready state
+   is a quiet accent call-to-action; download/install progress fills the row
+   background itself — one mechanism per state, no stacked chrome. */
+.updateRow {
+  position: relative;
+  margin: 0 6px 4px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-bright);
+  font: 500 12px var(--font);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.updateRowReady {
+  border-color: color-mix(in srgb, var(--sel) 55%, var(--border));
+  background: color-mix(in srgb, var(--sel) 14%, var(--surface-2));
+}
+.updateRowReady:hover:not(:disabled) { background: color-mix(in srgb, var(--sel) 22%, var(--surface-2)); }
+.updateRowBusy { color: var(--text-3); cursor: default; }
+.updateRow:disabled { cursor: default; }
+.updateGlyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--text-bright); }
+.updateRowBusy .updateGlyph { color: var(--text-3); }
+.updateLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.updatePct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-3); }
+.updateLine { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); transition: width .3s; }
+.updateIndeterminate { position: absolute; left: -30%; bottom: 0; height: 2px; width: 30%; background: var(--accent); animation: updateIndeterminate 1.2s infinite linear; }
+@keyframes updateIndeterminate { to { left: 100%; } }
+.updateRowCollapsed { width: 40px; margin: 0 6px 4px; padding: 0; justify-content: center; }
+.updateRowCollapsed .updateLabel, .updateRowCollapsed .updatePct { display: none; }
+.updateDot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }

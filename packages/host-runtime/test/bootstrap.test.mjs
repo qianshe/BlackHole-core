@@ -62,9 +62,11 @@ test('starts a daemon, then attaches to it without a second spawn', async (t) =>
   assert.equal(second.result.receipt.daemonId, r.daemonId, 'must attach, not restart');
   assert.equal(second.result.receipt.runtimeKind, 'vscode-electron');
 
-  // A signed-in ticket can still be issued by the daemon the launcher started.
+  // This disposable profile has no signed-in account. Reusing its daemon
+  // must not manufacture login state or grant an anonymous Web ticket.
   const ticket = await fetch(`http://127.0.0.1:${iso.port}/api/web/bootstrap`, { method: 'POST' });
-  assert.equal(ticket.status, 200);
+  assert.equal(ticket.status, 401);
+  assert.equal(Object.hasOwn(await ticket.json(), 'ticket'), false);
 });
 
 test('reports port_conflict when something else owns the port', async (t) => {
@@ -113,4 +115,74 @@ test('--stop shuts a running daemon down and is a no-op when nothing runs', asyn
   const r = await stopCmd(iso.env);
   assert.deepEqual([r.code, r.result.ok, r.result.stopped], [0, true, true], JSON.stringify(r.result));
   assert.equal(await fetch(`http://127.0.0.1:${iso.port}/api/health`).catch(() => null), null);
+});
+
+// Environment mismatch must be rejected before any ticket, settings write, restart or browser open.
+test('desktop refuses a daemon from another Cloud environment or without environment metadata', async t => {
+  const {createServer}=await import('node:http');
+  const iso=await createIsolatedEnv({name:'launcher-environment'});
+  let origin='https://wrong.example.org';const requests=[];
+  const server=createServer((q,s)=>{requests.push(q.url);s.setHeader('content-type','application/json');s.end(JSON.stringify({ok:true,version:'fixture',daemon_id:'fixture',...(origin?{cloud_origin:origin}:{})}));});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(async()=>{await new Promise(r=>server.close(r));iso.cleanup();});
+  for(const value of ['https://wrong.example.org','']){
+    origin=value;requests.length=0;
+    const result=await boot(iso.env,['--port',String(server.address().port)]);
+    assert.equal(result.code,1);assert.equal(result.result.code,'protocol_incompatible');
+    assert.deepEqual(requests,['/api/health']);
+  }
+});
+
+test('managed health identity is preserved in the ready receipt', async (t) => {
+  const { createServer } = await import('node:http');
+  const iso = await createIsolatedEnv({ name: 'launcher-managed-identity' });
+  const hashA = 'a'.repeat(64);
+  const hashB = 'b'.repeat(64);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/health') {
+      res.end(JSON.stringify({
+        ok: true,
+        version: '0.4.0',
+        daemon_id: 'managed-daemon',
+        db_path: iso.dbPath,
+        cloud_origin: 'https://blackhole.stellarbridge.dpdns.org',
+        runtime_id: 'blackhole-core',
+        runtime_version: '0.4.0',
+        build_id: 'build-1',
+        descriptor_hash: hashA,
+        data_root_id: hashB,
+        web_build_id: 'web-1',
+        core_protocol: { min: 1, max: 2 },
+        core_environment: 'production',
+        core_cloud_origin: 'https://blackhole.stellarbridge.dpdns.org',
+        lifecycle_state: 'managed',
+      }));
+      return;
+    }
+    if (req.url === '/api/settings') { res.end(JSON.stringify({ revision: 7 })); return; }
+    res.statusCode = 404; res.end('{}');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); iso.cleanup(); });
+
+  const result = await boot(iso.env, ['--port', String(server.address().port)]);
+  assert.equal(result.code, 0, JSON.stringify(result.result));
+  assert.deepEqual({
+    runtimeId: result.result.receipt.runtimeId,
+    runtimeVersion: result.result.receipt.runtimeVersion,
+    buildId: result.result.receipt.buildId,
+    descriptorHash: result.result.receipt.descriptorHash,
+    dataRootId: result.result.receipt.dataRootId,
+    webBuildId: result.result.receipt.webBuildId,
+    coreProtocol: result.result.receipt.coreProtocol,
+    environment: result.result.receipt.environment,
+    cloudOrigin: result.result.receipt.cloudOrigin,
+    lifecycleState: result.result.receipt.lifecycleState,
+  }, {
+    runtimeId: 'blackhole-core', runtimeVersion: '0.4.0', buildId: 'build-1',
+    descriptorHash: hashA, dataRootId: hashB, webBuildId: 'web-1',
+    coreProtocol: { min: 1, max: 2 }, environment: 'production',
+    cloudOrigin: 'https://blackhole.stellarbridge.dpdns.org', lifecycleState: 'managed',
+  });
 });

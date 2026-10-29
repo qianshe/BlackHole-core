@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import * as settingsWire from '../../contracts/dist/settings-host.js';
 const require = createRequire(import.meta.url), ts = require('typescript');
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const source = fs.readFileSync(new URL('../src/daemonManager.ts', import.meta.url), 'utf8');
@@ -20,7 +21,8 @@ const apiSource = fs.readFileSync(new URL('../src/controlApi.ts', import.meta.ur
 const apiModule = { exports: {} };
 vm.runInNewContext(ts.transpileModule(apiSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
   { module: apiModule, exports: apiModule.exports, fetch, AbortSignal, require: name => name === './config'
-    ? { apiBase: port => `http://127.0.0.1:${port}/api` } : require(name) });
+    ? { apiBase: port => `http://127.0.0.1:${port}/api` }
+    : name === '../../contracts/src/settings-host' ? settingsWire : require(name) });
 const { ControlApi } = apiModule.exports;
 
 test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then preserves shared-window and port handoffs', { timeout: 60000 }, async t => {
@@ -34,7 +36,7 @@ test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then
   assert.ok(fs.existsSync(entry), 'build the daemon before running the fixture');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ['PATH','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','LANG'].includes(key.toUpperCase())));
   Object.assign(env, { HOME:dir, USERPROFILE:dir, APPDATA:dir, LOCALAPPDATA:dir, TEMP:dir, TMP:dir, TMPDIR:dir,
-    BLACKHOLE_DB:path.join(dir,'fixture.db'), BLACKHOLE_SEMANTIC:'off', BLACKHOLE_PROXY_CONFIG:path.join(dir,'absent.yaml') });
+    BLACKHOLE_DB:path.join(dir,'.blackhole','blackhole.db'), BLACKHOLE_SEMANTIC:'off', BLACKHOLE_PROXY_CONFIG:path.join(dir,'.blackhole','mcp-proxies.yaml') });
   const children = [], managers = [], notices = [], logs = [];
   let legacy;
   const api = {
@@ -77,6 +79,7 @@ test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then
       require:name=>name==='vscode'?vscode
         :name==='./cloudEnvironment'?{resolveCloudEndpoint:()=>({environment:'test',origin:'https://fixture.example.org'})}
         :name==='./vscodeRipgrep'?{resolveExecutionRg:()=>undefined,pathFromEnvironment:()=>'',prependToolDirectory:value=>value}
+        :name==='./hostCoreUi'?{reportHostCoreFailure:()=>{}}
         :name==='node:os'?{tmpdir:()=>dir}
         :name==='node:child_process'?{spawn:(...args)=>{const child=spawn(...args);const closed=new Promise(resolve=>child.once('close',resolve));children.push({child,closed});return child}}
         :require(name),
@@ -104,7 +107,13 @@ test('real manager upgrades a 0.3.165 listener, protects it from old hosts, then
   assert.equal((await api.health()).version,'0.3.165');
   await a.value.syncConfigRestart(true);
   assert.equal(children.length,1);
-  const initial = await api.health();
+  const initial = await api.health().catch((error) => {
+    const logFile = path.join(dir, 'blackhole-daemon.log');
+    const recentErrors = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter(line => /error|warn|fail|exception|unsupported/i.test(line)).slice(-8) : [];
+    throw new Error('isolated upgrade never became healthy: ' + JSON.stringify({
+      state: a.value.currentState, notices, managerLog: logs.slice(-8), daemonErrors: recentErrors,
+    }), { cause: error });
+  });
   assert.equal(initial.version,version);
   assert.equal(initial.start_fingerprint,a.value.fingerprint());
   assert.equal(initial.tunnel,'off','local readiness must not start a public channel');

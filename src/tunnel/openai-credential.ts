@@ -1,14 +1,18 @@
 /**
- * Strict OS-keychain adapter for the OpenAI tunnel Runtime API key (plan §5.5).
+ * Strict store for the OpenAI tunnel Runtime API key (plan §5.5), kept in a
+ * user-only file next to the account credential (see util/secret-file.ts).
  *
  * Unlike the account secret port, failures are never swallowed: a write only
- * reports success after the store accepted it, and a delete is confirmed by
- * reading back. Callers get `CredentialStoreError` with a fixed code — never
- * the secret or a raw keyring message — so they can report the true/unknown
- * state instead of claiming "cleared".
+ * reports success after it reads back, and a delete is confirmed by reading
+ * back. Callers get `CredentialStoreError` with a fixed code — never the secret
+ * or a raw filesystem message — so they can report the true/unknown state
+ * instead of claiming "cleared".
  */
-const SERVICE = 'BlackHole OpenAI Tunnel';
-const ACCOUNT = 'runtime-api-key';
+import fs from 'node:fs';
+import path from 'node:path';
+import { openSecretFile } from '../util/secret-file.js';
+
+const KEY = 'runtime-api-key';
 const OP_TIMEOUT_MS = 5_000;
 
 export type CredentialErrorCode = 'credential_store_unavailable' | 'credential_store_timeout' | 'credential_store_failed' | 'credential_delete_unconfirmed';
@@ -28,7 +32,7 @@ interface Entry {
 export type EntryFactory = () => Entry;
 
 export interface OpenAITunnelCredentialStore {
-  readonly kind: 'keyring' | 'memory' | 'unavailable';
+  readonly kind: 'file' | 'memory' | 'unavailable';
   readonly reason?: string;
   /** The key itself, only for building the child environment. */
   get(): Promise<string | undefined>;
@@ -49,7 +53,7 @@ function withTimeout<T>(op: () => Promise<T>, ms: number): Promise<T> {
   });
 }
 
-export function strictStore(kind: 'keyring' | 'memory', entry: EntryFactory, timeoutMs = OP_TIMEOUT_MS): OpenAITunnelCredentialStore {
+export function strictStore(kind: 'file' | 'memory', entry: EntryFactory, timeoutMs = OP_TIMEOUT_MS): OpenAITunnelCredentialStore {
   const read = () => withTimeout(async () => (await entry().getPassword()) || undefined, timeoutMs);
   return {
     kind,
@@ -89,20 +93,32 @@ export function memoryEntryFactory(): EntryFactory {
   return () => entry;
 }
 
-interface KeyringModule { AsyncEntry: new (service: string, username: string) => Entry }
+/** Separate file from the BlackHole account (plan §5.5), same directory and protection. */
+export function fileEntryFactory(file: string): EntryFactory {
+  const store = openSecretFile(file);
+  const entry: Entry = {
+    setPassword: async (v) => store.set(KEY, v),
+    getPassword: async () => store.get(KEY),
+    deletePassword: async () => { const had = store.get(KEY) !== undefined; store.delete(KEY); return had; },
+  };
+  return () => entry;
+}
 
-/**
- * Separate service name from the BlackHole account (plan §5.5). Test isolation
- * follows the account store: `memory` only when explicitly requested.
- */
+export function openAITunnelSecretFile(dataDir: string): string {
+  return path.join(dataDir, 'secrets', 'openai-tunnel.json');
+}
+
+/** Test isolation follows the account store: `memory` only when explicitly requested. */
 export async function openOpenAITunnelCredential(
   mode = process.env.BLACKHOLE_ACCOUNT_SECRETS,
-  load: () => Promise<unknown> = () => import('@napi-rs/keyring'),
+  file?: string,
 ): Promise<OpenAITunnelCredentialStore> {
   if (mode === 'memory') return strictStore('memory', memoryEntryFactory());
-  if (mode === 'unavailable') return unavailable('disabled');
-  let mod: KeyringModule;
-  try { mod = (await load()) as KeyringModule; } catch { return unavailable('keyring_module_missing'); }
-  if (typeof mod?.AsyncEntry !== 'function') return unavailable('keyring_module_missing');
-  return strictStore('keyring', () => new mod.AsyncEntry(SERVICE, ACCOUNT));
+  if (mode === 'unavailable' || !file) return unavailable('disabled');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  } catch {
+    return unavailable('storage_unwritable');
+  }
+  return strictStore('file', fileEntryFactory(file));
 }

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "securityReview": { "state": "pending", "evidence": null },
+  "installerTransaction": { "state": "pending", "evidence": null },
+  "uninstallChoices": { "state": "pending", "evidence": null },
+  "nodeRuntimeLayout": { "state": "pending", "evidence": null },
+  "platformSigning": { "state": "pending", "evidence": null },
+  "cloudDownloadReadback": { "state": "pending", "evidence": null },
+  "blockedArtifactSha256": [
+    "1f2a11b73d7a49621fe0e17edb9cb69fd3e6ee3f1e131c89f3ea903f61c34919",
+    "16292a064aa750fe1b684612a79a4bd76b20b48981832a38c5e10fc3bf3c254a"
+  ]
+}

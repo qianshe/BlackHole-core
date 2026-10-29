@@ -5,3 +5,4 @@ package main
 // Builds without cgo have no WebView: openUI falls back to the browser.
 func showWindow(string) error   { return errNoWebView }
 func focusExistingWindow() bool { return false }
+func closeManagedWindow() bool  { return false }

@@ -119,7 +119,7 @@ export function ApprovalDialog({ x, sessionLabel, onClose, onDone }: { x: Confir
       <DialogHead title="审批工具调用" onClose={onClose} />
       <div className={c.dialogBody}>
         <div className={c.approvalSource}>
-          <b>{x.tool}</b> · {sessionLabel}
+          <b>{x.tool}</b> {sessionLabel}
         </div>
         <Tags x={x} />
         <pre className={c.dialogCmd}>{markedCommand(text, x.risk_matches)}</pre>

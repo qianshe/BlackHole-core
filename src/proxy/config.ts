@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import { resolveDataPaths } from '../data-paths.js';
+
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { DEFAULT_PROXY_LIMITS, type ProxyConfigLoad, type ProxyServerConfig } from './types.js';
@@ -18,7 +18,7 @@ export const PROXY_CONFIG_ENV = 'BLACKHOLE_PROXY_CONFIG';
 
 /** 默认配置路径与 db/key 文件同目录（~/.blackhole/mcp-proxies.yaml）。 */
 export function defaultProxyConfigPath(): string {
-  return path.join(os.homedir(), '.blackhole', 'mcp-proxies.yaml');
+  return resolveDataPaths().proxyConfig;
 }
 
 export function resolveProxyConfigPath(overrides: { proxyConfigPath?: string } = {}): string {
@@ -67,7 +67,7 @@ const serverSchema = z
         set: z.record(z.string(), z.string()).default({}),
         setFromFile: z.record(z.string(), z.string()).optional(),
       })
-      .default({}),
+      .prefault({}),
     surface: z
       .object({
         expose: z.array(z.string().min(1)).optional(),

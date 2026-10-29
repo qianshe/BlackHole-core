@@ -74,7 +74,8 @@ export class WebSessionStore {
     return this.rows.length !== before;
   }
 
-  issue(user: string | null, now = Date.now()): { secret: string; expiresAt: number } {
+  issue(user: string, now = Date.now()): { secret: string; expiresAt: number } {
+    if (typeof user !== 'string' || user.length === 0) throw new Error('verified_account_required');
     this.sweep(now);
     while (this.rows.length >= MAX_WEB_SESSIONS) this.rows.shift();
     const secret = randomBytes(32).toString('base64url');
@@ -92,18 +93,20 @@ export class WebSessionStore {
     const row = this.rows.find((r) => r.h === h);
     let result: WebSessionCheck;
     if (!row) result = { ok: false, error: 'unauthenticated' };
-    else if (row.user !== null && user !== null && row.user !== user) {
+    else if (row.user === null) {
+      // Old unbound cookies from earlier builds must not become authenticated
+      // when a Core account later signs in. Upgrade migration is fail-closed.
+      this.rows = this.rows.filter((item) => item.h !== h);
+      dirty = true;
+      result = { ok: false, error: 'unauthenticated' };
+    } else if (user !== null && row.user !== user) {
       // A different account took over this machine: nobody from before stays in.
       this.rows = [];
       dirty = true;
       result = { ok: false, error: 'unauthenticated' };
-    } else if (row.user !== null && user === null) {
+    } else if (user === null) {
       result = { ok: false, error: 'account_required' };
     } else {
-      if (row.user === null && user !== null) {
-        row.user = user;
-        dirty = true;
-      }
       if (now - row.seen >= SLIDE_EVERY_MS) {
         row.seen = now;
         row.exp = now + this.ttlMs;

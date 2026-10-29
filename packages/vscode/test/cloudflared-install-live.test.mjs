@@ -1,3 +1,4 @@
+import { dataPaths } from './source-data-paths.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ const js = ts.transpileModule(source, {
 }).outputText;
 const module = { exports: {} };
 vm.runInNewContext(js, {
-  module, exports: module.exports, require, Buffer, process, fetch, AbortSignal,
+  module, exports: module.exports, require: name => name === '../data-paths.js' ? dataPaths : require(name), Buffer, process, fetch, AbortSignal,
 });
 const { initializeCloudflared } = module.exports;
 

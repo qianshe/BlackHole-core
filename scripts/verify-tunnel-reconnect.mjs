@@ -92,12 +92,12 @@ networkTm.start('quick');
 await waitFor(() => networkTm.status === 'online', networkTm, networkChildren);
 assert.equal(networkTm.url, url, 'a registered quick-tunnel URL must remain published when local DNS cannot resolve it');
 assert.match(networkTm.reason ?? '', /ENOTFOUND/, 'startup DNS failure should be reported as a local self-probe problem');
-assert.match(networkTm.reason ?? '', /不会仅凭本机检测失败判定渠道离线/, 'startup DNS failure must not be treated as channel-offline evidence');
+assert.match(networkTm.reason ?? '', /连接器正常.*通常无需处理/, 'startup DNS failure must not be treated as channel-offline evidence');
 networkProbeKind = 'reset';
 await new Promise((resolve) => setTimeout(resolve, 90));
 assert.equal(networkChildren.length, 1, 'local probe resets must not rotate a possibly-healthy public URL');
 assert.equal(networkTm.status, 'online', 'local self-probe failures must not downgrade a registered connector');
-assert.match(networkTm.reason ?? '', /无法检测公网地址|仍保持在线/, 'online status should retain a user-facing local-probe warning');
+assert.match(networkTm.reason ?? '', /本机检测公网地址被中断.*连接器正常/, 'online status should retain a user-facing local-probe warning');
 await networkTm.stop();
 
 console.log('tunnel reconnect fallback: ok');

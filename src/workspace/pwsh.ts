@@ -1,6 +1,8 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { statSync } from 'node:fs';
 import path from 'node:path';
+import { detectCodePage, encodeShellInput, psAsciiString, PROBE_TEXT, streamDecoder, UTF8 } from './shell-codepage.js';
 import { msysPathToWindows, resolveWindowsCommandShell, resolveWindowsExecutable, windowsEnvValue, windowsExecutionPath, windowsSystemRoot } from './windows-env.js';
 
 /**
@@ -57,12 +59,12 @@ interface Waiter {
  * ACL-sandboxed koffi spawn (SandboxedPersistentShell).
  */
 export interface ShellProcessBackend {
-  /** Write one line to the shell's stdin. */
-  write(line: string): void;
-  /** Stdout data listener (string chunks, decoded by the backend). */
-  onStdout(cb: (chunk: string) => void): void;
+  /** Write one line to the shell's stdin (a Buffer is sent as-is, already encoded). */
+  write(line: string | Buffer): void;
+  /** Stdout data listener. Real process backends hand over raw bytes; the shell decodes them. */
+  onStdout(cb: (chunk: string | Buffer) => void): void;
   /** Stderr data listener (string chunks). */
-  onStderr(cb: (chunk: string) => void): void;
+  onStderr(cb: (chunk: string | Buffer) => void): void;
   /** Exit listener; code null on signal/spawn failure. */
   onExit(cb: (code: number | null) => void): void;
   /** Kill the process and release backend resources (idempotent). */
@@ -74,8 +76,8 @@ function nodeBackend(bin: string, args: string[], cwd: string, env: NodeJS.Proce
   const proc = spawn(bin, args, { cwd, env, windowsHide: true });
   return {
     write: (line) => proc.stdin?.write(line),
-    onStdout: (cb) => proc.stdout?.on('data', (d: Buffer) => cb(d.toString())),
-    onStderr: (cb) => proc.stderr?.on('data', (d: Buffer) => cb(d.toString())),
+    onStdout: (cb) => proc.stdout?.on('data', (d: Buffer) => cb(d)),
+    onStderr: (cb) => proc.stderr?.on('data', (d: Buffer) => cb(d)),
     onExit: (cb) => {
       proc.on('exit', (code) => cb(code));
       proc.on('error', () => cb(null));
@@ -107,7 +109,16 @@ export interface PersistentShellOptions {
   timeoutMs?: number;
   /** Custom process backend factory (the ACL sandbox injects a confined one). */
   backend?: (cwd: string) => ShellProcessBackend;
+  /**
+   * Detect the console code page the shell really uses (Windows only) and
+   * speak it on stdin/stdout. Default: on for the built-in process backend;
+   * the ACL sandbox turns it on for its confined backend.
+   */
+  detectCodePage?: boolean;
 }
+
+/** Longest wait for the code-page probe before falling back to UTF-8. */
+const PROBE_TIMEOUT_MS = 15_000;
 
 export class PersistentShell {
   private proc: ShellProcessBackend | null = null;
@@ -116,6 +127,12 @@ export class PersistentShell {
   private waiter: Waiter | null = null;
   private chain: Promise<unknown> = Promise.resolve();
   private lastMarker = '';
+  /** Encoder for stdin once the code page is known; null while probing or when not probing. */
+  private encode: ((text: string) => Buffer) | null = null;
+  private probing = false;
+  private queued: string[] = [];
+  /** Code page detected for the current shell process (diagnostics). */
+  codePage: number | null = null;
 
   constructor(private readonly opts: PersistentShellOptions) {
     this.cwd = opts.cwd;
@@ -145,12 +162,66 @@ export class PersistentShell {
     this.proc = backend;
     this.buffer = '';
     this.stderr = '';
-    backend.onStdout((chunk) => { if (this.proc === backend) this.onData(chunk); });
+    this.encode = null;
+    this.queued = [];
+    this.codePage = null;
+    const deliverOut = (text: string): void => { if (this.proc === backend && text) this.onData(text); };
+    const deliverErr = (text: string): void => {
+      if (this.proc !== backend || !text) return;
+      this.stderr += text;
+      this.tryComplete();
+    };
+    // Legacy/test backends hand over strings: pass them through untouched.
+    let outDecode: (b: Buffer) => string = streamDecoder(UTF8);
+    let errDecode: (b: Buffer) => string = streamDecoder(UTF8);
+    const probe = process.platform === 'win32' && (this.opts.detectCodePage ?? !this.opts.backend);
+    this.probing = probe;
+    let rawOut = Buffer.alloc(0);
+    const rawErr: Buffer[] = [];
+    const tag = `BHCP_${randomBytes(6).toString('hex')}`;
+    let probeTimer: NodeJS.Timeout | undefined;
+    const settle = (cp: number, pendingOut: Buffer): void => {
+      if (!this.probing || this.proc !== backend) return;
+      clearTimeout(probeTimer);
+      this.probing = false;
+      this.codePage = cp;
+      outDecode = streamDecoder(cp);
+      errDecode = streamDecoder(cp);
+      this.encode = (text) => encodeShellInput(cp, text);
+      deliverErr(rawErr.map((b) => errDecode(b)).join(''));
+      rawErr.length = 0;
+      deliverOut(outDecode(pendingOut));
+      const queued = this.queued;
+      this.queued = [];
+      for (const line of queued) this.send(line);
+    };
+    backend.onStdout((chunk) => {
+      if (this.proc !== backend) return;
+      if (typeof chunk === 'string') { deliverOut(chunk); return; }
+      if (!this.probing) { deliverOut(outDecode(chunk)); return; }
+      rawOut = Buffer.concat([rawOut, chunk]);
+      const start = rawOut.indexOf(`${tag}<`);
+      const end = start === -1 ? -1 : rawOut.indexOf(`>${tag}`, start);
+      if (end === -1) { if (rawOut.length > 64 * 1024) settle(UTF8, rawOut); return; }
+      const cp = detectCodePage(rawOut.subarray(start + tag.length + 1, end)) ?? UTF8;
+      let rest = rawOut.subarray(end + tag.length + 1);
+      if (rest[0] === 0x0d) rest = rest.subarray(1);
+      if (rest[0] === 0x0a) rest = rest.subarray(1);
+      settle(cp, Buffer.concat([rawOut.subarray(0, start), rest]));
+    });
     backend.onStderr((chunk) => {
       if (this.proc !== backend) return;
-      this.stderr += chunk;
-      this.tryComplete();
+      if (typeof chunk === 'string') { deliverErr(chunk); return; }
+      if (this.probing) { rawErr.push(chunk); return; }
+      deliverErr(errDecode(chunk));
     });
+    if (probe) {
+      // ASCII-only line (works under ConstrainedLanguage): the shell renders the
+      // probe characters in its own code page, which identifies that code page.
+      backend.write(`Write-Host ${psAsciiString(`${tag}<${PROBE_TEXT}>${tag}`)}\n`);
+      probeTimer = setTimeout(() => settle(UTF8, rawOut), PROBE_TIMEOUT_MS);
+      probeTimer.unref?.();
+    }
     backend.onExit((code) => {
       // A replaced process can report exit/data after the next run has started.
       if (this.proc !== backend) return;
@@ -167,6 +238,13 @@ export class PersistentShell {
         flushed,
       );
     });
+  }
+
+  /** Write to the shell in its code page; lines wait while the code page is still being probed. */
+  private send(text: string): void {
+    if (!this.proc) return;
+    if (this.probing) { this.queued.push(text); return; }
+    this.proc.write(this.encode ? this.encode(text) : text);
   }
 
   /** Failure paths may run after only one fence arrived; never expose its framing. */
@@ -208,7 +286,15 @@ export class PersistentShell {
     const codePart = sp === -1 ? codeLine : codeLine.slice(0, sp);
     const pwdPart = sp === -1 ? '' : codeLine.slice(sp + 1);
     const exit = Number.parseInt(codePart.replace(/^code=/, ''), 10);
-    const cwd = pwdPart.startsWith('pwd=') ? pwdPart.slice(4).trim() : undefined;
+    // ASCII UTF-16 code units survive legacy console code pages (including emoji).
+    // Keep pwd= support for existing backend fixtures and older framing.
+    const hex = pwdPart.startsWith('pwd16=') ? pwdPart.slice(6) : undefined;
+    const reported = hex !== undefined
+      ? (hex.length <= 131072 && /^(?:[a-f0-9]{4})+$/i.test(hex)
+        ? hex.match(/.{4}/g)!.map(unit => String.fromCharCode(Number.parseInt(unit, 16))).join('') : undefined)
+      : pwdPart.startsWith('pwd=') ? pwdPart.slice(4).trim() : undefined;
+    // only a directory that exists: a mis-decoded path would poison every respawn
+    const cwd = reported && existingDir(reported) ? reported : undefined;
     // Track the shell's cwd so a respawn (`exit`, crash, timeout kill) lands
     // back in the directory the session had reached, not the spawn-time one.
     if (cwd) this.cwd = cwd;
@@ -316,7 +402,7 @@ export class PersistentShell {
         const payload = Buffer.from(marker + '\n', 'utf8').toString('base64');
         fenceCommand = `& ${psQuote(process.execPath)} -e ${psQuote(`process.stderr.write(Buffer.from('${payload}','base64'))`)}`;
       }
-      this.proc?.write(`${prefix}$global:LASTEXITCODE = 0\n${command}\n$__bh_exit = $LASTEXITCODE\n${fenceCommand}\nWrite-Host "${marker}code=$__bh_exit;pwd=$PWD"\n`);
+      this.send(`${prefix}$global:LASTEXITCODE = 0\n${command}\n$__bh_exit = $LASTEXITCODE\n${fenceCommand}\nWrite-Host "${marker}code=$__bh_exit;pwd16=$(-join (([string]$PWD).ToCharArray() | Microsoft.PowerShell.Core\\ForEach-Object { '{0:x4}' -f [int]$_ }))"\n`);
     });
   }
 
@@ -380,4 +466,8 @@ export function detectPowerShell(): { executable: string; version: string } | nu
     }
   }
   return null;
+}
+
+function existingDir(p: string): boolean {
+  try { return statSync(p).isDirectory(); } catch { return false; }
 }

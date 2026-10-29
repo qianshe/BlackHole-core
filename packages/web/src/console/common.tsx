@@ -1,3 +1,4 @@
+import { settingsHost } from '../settings/host';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError } from '../api';
 import { errorText } from '../format';
@@ -6,7 +7,7 @@ import c from './console.module.css';
 
 // ─── toasts ───────────────────────────────────────────────────────────
 type ToastTone = 'ok' | 'warn' | 'bad';
-type ToastFn = (text: string, tone?: ToastTone) => void;
+export type ToastFn = (text: string, tone?: ToastTone) => void;
 const ToastCtx = createContext<ToastFn>(() => undefined);
 export const useToast = (): ToastFn => useContext(ToastCtx);
 
@@ -36,6 +37,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 export const failText = (e: unknown): string => (e instanceof ApiError ? errorText(e.code, e.detail) : errorText('network'));
 
 export async function copyText(text: string): Promise<boolean> {
+  const clipboard = settingsHost().copy;
+  if (clipboard) return clipboard(text).catch(() => false);
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -60,6 +63,7 @@ export function Modal({
   children,
   className,
   top,
+  drawer,
 }: {
   label: string;
   onClose: () => void;
@@ -67,21 +71,30 @@ export function Modal({
   className?: string;
   /** anchor near the top (search palette) instead of centred */
   top?: boolean;
+  /** workspace explorer slides in from the right, retaining native dialog focus trapping */
+  drawer?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const previousFocus = useRef(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
     const d = ref.current;
     if (d && !d.open) d.showModal();
+    return () => {
+      if (d?.open) d.close();
+      if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true });
+    };
   }, []);
   return (
     <dialog
       ref={ref}
-      className={top ? c.overlayTop : c.overlay}
+      className={drawer ? c.overlayDrawer : top ? c.overlayTop : c.overlay}
       aria-label={label}
       onCancel={(e) => {
         e.preventDefault();
+        // Nested purchase dialogs close themselves, never the parent settings host.
+        e.stopPropagation();
         closeRef.current();
       }}
       onMouseDown={(e) => {
@@ -224,7 +237,7 @@ export function useMenu(): {
     };
     document.addEventListener('mousedown', onDown);
     // focus the first item so keyboard users land inside the menu
-    requestAnimationFrame(() => wrapRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus());
+    requestAnimationFrame(() => wrapRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled)')?.focus());
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
   const onKeyDown = (e: React.KeyboardEvent): void => {
@@ -237,7 +250,7 @@ export function useMenu(): {
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
-    const items = [...(wrapRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+    const items = [...(wrapRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)') ?? [])];
     const i = items.indexOf(document.activeElement as HTMLElement);
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
   };

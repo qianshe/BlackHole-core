@@ -92,32 +92,25 @@ export const PROXY_OUTPUT_SCHEMA = {
 
 /** 把 zod 字段归一成稳定形状；遇到未知 zod 类型就抛错——任何 schema 变更都会强制碰 golden。 */
 function zodFieldToCanonical(field: z.ZodTypeAny): Record<string, unknown> {
-  const def = field._def as {
-    typeName: string; values?: unknown[]; description?: string; innerType?: z.ZodTypeAny;
-    checks?: { kind: string; value?: unknown }[];
-  };
+  // Preserve the established wire fingerprint when replacing Zod 3 internals.
+  // Optional wrapper descriptions were not part of that fingerprint.
+  if (field instanceof z.ZodOptional) {
+    const inner = field.unwrap();
+    if (!(inner instanceof z.ZodType)) throw new Error('proxy input schema uses an unsupported optional type');
+    return { ...zodFieldToCanonical(inner), optional: true };
+  }
   const out: Record<string, unknown> = {};
-  if (def.description !== undefined) out.description = def.description;
-  switch (def.typeName) {
-    case 'ZodOptional': {
-      const inner = zodFieldToCanonical(def.innerType as z.ZodTypeAny);
-      return { ...inner, optional: true };
-    }
-    case 'ZodString': {
-      out.type = 'string';
-      // 约束（min/max 等）也参与指纹：放宽/收紧都算契约变更
-      const constraints = (def.checks ?? [])
-        .filter((c) => c.kind === 'min' || c.kind === 'max')
-        .map((c) => `${c.kind}:${String(c.value)}`)
-        .sort();
-      if (constraints.length > 0) out.constraints = constraints;
-      break;
-    }
-    case 'ZodEnum':
-      out.enum = def.values;
-      break;
-    default:
-      throw new Error(`proxy input schema uses unsupported zod type ${def.typeName}; extend contract.ts consciously`);
+  if (field.description !== undefined) out.description = field.description;
+  if (field instanceof z.ZodString) {
+    out.type = 'string';
+    const constraints: string[] = [];
+    if (typeof field.minLength === 'number') constraints.push(`min:${field.minLength}`);
+    if (typeof field.maxLength === 'number') constraints.push(`max:${field.maxLength}`);
+    if (constraints.length > 0) out.constraints = constraints.sort();
+  } else if (field instanceof z.ZodEnum) {
+    out.enum = field.options;
+  } else {
+    throw new Error(`proxy input schema uses unsupported zod type ${field.constructor.name}; extend contract.ts consciously`);
   }
   return out;
 }

@@ -35,6 +35,38 @@ export function checkedPathInWorkspace(workspace: string, target: string): strin
   return realPathOf(resolved);
 }
 
+/**
+ * Full-access sessions: any path on this machine, resolved against the workspace when
+ * relative. Still returns the REAL path the caller writes through (same rule as above).
+ */
+export function checkedPathAnywhere(workspace: string, target: string): string {
+  if (target.includes('\0')) throw new Error('invalid path');
+  const resolved = path.isAbsolute(target) ? path.resolve(target) : path.resolve(workspace, target);
+  return realPathOf(resolved);
+}
+
+/**
+ * Workspace-write sessions with operator-granted directories: the target must sit inside
+ * the workspace or one of `roots` (lexically and through symlinks). Throws the workspace
+ * error when none matches, so the message stays the familiar one.
+ */
+export function checkedPathInRoots(workspace: string, roots: readonly string[], target: string): string {
+  try {
+    return checkedPathInWorkspace(workspace, target);
+  } catch (first) {
+    if (target.includes('\0')) throw first;
+    const abs = path.isAbsolute(target) ? path.resolve(target) : path.resolve(workspace, target);
+    for (const root of roots) {
+      try {
+        return checkedPathInWorkspace(root, abs);
+      } catch {
+        /* try the next granted root */
+      }
+    }
+    throw first;
+  }
+}
+
 /** Realpath of `resolved`, or its nearest-existing-ancestor resolution for not-yet-created files. */
 function realPathOf(resolved: string): string {
   try {

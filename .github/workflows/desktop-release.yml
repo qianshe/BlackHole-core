@@ -1,0 +1,317 @@
+name: Desktop Multi-Platform Release
+
+# Multi-platform (Windows x64, macOS x64/arm64, Linux x64/arm64) Desktop + Core
+# packaging and GitHub Release workflow. VS Code Marketplace publishing remains
+# manual; this workflow builds matched signed Core archives, Desktop installers,
+# per-platform signed update feeds, and generates BlackHole-cloud's
+# desktop-release-catalog.ts.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target release environment (production or test)'
+        type: choice
+        options:
+          - production
+          - test
+        required: true
+        default: production
+      publish_github_release:
+        description: 'Upload compiled Desktop installers to GitHub Releases (v<version> for production, desktop-test for test)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-multiplatform-release-${{ inputs.environment }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Release gate precheck (${{ inputs.environment }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+      - name: Enforce reviewed source and release gate policy
+        env:
+          BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ] && [ "${{ inputs.publish_github_release }}" = "true" ]; then
+            node scripts/desktop-release-gate.mjs --mode release
+          else
+            node scripts/desktop-release-gate.mjs --mode candidate
+          fi
+
+  package:
+    name: Package Desktop (${{ matrix.target }})
+    needs: gate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: windows-x64, runner: windows-2022, platform: win32, arch: x64, catalog_platform: windows }
+          - { target: macos-x64, runner: macos-15-intel, platform: darwin, arch: x64, catalog_platform: macos }
+          - { target: macos-arm64, runner: macos-15, platform: darwin, arch: arm64, catalog_platform: macos }
+          - { target: linux-x64, runner: ubuntu-22.04, platform: linux, arch: x64, catalog_platform: linux }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, platform: linux, arch: arm64, catalog_platform: linux }
+    env:
+      BH_PACKAGE_PLATFORM: ${{ matrix.platform }}
+      BH_PACKAGE_ARCH: ${{ matrix.arch }}
+      RELEASE_ENV: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: packages/desktop-launcher/go.sum
+      - name: WebKitGTK dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev dpkg-dev
+          mkdir -p "$RUNNER_TEMP/pc" && printf 'Name: webkit2gtk-4.0\nDescription: shim\nVersion: 2.40\nRequires: webkit2gtk-4.1\n' > "$RUNNER_TEMP/pc/webkit2gtk-4.0.pc"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pc" >> "$GITHUB_ENV"
+      - name: Windows icon & Inno Setup toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          ./scripts/prepare-inno.ps1 -ApprovedPortableTools
+      - run: pnpm install --frozen-lockfile
+      - name: Build contracts, daemon, web and host-runtime
+        shell: bash
+        env:
+          TEST_CLOUD_ORIGIN: ${{ vars.BLACKHOLE_TEST_CLOUD_ORIGIN || 'https://blackhole-cloud-api-test.cutoffother.workers.dev' }}
+          TEST_CLOUD_PUBLIC_KEY: ${{ vars.BLACKHOLE_TEST_CLOUD_PUBLIC_KEY || 'MCowBQYDK2VwAyEA1NU2RKaQC8fRNUGFT8ID2LWptYo1Aucw20u4lvojWts=' }}
+        run: |
+          pnpm build
+          pnpm --dir packages/web build
+          if [ "$RELEASE_ENV" = "production" ]; then
+            node packages/host-runtime/build.mjs --environment production
+            (cd packages/vscode && node esbuild.mjs --environment production)
+          else
+            node packages/host-runtime/build.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_CLOUD_PUBLIC_KEY"
+            (cd packages/vscode && node esbuild.mjs --environment test --cloud-origin "$TEST_CLOUD_ORIGIN" --cloud-public-key "$TEST_CLOUD_PUBLIC_KEY")
+          fi
+      - name: Assemble, sign Core, and package Desktop installer (${{ matrix.target }})
+        shell: bash
+        env:
+          CORE_PRIVATE_KEY_SECRET: ${{ secrets[inputs.environment == 'production' && 'BH_PROD_CORE_SIGNING_KEY' || 'BH_CROSSPLATFORM_TEST_KEY'] }}
+          CORE_KEY_ID: ${{ inputs.environment == 'production' && 'prod-host-node-v1' || 'test-ci-crossplatform' }}
+          UPDATE_PRIVATE_KEY_SECRET: ${{ secrets[inputs.environment == 'production' && 'BH_PROD_UPDATE_SIGNING_KEY' || 'BH_TEST_UPDATE_SIGNING_KEY'] }}
+          TEST_CLOUD_ORIGIN: ${{ vars.BLACKHOLE_TEST_CLOUD_ORIGIN || 'https://blackhole-cloud-api-test.cutoffother.workers.dev' }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_ENV" in production|test) ;; *) echo 'Invalid release environment' >&2; exit 1 ;; esac
+          : "${CORE_PRIVATE_KEY_SECRET:?Missing Core signing key for selected environment}"
+          : "${UPDATE_PRIVATE_KEY_SECRET:?Missing Update signing key for selected environment}"
+          umask 077
+          mkdir -p .tmp/ci-desktop
+          key_dir=$(mktemp -d)
+          trap 'rm -rf "$key_dir"' EXIT
+          printf '%s\n' "$CORE_PRIVATE_KEY_SECRET" > "$key_dir/core-private.pem"
+          printf '%s\n' "$UPDATE_PRIVATE_KEY_SECRET" > "$key_dir/update-private.pem"
+          node -e "
+            const fs = require('fs'), crypto = require('crypto');
+            const corePub = crypto.createPublicKey(fs.readFileSync(process.argv[1])).export({ type: 'spki', format: 'pem' });
+            const updPub = crypto.createPublicKey(fs.readFileSync(process.argv[2])).export({ type: 'spki', format: 'pem' });
+            fs.writeFileSync('.tmp/ci-desktop/core-public.pem', corePub);
+            fs.writeFileSync('.tmp/ci-desktop/update-public.pem', updPub);
+          " "$key_dir/core-private.pem" "$key_dir/update-private.pem"
+
+          version=$(node -p "require('./package.json').version")
+          build_id="release-${RELEASE_ENV}-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}-${GITHUB_SHA:0:7}"
+          if [ "$RELEASE_ENV" = "production" ]; then
+            cloud_origin="https://blackhole.stellarbridge.dpdns.org"
+            feed_url="https://blackhole.stellarbridge.dpdns.org/downloads/updates/stable/${{ matrix.catalog_platform }}-${BH_PACKAGE_ARCH}/latest.json"
+          else
+            cloud_origin="$TEST_CLOUD_ORIGIN"
+            feed_url="https://github.com/qianshe/BlackHole-core/releases/download/desktop-test/latest.json"
+          fi
+
+          node scripts/assemble-core-runtime.mjs --output .tmp/ci-desktop/layout --without-node --platform "$BH_PACKAGE_PLATFORM" --arch "$BH_PACKAGE_ARCH"
+          if [ "$RELEASE_ENV" = "production" ]; then
+            core_zip=".tmp/ci-desktop/BlackHole-Core-${version}-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}.zip"
+          else
+            core_zip=".tmp/ci-desktop/BlackHole-Core-${version}-${BH_PACKAGE_PLATFORM}-${BH_PACKAGE_ARCH}-test.zip"
+          fi
+
+          node scripts/package-core-runtime.mjs \
+            --input .tmp/ci-desktop/layout \
+            --output "$core_zip" \
+            --private-key "$key_dir/core-private.pem" \
+            --key-id "$CORE_KEY_ID" \
+            --runtime-version "$version" \
+            --build-id "$build_id" \
+            --platform "$BH_PACKAGE_PLATFORM" \
+            --arch "$BH_PACKAGE_ARCH" \
+            --environment "$RELEASE_ENV" \
+            --cloud-origin "$cloud_origin" \
+            --daemon-version "$version" \
+            --web-build-id "$build_id" \
+            --runtime-provider host-node \
+            --node-min-version 22.13.0 \
+            --migration-policy compatible
+
+          node scripts/desktop-node-info.mjs --output .tmp/ci-desktop/node-info.json
+          node_exe=$(node -p "require('./.tmp/ci-desktop/node-info.json').exe")
+          node_sha=$(node -p "require('./.tmp/ci-desktop/node-info.json').exeSha")
+          lic_file=$(node -p "require('./.tmp/ci-desktop/node-info.json').lic")
+          lic_sha=$(node -p "require('./.tmp/ci-desktop/node-info.json').licSha")
+
+          if [ "$BH_PACKAGE_PLATFORM" = "win32" ]; then
+            node scripts/package-desktop.mjs \
+              --seed "$core_zip" \
+              --public-key .tmp/ci-desktop/core-public.pem \
+              --key-id "$CORE_KEY_ID" \
+              --manager packages/host-runtime/dist/core-manager-cli.mjs \
+              --output .tmp/ci-desktop/desktop \
+              --environment "$RELEASE_ENV" \
+              --platform "$BH_PACKAGE_PLATFORM" \
+              --arch "$BH_PACKAGE_ARCH" \
+              --iscc .tmp/toolchains/inno-6.7.3/compiler/ISCC.exe \
+              --node-exe "$node_exe" \
+              --node-sha256 "$node_sha" \
+              --node-license "$lic_file" \
+              --node-license-sha256 "$lic_sha" \
+              --update-feed "$feed_url" \
+              --update-public-key .tmp/ci-desktop/update-public.pem
+          else
+            node scripts/package-desktop.mjs \
+              --seed "$core_zip" \
+              --public-key .tmp/ci-desktop/core-public.pem \
+              --key-id "$CORE_KEY_ID" \
+              --manager packages/host-runtime/dist/core-manager-cli.mjs \
+              --output .tmp/ci-desktop/desktop \
+              --environment "$RELEASE_ENV" \
+              --platform "$BH_PACKAGE_PLATFORM" \
+              --arch "$BH_PACKAGE_ARCH" \
+              --package-installer \
+              --node-exe "$node_exe" \
+              --node-sha256 "$node_sha" \
+              --node-license "$lic_file" \
+              --node-license-sha256 "$lic_sha" \
+              --update-feed "$feed_url" \
+              --update-public-key .tmp/ci-desktop/update-public.pem
+          fi
+
+          installer_rel=$(node -p "require('./.tmp/ci-desktop/desktop/distribution-audit.json').installer.file")
+          installer_name=$(basename "$installer_rel")
+          if [ "$RELEASE_ENV" = "production" ]; then
+            installer_url="https://github.com/qianshe/BlackHole-core/releases/download/v${version}/${installer_name}"
+            node scripts/sign-desktop-update.mjs \
+              --layout .tmp/ci-desktop/desktop \
+              --installer-url "$installer_url" \
+              --signing-key "$key_dir/update-private.pem" \
+              --output ".tmp/ci-desktop/update-feed/${{ matrix.target }}" \
+              --confirm-production-signing
+          else
+            installer_url="https://github.com/qianshe/BlackHole-core/releases/download/desktop-test/${installer_name}"
+            node scripts/sign-desktop-update.mjs \
+              --layout .tmp/ci-desktop/desktop \
+              --installer-url "$installer_url" \
+              --signing-key "$key_dir/update-private.pem" \
+              --output ".tmp/ci-desktop/update-feed/${{ matrix.target }}"
+          fi
+      - name: Upload platform Desktop release package (${{ matrix.target }})
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-release-${{ matrix.target }}
+          path: |
+            .tmp/ci-desktop/BlackHole-Core-*.zip
+            .tmp/ci-desktop/desktop/distribution-audit.json
+            .tmp/ci-desktop/desktop/installer/*
+            .tmp/ci-desktop/update-feed/${{ matrix.target }}/latest.json
+            .tmp/ci-desktop/update-feed/${{ matrix.target }}/latest.json.sig
+            .tmp/ci-desktop/update-public.pem
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Assemble Cloud Catalog & Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+      - name: Download all platform Desktop packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: desktop-release-*
+          path: .tmp/collected
+      - name: Assemble Cloud desktop-release-catalog.ts & release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp/release-bundle/installers .tmp/release-bundle/feeds
+          for dir in .tmp/collected/desktop-release-*; do
+            target="${dir##*desktop-release-}"
+            mkdir -p ".tmp/release-bundle/feeds/$target"
+            find "$dir" -name "latest.json" -exec cp {} ".tmp/release-bundle/feeds/$target/latest.json" \;
+            find "$dir" -name "latest.json.sig" -exec cp {} ".tmp/release-bundle/feeds/$target/latest.json.sig" \;
+            find "$dir" -name "update-public.pem" -exec cp {} ".tmp/release-bundle/update-public.pem" \;
+            find "$dir" -path "*/installer/*" \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} .tmp/release-bundle/installers/ \;
+            find "$dir" -name "BlackHole-Core-*.zip" -exec cp {} .tmp/release-bundle/installers/ \;
+          done
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            node scripts/generate-cloud-desktop-catalog.mjs \
+              --feeds-dir .tmp/release-bundle/feeds \
+              --public-key .tmp/release-bundle/update-public.pem \
+              --key-id prod-update-v1 \
+              --channel stable \
+              --output .tmp/release-bundle/desktop-release-catalog.ts
+          fi
+      - name: Upload unified multi-platform release bundle & Cloud catalog
+        uses: actions/upload-artifact@v6
+        with:
+          name: blackhole-desktop-multiplatform-${{ inputs.environment }}-${{ github.sha }}
+          path: .tmp/release-bundle/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish installers to GitHub Releases
+        if: inputs.publish_github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            tag="v${version}"
+            # Production versions are immutable; create fails if this release already exists.
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "$tag" --notes "BlackHole Desktop ${version} multi-platform release."
+            gh release upload "$tag" .tmp/release-bundle/installers/*
+            gh release edit "$tag" --draft=false
+          else
+            tag="desktop-test"
+            gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Desktop Test Channel" --prerelease --notes "BlackHole Desktop test channel."
+            gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/feeds/windows-x64/latest.json .tmp/release-bundle/feeds/windows-x64/latest.json.sig --clobber
+          fi

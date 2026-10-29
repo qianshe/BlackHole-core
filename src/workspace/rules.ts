@@ -33,10 +33,9 @@ export function buildAccessRules(): string {
  * The keyless generic manual served by the `guide` MCP tool. Finite-command
  * routing always targets the single stable `exec` tool; shell syntax stays in
  * that tool's dynamic metadata. One entry point for every caller:
- * connector hosts that refuse credential-like args and script clients that
- * echo a sessionId share the same policy, with startup tailored to the current
- * connection — the workspace root travels
- * with the operator's task message. The title reads "operating rules" by the
+ * connector hosts and sandbox clients that carry a sessionId share the same
+ * policy, with startup tailored to the current connection. When the session
+ * resolves, project instructions are loaded from its workspace. The title reads "operating rules" by the
  * operator's decision (2026-09-11); note connector hosts (e.g. ChatGPT) run a
  * safety classifier that may flag "rule*" tool output — if the guide is ever
  * blocked, revisit the title first (see the vocabulary note on buildAccessRules).
@@ -46,7 +45,7 @@ export function buildAccessRules(): string {
  * capability this machine cannot serve costs the agent a failed call and the
  * operator a confusing question.
  */
-export function buildGenericManual(_execShellHint: string, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script'): string {
+export function buildGenericManual(_execShellHint: string, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script', sandboxClientUrl: string | null = null): string {
   const capabilities: PromptCapabilities = { execTool: 'exec', semantic, skills, todo: true };
   return [
     '# BlackHole operating rules',
@@ -101,6 +100,6 @@ export function buildGenericManual(_execShellHint: string, semantic = false, ski
 }
 
 /** Keyless manual: shared workspace policy, connection-local startup guidance. */
-export function fullGenericManual(execShellHint: string, _log: (line: string) => void, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script'): string {
-  return buildGenericManual(execShellHint, semantic, skills, proxy, processes, startup);
+export function fullGenericManual(execShellHint: string, _log: (line: string) => void, semantic = false, skills = true, proxy = false, processes = false, startup: StartupMode = 'script', sandboxClientUrl: string | null = null): string {
+  return buildGenericManual(execShellHint, semantic, skills, proxy, processes, startup, sandboxClientUrl);
 }

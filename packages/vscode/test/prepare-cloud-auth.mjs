@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const root=fileURLToPath(new URL('../../../',import.meta.url));
 const require=createRequire(path.join(root,'package.json')),ts=require('typescript');
@@ -15,5 +15,13 @@ else {
  const directory=path.join(root,'.cache/vscode-auth-verify');mkdirSync(directory,{recursive:true});
  writeFileSync(path.join(directory,'package.json'),'{"type":"commonjs"}\n');
  if(program.emit().emitSkipped)throw new Error('cloud_auth_test_emit_failed');
+ // The native client now consumes the shared membership parser. Compile its real source
+ // into the isolated CommonJS test tree instead of mocking it or resolving the live tree.
+ const contracts=path.join(directory,'packages/contracts/dist');mkdirSync(contracts,{recursive:true});
+ // Every contract module the compiled client sources require must exist in the isolated
+ // tree; a missing one only shows up as MODULE_NOT_FOUND when the suite runs.
+ for(const name of ['membership','subscriptions']){
+  writeFileSync(path.join(contracts,name+'.js'),ts.transpileModule(readFileSync(path.join(root,'packages/contracts/src/'+name+'.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText);
+ }
  console.log('Cloud auth test modules compiled; no real extension host or credentials loaded.');
 }

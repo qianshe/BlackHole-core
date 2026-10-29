@@ -241,17 +241,24 @@ test('missing inode identities fall back to exact canonical paths without foldin
   assert.equal(skills.withinSkillBoundary(root, path.join(sibling, 'ref.md')), false);
 });
 
-test('complete skill contracts are wired into all six native CI targets and both aggregate gates', () => {
+test('skill contracts run in every native Runtime CI target, with strict symlinks', () => {
   const ci = parseYaml(fs.readFileSync(new URL('../.github/workflows/vscode-extension.yml', import.meta.url), 'utf8'));
-  const job = ci.jobs['gate-skills'];
-  assert.deepEqual(job.strategy.matrix.include.map(row => `${row.platform}-${row.arch}`).sort(),
-    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64']);
+  assert.equal(ci.jobs['gate-skills'], undefined, 'skills run inside the Runtime job, not a duplicate matrix');
+  const job = ci.jobs.runtime;
+  assert.deepEqual([...new Set(job.strategy.matrix.include.map(row => `${row.platform}-${row.arch}`))].sort(),
+    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64']);
   assert.equal(job.strategy['fail-fast'], false);
   assert.equal(job.env.BH_REQUIRE_SKILL_SYMLINKS, '1');
   const commands = job.steps.map(step => step.run).filter(Boolean);
-  for (const command of ['pnpm test:skills', 'pnpm test:guide-workflows', 'pnpm verify:prompts']) assert.ok(commands.includes(command));
+  for (const command of ['pnpm test:pack', 'pnpm test:posix', 'pnpm test:handoff']) assert.ok(commands.includes(command), command);
   assert.ok(commands.some(command => command.includes('process.arch') && command.includes('process.platform')));
+  assert.deepEqual(ci.jobs['ci-result'].needs, ['changes', 'runtime', 'openai-runtime-native', 'vsix-artifact', 'settings-browser']);
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(pkg.scripts['test:skills'], /skill-safety\.test\.mjs/);
-  for (const name of ['test:pack', 'test:posix']) assert.match(pkg.scripts[name], /pnpm test:skills/);
+  for (const name of ['test:pack', 'test:posix']) {
+    assert.match(pkg.scripts[name], /pnpm test:skills/);
+    assert.match(pkg.scripts[name], /verify-prompts\.mjs/);
+  }
+  assert.match(pkg.scripts['test:handoff'], /guide-workflows\.test\.mjs/);
+  assert.match(pkg.scripts['test:handoff'], /packages\/vscode typecheck/);
 });

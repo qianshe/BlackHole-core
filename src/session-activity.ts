@@ -23,6 +23,8 @@ const WINDOW_MS = 60_000;
 export class SessionActivity {
   private readonly entries = new Map<string, Entry>();
   private disposed = false;
+  private inFlight = 0;
+  get pendingCount(): number { return this.inFlight; }
   constructor(private readonly changed: () => void, private readonly clock: ActivityClock = DEFAULT_CLOCK) {}
 
   status(id: string): SessionActivityStatus {
@@ -37,6 +39,7 @@ export class SessionActivity {
   /** Count the whole accepted handler, including queue/approval waits. Finish is idempotent. */
   begin(id: string): () => void {
     if (this.disposed) return () => {};
+    this.inFlight++;
     const wasRunning = this.status(id) === 'running';
     let entry = this.entries.get(id);
     if (!entry) {
@@ -52,6 +55,7 @@ export class SessionActivity {
     return () => {
       if (finished) return;
       finished = true;
+      this.inFlight--;
       // Revoke/dispose may have discarded this entry. A late reply cannot revive it.
       if (this.entries.get(id) !== entry) return;
       entry.pending -= 1;
@@ -70,6 +74,15 @@ export class SessionActivity {
       // Timers can fire early; derive the decision from the monotonic clock.
       this.settle(id, entry);
     }, remaining);
+  }
+
+  /**
+   * The agent says its turn is over (a bound web chat stopped being busy): end the 60 s window now,
+   * but never while a tool call of this session is still being handled.
+   */
+  endTurn(id: string): void {
+    const entry = this.entries.get(id);
+    if (entry && entry.pending === 0) this.forget(id);
   }
 
   forget(id: string): void {

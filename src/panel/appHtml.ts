@@ -44,7 +44,7 @@ export function panelHtml(): string {
     --mark: #fee2e2; --mark-text: #b91c1c;
     --blue: #2563eb; --green: #16825d; --amber: #a16207; --amber-soft: #fffbeb; --red: #c2413d;
     --shadow: none;
-    font-size: 14px;
+    font-size: 15px;
   }
   [data-theme="dark"] {
     --bg: #212121; --card: #2a2a2a; --text: #ececec; --muted: #a1a1aa; --faint: #777;
@@ -71,17 +71,17 @@ export function panelHtml(): string {
   }
   .hdr { display: flex; align-items: center; gap: 8px; padding: 12px var(--sec-x) 10px; flex: none; }
   .ws { font-weight: 600; font-size: 12px; letter-spacing: .2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chip { font-size: 10px; padding: 1px 6px; border-radius: 99px;
+  .chip { font-size: 12px; padding: 1px 6px; border-radius: 99px;
     border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
   .chip.mode { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
   .run-status { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; white-space: nowrap; }
-  .uptime { font-size: 10px; line-height: 1; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
-  .live { font-size: 10px; line-height: 1; color: var(--green); display: inline-flex; align-items: center; gap: 5px; flex: none; }
+  .uptime { font-size: 12px; line-height: 1; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+  .live { font-size: 12px; line-height: 1; color: var(--green); display: inline-flex; align-items: center; gap: 5px; flex: none; }
   #liveTxt { line-height: 1; letter-spacing: .4px; }
   .live i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; flex: none; }
   .live.off { color: var(--red); } .live.off i { background: var(--red); animation: none; }
   .panel-close { width: 22px; height: 22px; display: grid; place-items: center; flex: none; border: 0; border-radius: 5px;
-    background: transparent; color: var(--faint); cursor: pointer; font: inherit; font-size: 16px; line-height: 1; padding: 0; }
+    background: transparent; color: var(--faint); cursor: pointer; font: inherit; font-size: 18px; line-height: 1; padding: 0; }
   .panel-close:hover { color: var(--text); background: var(--border-soft); }
   .panel-close:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 
@@ -98,24 +98,24 @@ export function panelHtml(): string {
 
   .sec { padding: 10px var(--sec-x); border-top: 1px solid var(--border); flex: none; }
   .sec-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-  .sec-hd .t { font-size: 11.5px; font-weight: 600; letter-spacing: .3px; }
-  .sec-hd .sub { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .sec-hd .t { font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+  .sec-hd .sub { margin-left: auto; font-size: 12px; color: var(--muted); }
   .sec-hd .sub b { color: var(--blue); font-weight: 600; }
-  .scope { color: var(--faint); font-size: 10px; letter-spacing: .4px; }
+  .scope { color: var(--faint); font-size: 12px; letter-spacing: .4px; }
 
   .cur-row { display: flex; align-items: center; gap: 9px; cursor: pointer; padding: 2px 0; user-select: none; }
   .cur-row:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
   .cur { font-size: 12px; display: flex; gap: 7px; align-items: center; min-width: 0; }
   .cur .verb:empty { display: none; }
-  .cur::before { content: "●"; color: var(--blue); font-size: 9px; animation: pulse 1.6s infinite; flex: none; }
+  .cur::before { content: "●"; color: var(--blue); font-size: 12px; animation: pulse 1.6s infinite; flex: none; }
   .cur .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cur .verb { color: var(--muted); flex: none; }
   .cur.alldone::before { content: "✓"; color: var(--green); font-size: 12px; animation: none; }
-  .cur.empty::before { content: "◌"; color: var(--faint); font-size: 11px; animation: none; }
-  .cnt { font-size: 11px; color: var(--muted); margin-left: auto; flex: none; }
+  .cur.empty::before { content: "◌"; color: var(--faint); font-size: 12px; animation: none; }
+  .cnt { font-size: 12px; color: var(--muted); margin-left: auto; flex: none; }
   .cnt b { color: var(--blue); font-weight: 600; }
   .cnt.done b { color: var(--green); }
-  .fold { flex: none; font-size: 10.5px; color: var(--faint); background: none; border: none;
+  .fold { flex: none; font-size: 12px; color: var(--faint); background: none; border: none;
     cursor: pointer; padding: 2px 4px; border-radius: 5px; transition: transform .18s, color .15s, background .15s; }
   .fold:hover { color: var(--muted); background: var(--border-soft); }
   .cur-row[aria-expanded="true"] .fold { transform: rotate(180deg); }
@@ -130,7 +130,7 @@ export function panelHtml(): string {
   ol.todos li.p::before { content: "◌"; color: var(--faint); }
   ol.todos li.c::before { content: "✓"; color: var(--green); }
   ol.todos li.c { text-decoration: line-through; text-decoration-color: var(--faint); color: var(--faint); }
-  ol.todos li.a::before { content: "●"; color: var(--blue); font-size: 9px; }
+  ol.todos li.a::before { content: "●"; color: var(--blue); font-size: 12px; }
   ol.todos li.a { color: var(--text); }
   ol.todos li.g::before { content: "◎"; color: var(--blue); }
   ol.todos li.g { color: var(--text); font-weight: 600; }
@@ -145,54 +145,54 @@ export function panelHtml(): string {
     border-bottom: 1px solid var(--border-soft); }
   ul.feed li:last-child { border-bottom: none; }
   ul.feed li.enter { animation: enter .3s ease-out; }
-  .st { width: 14px; flex: none; text-align: center; font-size: 11px; }
+  .st { width: 14px; flex: none; text-align: center; font-size: 12px; }
   .st.ok { color: var(--green); } .st.fail { color: var(--red); }
   .st.run { color: var(--blue); }
   .st.run i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); animation: pulse 1.2s infinite; }
   .st.wait { color: var(--amber); }
-  .t { font-weight: 600; font-size: 11px; flex: none; min-width: 96px; }
+  .t { font-weight: 600; font-size: 12px; flex: none; min-width: 96px; }
   .feed .t { min-width: 0; }
-  .a { color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; cursor: help; }
+  .a { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; cursor: help; }
   .a:hover, .a:focus-visible { color: var(--text); }
   .a:focus-visible { outline: 1px solid var(--border); outline-offset: 2px; border-radius: 3px; }
   /* Match the VS Code sidebar's editor-hover tooltip: compact, theme-aware,
      monospace, scrollable, and positioned by the hovered argument row. */
-  #tip { position: fixed; z-index: 30; display: none; max-width: min(520px, calc(100vw - 16px)); max-height: min(320px, 60vh); overflow: auto; padding: 6px 9px; border-radius: 4px; font-family: ui-monospace, "Cascadia Code", Consolas, "JetBrains Mono", monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); background: var(--card); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,.35); pointer-events: auto; cursor: text; user-select: text; }
+  #tip { position: fixed; z-index: 30; display: none; max-width: min(520px, calc(100vw - 16px)); max-height: min(320px, 60vh); overflow: auto; padding: 6px 9px; border-radius: 4px; font-family: ui-monospace, "Cascadia Code", Consolas, "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); background: var(--card); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,.35); pointer-events: auto; cursor: text; user-select: text; }
   #tip.show { display: block; }
-  .chg { display: inline-flex; gap: 4px; flex: none; font-size: 10px; font-weight: 600; }
+  .chg { display: inline-flex; gap: 4px; flex: none; font-size: 12px; font-weight: 600; }
   .chg .add { color: var(--green); } .chg .del { color: var(--red); }
-  .d { font-size: 10px; color: var(--faint); flex: none; }
+  .d { font-size: 12px; color: var(--faint); flex: none; }
   .d:empty { display: none; }
   .empty-calls { padding: 24px 8px; color: var(--faint); text-align: center; font-size: 12px; }
   li.denied .t, li.denied .a { color: var(--faint); }
   li.denied .a { text-decoration: line-through; text-decoration-color: var(--red); }
   li.waiting .t { color: var(--amber); }
 
-  .modified-files { flex: none; display: flex; justify-content: flex-end; min-width: 0; padding: 6px var(--sec-x) 7px; border-top: 1px solid var(--border); font-size: 10.5px; }
+  .modified-files { flex: none; display: flex; justify-content: flex-end; min-width: 0; padding: 6px var(--sec-x) 7px; border-top: 1px solid var(--border); font-size: 12px; }
   .modified-files[hidden] { display: none; }
   .modified-files .names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); text-align: right; }
   .approval { flex: none; margin: 0; padding: 11px var(--sec-x) 13px; border-radius: 0;
     background: var(--amber-soft); border: 0; border-top: 1px solid var(--border); animation: none; }
   @keyframes rise { from { transform: translateY(26px); opacity: 0; } }
   .ap-hd { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; min-width: 0; }
-  .ap-badge { font-size: 11.5px; font-weight: 700; color: var(--amber); flex: none; }
-  .cat { font-size: 10px; padding: 1px 7px; border-radius: 99px; color: var(--amber); flex: none;
+  .ap-badge { font-size: 12px; font-weight: 700; color: var(--amber); flex: none; }
+  .cat { font-size: 12px; padding: 1px 7px; border-radius: 99px; color: var(--amber); flex: none;
     border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); }
-  .ttl { margin-left: auto; font-size: 11px; color: var(--muted); flex: none; }
+  .ttl { margin-left: auto; font-size: 12px; color: var(--muted); flex: none; }
   .cmd { display: block; background: var(--mono-bg); border: 1px solid var(--border-soft);
-    border-radius: 7px; padding: 7px 9px; font-size: 11.5px; line-height: 1.5;
+    border-radius: 7px; padding: 7px 9px; font-size: 12px; line-height: 1.5;
     white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; font-family: inherit;
     max-height: 132px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; }
   .cmd::-webkit-scrollbar { width: 8px; }
   .cmd::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   .cmd code { font-family: ui-monospace, Consolas, monospace; }
   .ap-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
-  .btn { min-width: 0; font-size: 11px; padding: 6px 7px; border-radius: 7px; cursor: pointer;
+  .btn { min-width: 0; font-size: 12px; padding: 6px 7px; border-radius: 7px; cursor: pointer;
     border: 1px solid var(--border); background: var(--card); color: var(--text);
     transition: filter .15s, transform .05s; }
   .btn:hover { filter: brightness(1.08); } .btn:active { transform: translateY(1px); }
   .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-  .cx { font-size: 10px; padding: 2px 6px; border-radius: 6px; cursor: pointer; flex: none;
+  .cx { font-size: 12px; padding: 2px 6px; border-radius: 6px; cursor: pointer; flex: none;
     border: 1px solid var(--border); background: transparent; color: var(--faint); }
   .cx:hover { color: var(--red, #d33); border-color: var(--red, #d33); }
   .cx:disabled { opacity: .4; cursor: default; }
@@ -443,7 +443,7 @@ export function panelHtml(): string {
       cur.querySelector(".verb").textContent = active ? "正在" : allDone ? "" : "待处理";
       cur.querySelector(".txt").textContent = active ? (active.activeForm || active.content) : (allDone ? "清单已完成" : "等待下一步");
       cnt.hidden = false; cnt.classList.toggle("done", done === items.length);
-      cnt.textContent = (active ? "进行中" : allDone ? "已完成" : "待处理") + " · " + done + "/" + items.length;
+      cnt.textContent = (active ? "进行中" : allDone ? "已完成" : "待处理") + " " + done + "/" + items.length;
       fold.hidden = false; fold.textContent = "▾"; fold.setAttribute("aria-label", "展开任务清单");
     }
     $("#pbar").style.width = items.length ? Math.round((done / items.length) * 100) + "%" : "0%";
@@ -566,13 +566,13 @@ export function panelHtml(): string {
         const items = cmd === "patch" ? a.updates : a.todos;
         const first = Array.isArray(items) && items[0] && typeof items[0].content === "string" ? items[0] : null;
         const action = cmd === "patch" ? "更新任务" : cmd === "write" ? "写入任务清单" : "任务清单";
-        return action + (first ? " · " + first.content + (first.status ? " → " + first.status : "") : "");
+        return action + (first ? " " + first.content + (first.status ? " → " + first.status : "") : "");
       } catch { return "任务清单"; }
     }
     if (call.tool === "process") {
       try {
         const a = JSON.parse(call.args_json), cmd = a.command || "";
-        if (cmd === "start") return "启动" + (a.name ? " " + a.name : "") + (a.script ? " · " + a.script : "");
+        if (cmd === "start") return "启动" + (a.name ? " " + a.name : "") + (a.script ? " " + a.script : "");
         if (cmd === "list") return "列出后台任务";
         if (cmd === "status") return "查看 " + (a.processId || "后台任务");
         if (cmd === "stop") return (a.closeTerminal ? "停止并关闭 " : "停止 ") + (a.processId || "后台任务");
@@ -580,14 +580,14 @@ export function panelHtml(): string {
       } catch { return "后台任务"; }
     }
     if (call.tool === "context_search") {
-      try { const a = JSON.parse(call.args_json); return "语义搜索" + (a.path ? " @" + a.path : "") + (a.query ? " · " + a.query : ""); } catch { return "语义搜索"; }
+      try { const a = JSON.parse(call.args_json); return "语义搜索" + (a.path ? " @" + a.path : "") + (a.query ? " " + a.query : ""); } catch { return "语义搜索"; }
     }
     if (call.tool === "guide") {
       try { const a = JSON.parse(call.args_json); return a.workflow ? "加载 " + a.workflow + " 工作流" : a.tool ? "查看 " + a.tool + " 使用说明" : "获取操作手册"; } catch { return "获取操作手册"; }
     }
     if (call.tool === "show") return "打开实时进度面板";
     if (call.tool === "skill") {
-      try { const a = JSON.parse(call.args_json); return a.name ? "读取 " + a.name + (a.path ? " · " + a.path : "") : "列出技能"; } catch { return "列出技能"; }
+      try { const a = JSON.parse(call.args_json); return a.name ? "读取 " + a.name + (a.path ? " " + a.path : "") : "列出技能"; } catch { return "列出技能"; }
     }
     if (call.tool === "proxy") {
       try {
@@ -609,7 +609,7 @@ export function panelHtml(): string {
           } catch {}
         }
         const verb = a.command === "call" ? "调用" : a.command === "explain" ? "查看" : (a.command || "调用");
-        return verb + " " + target + (firstArg ? " · " + firstArg : "");
+        return verb + " " + target + (firstArg ? " " + firstArg : "");
       } catch { return "代理调用"; }
     }
     return call.tool || "工具调用";

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { migrateActivity } from './activity.js';
+import { atomicActivity, migrateActivity } from './activity.js';
 
 export type SessionStatus = 'active' | 'paused' | 'revoked' | 'archived';
 
@@ -66,6 +66,8 @@ export interface ToolCallRow {
   approval_scope: ApprovalScope | null;
   created_at: number;
   updated_at: number;
+  /** 最近一次变化的变更号（见 FeedLog）；FeedLog 还没标记过的行为 0。 */
+  rev?: number;
 }
 
 export interface ConfirmationRow {
@@ -256,6 +258,16 @@ function migrate(db: DatabaseSync): void {
   if (!tcCols.some((c) => c.name === 'approval_scope')) db.exec('ALTER TABLE tool_calls ADD COLUMN approval_scope TEXT');
   if (!tcCols.some((c) => c.name === 'navigation_json')) db.exec('ALTER TABLE tool_calls ADD COLUMN navigation_json TEXT');
 
+  // 变更号 rev（session-feed 计划 §4.2）。与上面同理：必须排在表重建之后，重建的固定列表会丢掉它。
+  // 旧行回填 rowid：数值很小，必然低于 FeedLog 的起始值（毫秒时钟），只会出现在 full / history 读取里。
+  // 回填只处理 rev = 0 的行，可重复执行。
+  if (!tcCols.some((c) => c.name === 'rev')) db.exec('ALTER TABLE tool_calls ADD COLUMN rev INTEGER NOT NULL DEFAULT 0');
+  atomicActivity(db, () => {
+    db.exec('UPDATE tool_calls SET rev = rowid WHERE rev = 0');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_tool_calls_session_rev ON tool_calls(session_id, rev)');
+  });
+  ensureCourierMessagesTable(db);
+
   // Create after legacy session-table rebuilds. Pending handoffs are not history.
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_handoffs (
@@ -271,6 +283,39 @@ function migrate(db: DatabaseSync): void {
     CREATE TRIGGER IF NOT EXISTS handoff_session_deleted
       AFTER DELETE ON sessions
       BEGIN DELETE FROM session_handoffs WHERE session_id = OLD.id; END;
+  `);
+}
+
+/**
+ * 每个 BlackHole 会话的聊天线程（发给网页的消息与网页 agent 的回复）。
+ * 建表只在这里写一份：daemon 迁移与测试（`:memory:` 库）共用。列与 CourierMessage 一一对应，
+ * `question_json` 存提问卡片，`rev` 是最近一次变化的变更号。
+ * 不设条数上限：行随会话一起删，或由保留期清扫删除，与工具调用相同。
+ */
+export function ensureCourierMessagesTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS courier_messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      site TEXT,
+      target_id TEXT,
+      conversation_key TEXT,
+      code TEXT,
+      message TEXT,
+      model TEXT,
+      images INTEGER,
+      turn INTEGER,
+      segment TEXT,
+      message_id TEXT,
+      question_json TEXT,
+      rev INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_courier_messages_session_rev ON courier_messages(session_id, rev);
+    CREATE INDEX IF NOT EXISTS idx_courier_messages_session_at ON courier_messages(session_id, at);
   `);
 }
 

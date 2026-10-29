@@ -22,6 +22,8 @@ for (const [label, extra] of cases) test('packed execution discovery: ' + label,
   assert.ok(fs.existsSync(entry), 'Build the VS Code extension before running this check');
   fs.mkdirSync('.cache/tests', { recursive: true });
   const root = fs.realpathSync(fs.mkdtempSync('.cache/tests/packed-execution-'));
+  const dataRoot = path.join(root, '.blackhole');
+  fs.mkdirSync(dataRoot);
   const socket = net.createServer();
   await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port;
@@ -32,8 +34,8 @@ for (const [label, extra] of cases) test('packed execution discovery: ' + label,
   Object.assign(env, { HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root,
     TEMP: root, TMP: root, TMPDIR: root, ELECTRON_RUN_AS_NODE: '1', BLACKHOLE_TUNNEL: 'off',
     BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_SKILLS_DIR: '',
-    BLACKHOLE_PROXY_CONFIG: path.join(root, 'missing-proxies.yaml'), ...extra });
-  const child = spawn(process.execPath, [entry, 'serve', '--port', String(port), '--db', path.join(root, 'fixture.db'), '--tunnel', 'off'],
+    BLACKHOLE_PROXY_CONFIG: path.join(dataRoot, 'mcp-proxies.yaml'), ...extra });
+  const child = spawn(process.execPath, [entry, 'serve', '--port', String(port), '--db', path.join(dataRoot, 'blackhole.db'), '--tunnel', 'off'],
     { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let stderr = '', spawnError;
   child.stdout.resume();

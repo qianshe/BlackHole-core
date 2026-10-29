@@ -209,6 +209,11 @@ export class ConfirmationsRepo {
     return stale.length;
   }
 
+  pendingCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM confirmations WHERE status = 'pending' AND expires_at > ?").get(Date.now()) as { n: number };
+    return Number(row.n);
+  }
+
   list(sessionId?: string): ConfirmationRow[] {
     if (sessionId) {
       return this.db

@@ -18,9 +18,11 @@ export async function startFixture(t, { env: extraEnv = {} } = {}) {
   for (const dir of [project, temp, home, path.join(home, 'roaming'), path.join(home, 'local')]) fs.mkdirSync(dir, { recursive: true });
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
+  const data = path.join(home, '.blackhole');
+  fs.mkdirSync(data, { recursive: true });
   const env = { ...process.env, ...extraEnv, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'roaming'), LOCALAPPDATA: path.join(home, 'local'), TEMP: temp, TMP: temp,
-    BLACKHOLE_DB: path.join(root, 'fixture.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_SEMANTIC_KEY: '',
-    BLACKHOLE_SEMANTIC_KEY_FILE: path.join(home, 'missing-key'), BLACKHOLE_PROXY_CONFIG: path.join(root, 'missing-proxies.yaml'), BLACKHOLE_SKILLS_DIR: '',
+    BLACKHOLE_DB: path.join(data, 'blackhole.db'), BLACKHOLE_TUNNEL: 'off', BLACKHOLE_SEMANTIC: 'off', BLACKHOLE_SEMANTIC_KEY: '',
+    BLACKHOLE_SEMANTIC_KEY_FILE: path.join(data, 'semantic-key'), BLACKHOLE_PROXY_CONFIG: path.join(data, 'mcp-proxies.yaml'), BLACKHOLE_SKILLS_DIR: '',
     BH_PROCESS_TEST_ROOT: root, BH_PROCESS_TEST_PORT: String(port) };
   delete env.BLACKHOLE_PUBLIC_URL; delete env.NODE_OPTIONS;
   const child = fork(fileURLToPath(new URL('./process-daemon.mjs', import.meta.url)), [], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });

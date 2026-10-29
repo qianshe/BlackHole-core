@@ -1,0 +1,22 @@
+# Same bytes on every OS: tests and gofmt read sources verbatim, and Windows
+# checkouts must not turn them into CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.node binary
+*.exe binary
+*.dll binary
+*.syso binary
+*.vsix binary
+*.zip binary
+*.gz binary
+*.tgz binary

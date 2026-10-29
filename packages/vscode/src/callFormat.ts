@@ -68,11 +68,11 @@ export function resultBody(call: CallRow): string {
     }
     if (typeof o.status === 'string') {
       const parts = [o.status, typeof o.state === 'string' ? o.state : '', typeof o.processId === 'string' ? o.processId : '', typeof o.exitCode === 'number' ? `exit ${o.exitCode}` : ''].filter(Boolean);
-      return stripAnsi(parts.join(' · '));
+      return stripAnsi(parts.join(' '));
     }
     if (typeof o.command === 'string') {
       const parts = [o.command, typeof o.updated === 'number' ? `更新 ${o.updated} 项` : '', typeof o.total === 'number' ? `共 ${o.total} 项` : ''].filter(Boolean);
-      return stripAnsi(parts.join(' · '));
+      return stripAnsi(parts.join(' '));
     }
   }
   return '(已完成)';

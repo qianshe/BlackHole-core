@@ -1,6 +1,6 @@
 import { commands, Disposable, env, ProgressLocation, Uri, window } from 'vscode';
 import { randomUUID } from 'node:crypto';
-import { authSleep, CloudAuthClient, CloudAuthError, type BillingOrder, type BillingPlan } from './cloudAuthClient';
+import { authSleep, CloudAuthClient, CloudAuthError, type BillingOrder } from './cloudAuthClient';
 
 const statusNames:Record<BillingOrder['status'],string>={payment_pending:'待付款 / 待确认',paid:'付款已确认，权益处理中',fulfilled:'已到账',expired:'支付窗口已结束',review:'超时付款，未交付权益',refunded:'已退款'};
 const errorMessages:Record<string,string>={
@@ -18,8 +18,8 @@ const errorMessages:Record<string,string>={
 function days(seconds:number){return Math.max(1,Math.round(seconds/86400));}
 function price(minor:number){return '¥'+(minor/100).toFixed(2);}
 function durationLabel(seconds:number){const days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.ceil(seconds%3600/60);return [days?days+' 天':'',hours?hours+' 小时':'',minutes?minutes+' 分钟':''].filter(Boolean).join(' ')||'不足 1 分钟';}
-function planLabel(plan:BillingPlan){return `${plan.amountMinor===1?'支付验收 · ':''}${days(plan.durationSeconds)} 天 · ${price(plan.amountMinor)}`;}
-function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 · ${price(order.amountMinor)} · ${statusNames[order.status]}`;}
+// New sales use the shared subscription UI; these labels preserve legacy order facts.
+function orderLabel(order:BillingOrder){return `${days(order.durationSeconds)} 天 ${price(order.amountMinor)} ${statusNames[order.status]}`;}
 
 /** User-driven only: no background order polling and no automatic recurring payment. */
 export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Disposable {
@@ -61,21 +61,9 @@ export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Dis
   }
   finally{if(abort===controller)abort=undefined;}
  }
- async function buy(client:CloudAuthClient,userId:string,requestedSku?:string,confirmedBySettings=false) {
-  const catalogue=await client.billingPlans(userId);
-  if(!catalogue.enabled){info('支付宝时长购买尚未开放；现有订阅卡兑换不受影响。');return;}
-  const requested=requestedSku?catalogue.plans.find(plan=>plan.sku===requestedSku):undefined;
-  const picked=requested?{label:planLabel(requested),plan:requested}:await window.showQuickPick(catalogue.plans.map(plan=>({label:planLabel(plan),description:'单次付款，不自动续费',plan})),{title:'购买 BlackHole 使用时长',placeHolder:'选择 1 天、7 天或 30 天时长包',ignoreFocusOut:false});
-  if(!picked||disposed)return;
-  // Settings may show a cached standard price; a one-cent acceptance always needs a fresh server-price confirmation.
-  if(!confirmedBySettings||picked.plan.amountMinor===1){
-   const environment=catalogue.environment==='sandbox'?'沙箱测试，不使用真实资金。':'支付宝单次付款，不会自动续费。';
-   if(await window.showInformationMessage(`确认购买 ${picked.label}？`,{modal:true,detail:`购买账号：${userId}\n${environment}\n支付宝确认付款后，对应订阅时长会自动增加到当前账号。`},'前往付款')!=='前往付款')return;
-  }
-  const created=await client.createBillingOrder(userId,picked.plan.sku,randomUUID());
-  if(created.order.sku!==picked.plan.sku||created.order.amountMinor!==picked.plan.amountMinor||created.order.durationSeconds!==picked.plan.durationSeconds){warn('BlackHole：订单价格或时长已变化，未打开付款页。请重新查看方案，并在购买记录核对该待支付订单。');return;}
-  if(!await env.openExternal(Uri.parse(created.checkoutUrl))){warn('未能打开系统浏览器。订单已经保留，请从购买记录继续付款。');return;}
-  await waitForPayment(client,userId,created.order);
+ async function buy(_client:CloudAuthClient,_userId:string,_requestedSku?:string,_confirmedBySettings=false) {
+  // All new purchases share the same order-based UI, including Command Palette entry.
+  await commands.executeCommand('blackhole.openSettings','account');
  }
  async function orders(client:CloudAuthClient,userId:string) {
   const rows=await client.billingOrders(userId);if(!rows.length){info('当前账号还没有支付宝购买订单。');return;}
@@ -138,7 +126,7 @@ export function registerCloudBilling(ready:()=>PromiseLike<CloudAuthClient>):Dis
  }
  return Disposable.from(
   commands.registerCommand('blackhole.accountBuyCard',(sku?:string,confirmedBySettings=false)=>act('buy',sku,confirmedBySettings===true)),
-  commands.registerCommand('blackhole.accountOrders',()=>act('orders')),
+  commands.registerCommand('blackhole.accountOrders',()=>commands.executeCommand('blackhole.openSettings','account')),
   commands.registerCommand('blackhole.accountRefund',()=>act('refund')),
   new Disposable(()=>{disposed=true;abort?.abort();}),
  );

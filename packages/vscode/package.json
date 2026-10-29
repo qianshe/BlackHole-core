@@ -2,7 +2,7 @@
   "name": "blackhole-vscode",
   "displayName": "BlackHole",
   "description": "Connect Web Agents to your local workspace, shell and MCP tools with explicit execution boundaries.",
-  "version": "0.3.181",
+  "version": "0.4.30",
   "private": true,
   "publisher": "qianshe",
   "icon": "media/icon.png",
@@ -48,11 +48,11 @@
     "watch:test": "node esbuild.mjs --watch --environment test",
     "watch:production": "node esbuild.mjs --watch --environment production",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "pnpm run package:test",
+    "package": "pnpm run package:production",
     "package:test": "node ../../scripts/package-vsix.mjs --environment test",
     "package:production": "node ../../scripts/package-vsix.mjs --environment production",
     "vscode:prepublish": "node esbuild.mjs --environment production && node ../../scripts/check-webview.mjs && node ../../scripts/proxy-sync-unit.mjs",
-    "test:cloud-auth": "node test/prepare-cloud-auth.mjs && node --test --experimental-test-isolation=none test/cloud-auth.test.mjs"
+    "test:cloud-auth": "pnpm --dir ../contracts build && node test/prepare-cloud-auth.mjs && node --test --experimental-test-isolation=none test/cloud-auth.test.mjs"
   },
   "contributes": {
     "configuration": {
@@ -246,15 +246,29 @@
         "category": "BlackHole"
       },
       {
-        "command": "blackhole.restartDaemon",
-        "title": "Restart Daemon",
+        "command": "blackhole.handoffLegacyCore",
+        "title": "Core：从旧版安全切换",
         "category": "BlackHole"
       },
       {
-        "command": "blackhole.openWebAgent",
-        "title": "Open Web Agent",
-        "category": "BlackHole",
-        "icon": "$(globe)"
+        "command": "blackhole.activateBundledCoreCold",
+        "title": "Core：应用本插件配套版本",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.retrySharedCore",
+        "title": "Core：重试连接",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.applyBundledCoreUpdate",
+        "title": "Apply Bundled Core Update",
+        "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.restartDaemon",
+        "title": "Restart Daemon",
+        "category": "BlackHole"
       },
       {
         "command": "blackhole.openLocalWeb",
@@ -296,6 +310,22 @@
         "command": "blackhole.accountStatus",
         "title": "账号：检查登录状态",
         "category": "BlackHole"
+      },
+      {
+        "command": "blackhole.applyCoreSettings",
+        "title": "BlackHole: Apply Shared Core Settings"
+      },
+      {
+        "command": "blackhole.configureCorePort",
+        "title": "BlackHole: Configure Shared Core Port (Stopped Core)"
+      },
+      {
+        "command": "blackhole.inspectCoreMaintenance",
+        "title": "BlackHole: Inspect and Recover Shared Core Maintenance"
+      },
+      {
+        "command": "blackhole.repairCoreStart",
+        "title": "BlackHole: Inspect and Repair Shared Core Start"
       }
     ],
     "viewsContainers": {
@@ -316,15 +346,7 @@
         }
       ]
     },
-    "menus": {
-      "view/title": [
-        {
-          "command": "blackhole.openLocalWeb",
-          "when": "view == blackhole.sidebar",
-          "group": "navigation"
-        }
-      ]
-    }
+    "menus": {}
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -332,6 +354,7 @@
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.25.0",
     "javascript-obfuscator": "4.1.1",
+    "mermaid": "11.17.2",
     "qrcode-generator": "1.4.4",
     "typescript": "^5.7.2"
   }

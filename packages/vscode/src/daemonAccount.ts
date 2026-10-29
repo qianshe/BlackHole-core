@@ -47,6 +47,9 @@ export class DaemonAuthClient {
   signOut(): Promise<AuthView> { return this.call('signOut'); }
   redeemCard(code: string, expectedUserId: string) { return this.call<Awaited<ReturnType<CloudAuthClient['redeemCard']>>>('redeemCard', code, expectedUserId); }
   billingPlans(u: string) { return this.call<Awaited<ReturnType<CloudAuthClient['billingPlans']>>>('billingPlans', u); }
+  membershipCatalogue(u: string) { return this.call<Awaited<ReturnType<CloudAuthClient['membershipCatalogue']>>>('membershipCatalogue', u); }
+  membershipStatus(u: string) { return this.call<Awaited<ReturnType<CloudAuthClient['membershipStatus']>>>('membershipStatus', u); }
+  membershipCheckout(u: string, sku: string) { return this.call<Awaited<ReturnType<CloudAuthClient['membershipCheckout']>>>('membershipCheckout', u, sku); }
   billingOrders(u: string) { return this.call<Awaited<ReturnType<CloudAuthClient['billingOrders']>>>('billingOrders', u); }
   billingRefundableOrders(u: string, cursor?: string) { return this.call<Awaited<ReturnType<CloudAuthClient['billingRefundableOrders']>>>('billingRefundableOrders', u, cursor ?? null); }
   createBillingOrder(u: string, sku: string, key: string, _signal?: AbortSignal) { return this.call<Awaited<ReturnType<CloudAuthClient['createBillingOrder']>>>('createBillingOrder', u, sku, key); }

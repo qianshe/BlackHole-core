@@ -5,28 +5,39 @@ import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {resolveBuildConfig,PRODUCTION_CLOUD_ORIGIN} from '../packages/vscode/build-config.mjs';
+import {assertServiceBuild} from './environment-config.mjs';
 
 const ext=fileURLToPath(new URL('../packages/vscode/',import.meta.url));
 const require=createRequire(path.join(ext,'package.json'));
 // Use the ZIP reader already used by the installed packaging tool.
 const {open}=createRequire(require.resolve('@vscode/vsce/package.json'))('yauzl');
 export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
+ const seedZipName='extension/dist/seed-core/core-win32-x64.zip',seedMetaName='extension/dist/seed-core/seed-core.json';
  const entries=[],texts=new Map(),hashes=new Map();
  await new Promise((resolve,reject)=>open(file,{lazyEntries:true},(error,zip)=>{
   if(error)return reject(error);
   const fail=e=>{zip.close();reject(e);};zip.on('error',fail);zip.on('end',resolve);
   zip.on('entry',entry=>{
    const name=entry.fileName;entries.push(name);
-   if(!['extension/package.json','extension.vsixmanifest','extension/dist/cloud-build.json','extension/dist/extension.js','extension/dist/daemon/cli.js','extension/dist/daemon/process-supervisor.cjs'].includes(name)){zip.readEntry();return;}
-   if(entry.uncompressedSize>((name.endsWith('/extension.js')||name.endsWith('/cli.js'))?32:1)*1024*1024)return fail(new Error('Oversized package metadata/bundle'));
+   if(!['extension/package.json','extension.vsixmanifest','extension/dist/cloud-build.json','extension/dist/extension.js','extension/dist/daemon/cli.js','extension/dist/daemon/process-supervisor.cjs','extension/dist/settings/settings.js','extension/dist/settings/settings.css',seedZipName,seedMetaName].includes(name)){zip.readEntry();return;}
+   const maxBytes=name===seedZipName?512*1024*1024:((name.endsWith('/extension.js')||name.endsWith('/cli.js')||name.endsWith('/settings.js'))?32:1)*1024*1024;
+   if(entry.uncompressedSize>maxBytes)return fail(new Error('Oversized package metadata/bundle'));
    zip.openReadStream(entry,(err,stream)=>{
     if(err)return fail(err);const chunks=[],hash=createHash('sha256');stream.on('error',fail);
-    stream.on('data',chunk=>{hash.update(chunk);if(!(name.endsWith('/extension.js')||name.endsWith('/cli.js')))chunks.push(chunk);});stream.on('end',()=>{hashes.set(name,hash.digest('hex'));if(!(name.endsWith('/extension.js')||name.endsWith('/cli.js')))texts.set(name,Buffer.concat(chunks).toString('utf8'));zip.readEntry();});
+    stream.on('data',chunk=>{hash.update(chunk);if(name!==seedZipName)chunks.push(chunk);});stream.on('end',()=>{hashes.set(name,hash.digest('hex'));if(name!==seedZipName)texts.set(name,Buffer.concat(chunks).toString('utf8'));zip.readEntry();});
    });
   });zip.readEntry();
  }));
  const expected=JSON.parse(readFileSync(path.join(ext,'package.json'),'utf8'));
  const manifest=JSON.parse(texts.get('extension/package.json'));
+ if (manifest.blackholeSharedCore?.mode === 'host-node') {
+   const profile=manifest.blackholeBuild;
+   const selected=resolveBuildConfig(profile.environment,profile.environment==='test'?profile.origin:undefined,profile.environment==='test'?profile.entitlementPublicKey:undefined,profiles);
+   assertServiceBuild(selected);
+   if(expectedBuild)assert.deepEqual(selected,expectedBuild);
+   const {auditHostVsix}=await import('./vsix-host-layout.mjs');
+   return auditHostVsix(file,expected,selected);
+ }
  assert.equal(manifest.version,expected.version);assert.equal(manifest.publisher,expected.publisher);
  assert.equal(manifest.name,expected.name);
  assert.doesNotMatch(texts.get('extension.vsixmanifest'),/TargetPlatform\s*=/);
@@ -36,16 +47,40 @@ export async function auditUniversalVsix(file,expectedBuild,{profiles}={}){
  assert.ok(entries.includes('extension/dist/daemon/cli.js'));
  assert.ok(entries.includes('extension/dist/daemon/web/index.html'),'local Web page must ship');
  assert.ok(entries.some(name=>/koffi-win32-x64\/win32_x64\/koffi\.node$/.test(name)),'universal candidate must retain Windows x64 native support');
-for(const target of ['win32-x64-msvc','win32-arm64-msvc','darwin-x64','darwin-arm64','linux-x64-gnu','linux-arm64-gnu'])assert.ok(entries.some(name=>name.endsWith(`dist/daemon/node_modules/@napi-rs/keyring-${target}/keyring.${target}.node`)),`universal candidate must ship the ${target} keyring binary (run scripts/fetch-keyring-prebuilds.mjs)`);
- for(const name of ['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','readme.md'])assert.ok(entries.includes('extension/'+name),'missing '+name);
+assert.ok(!entries.some(name=>name.includes('node_modules/@napi-rs/keyring')),'the OS keyring module must not ship (credentials are user-only files)');
+ const hasSeedZip=entries.includes(seedZipName),hasSeedMeta=entries.includes(seedMetaName);
+ if(hasSeedZip){assert.equal(manifest.blackholeSharedCore?.mode,'bridge','Seed packages must explicitly enable the bridge');assert.equal(manifest.blackholeSharedCore?.platform,'win32');assert.equal(manifest.blackholeSharedCore?.arch,'x64');}
+ else assert.equal(manifest.blackholeSharedCore,undefined,'managed mode cannot ship without its Seed');
+ assert.equal(hasSeedZip,hasSeedMeta,'Seed Core archive and metadata must ship together');
+ let seedReport={seedCoreBundled:false};
+ if(hasSeedZip){const seed=JSON.parse(texts.get(seedMetaName));assert.equal(seed.formatVersion,1);assert.equal(seed.platform,'win32');assert.equal(seed.arch,'x64');assert.match(seed.archiveSha256,/^[a-f0-9]{64}$/);assert.equal(seed.archiveSha256,hashes.get(seedZipName),'Seed archive hash mismatch');assert.match(seed.descriptorSha256,/^[a-f0-9]{64}$/);assert.ok(seed.runtimeId&&seed.runtimeVersion&&seed.buildId&&seed.signingKeyId,'incomplete Seed metadata');seedReport={seedCoreBundled:true,seedCoreSha256:seed.archiveSha256,seedRuntimeVersion:seed.runtimeVersion,seedBuildId:seed.buildId};}
+ assert.ok(!entries.some(name=>/^extension\/dist\/daemon\/(node_modules|workspace|win32)\//.test(name)),'the Windows sandbox chain and koffi ship once under dist/; dist/daemon copies are duplicates');
+ for(const name of ['LICENSE.txt','NOTICE','THIRD_PARTY_NOTICES.md','THIRD_PARTY_LICENSES.md','readme.md'])assert.ok(entries.includes('extension/'+name),'missing '+name);
  let buildReport={};
  const rawBuild=texts.get('extension/dist/cloud-build.json');
- if(expectedBuild)assert.ok(rawBuild,'build metadata must ship');
+ assert.ok(rawBuild,'build metadata must ship; cannot validate a package by filename alone');
  if(rawBuild){
   const info=JSON.parse(rawBuild);
+  const settingsAssets=[['settingsSha256','extension/dist/settings/settings.js'],['settingsCssSha256','extension/dist/settings/settings.css']];
+  const hasSharedSettings=(texts.get('extension/dist/extension.js')??'').includes('shared-react')
+    || settingsAssets.some(([key,name])=>info[key]!==undefined||entries.includes(name));
+  if(hasSharedSettings){
+    for(const [key,name] of settingsAssets){
+      assert.ok(entries.includes(name),'missing shared settings renderer asset: '+name);
+      assert.ok(typeof info[key]==='string'&&/^[a-f0-9]{64}$/.test(info[key]),'missing or invalid settings renderer hash: '+key);
+      assert.equal(info[key],hashes.get(name),'stale or mixed settings renderer asset: '+name);
+    }
+  }
   const selected=resolveBuildConfig(info.environment,info.environment==='test'?info.origin:undefined,info.environment==='test'?info.entitlementPublicKey:undefined,profiles);
   assert.equal(info.origin,selected.origin);
   assert.equal(info.entitlementPublicKey,selected.entitlementPublicKey);
+  assertServiceBuild(selected);
+  for(const name of ['extension/dist/extension.js','extension/dist/daemon/cli.js']){
+   const text=texts.get(name)??'';
+   assert.ok(text.includes(selected.origin),'selected origin is absent from '+name);
+   assert.ok(!text.includes('blackhole-build-fixture.example.org'),'offline fixture leaked into '+name);
+  }
+  assert.ok(texts.get('extension/dist/daemon/cli.js').includes(selected.entitlementPublicKey),'selected daemon public key is absent');
   assert.equal(info.daemonSha256,hashes.get('extension/dist/daemon/cli.js'),'stale or mixed daemon bundle');
   const supervisorHash=hashes.get('extension/dist/daemon/process-supervisor.cjs');
   if(info.processSupervisorSha256!==undefined||supervisorHash!==undefined){
@@ -58,13 +93,14 @@ for(const target of ['win32-x64-msvc','win32-arm64-msvc','darwin-x64','darwin-ar
   assert.equal(manifest.displayName,expected.displayName+(selected.environment==='test'?' (Test)':''));
   for(const key of ['blackhole.cloudEnvironment','blackhole.cloudTestOrigin'])assert.equal(manifest.contributes?.configuration?.properties?.[key],undefined,'runtime cloud environment settings must not ship');
   assert.equal(Object.hasOwn(manifest.contributes.configuration.properties,'blackhole.daemonEntry'),selected.environment==='test','daemon override setting must ship only in test builds');
-  buildReport={buildEnvironment:selected.environment,cloudOrigin:selected.origin,usesProductionService:selected.origin===PRODUCTION_CLOUD_ORIGIN,extensionBundleSha256:info.extensionSha256,daemonBundleSha256:info.daemonSha256,entitlementPublicKeySha256:createHash('sha256').update(Buffer.from(info.entitlementPublicKey,'base64')).digest('hex')};
+  buildReport={buildEnvironment:selected.environment,cloudOrigin:selected.origin,usesProductionService:selected.origin===PRODUCTION_CLOUD_ORIGIN,extensionBundleSha256:info.extensionSha256,daemonBundleSha256:info.daemonSha256,...(hasSharedSettings?{sharedSettingsRenderer:true,settingsBundleSha256:info.settingsSha256,settingsCssSha256:info.settingsCssSha256}:{}),entitlementPublicKeySha256:createHash('sha256').update(Buffer.from(info.entitlementPublicKey,'base64')).digest('hex')};
  }
  const bytes=statSync(file).size,sha256=createHash('sha256').update(readFileSync(file)).digest('hex');
- const report={file:path.resolve(file),extensionId:manifest.publisher+'.'+manifest.name,version:manifest.version,target:'universal',cloudflaredBundled:false,files:entries.length,bytes,sha256,...buildReport};
+ const report={file:path.resolve(file),extensionId:manifest.publisher+'.'+manifest.name,version:manifest.version,target:'universal',cloudflaredBundled:false,files:entries.length,bytes,sha256,...seedReport,...buildReport};
  return report;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  if(!process.argv[2])throw new Error('Usage: node scripts/audit-universal-vsix.mjs <file.vsix>');
  console.log(JSON.stringify(await auditUniversalVsix(path.resolve(process.argv[2])),null,2));
 }
+

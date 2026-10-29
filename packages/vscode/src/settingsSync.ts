@@ -58,6 +58,7 @@ export function diffValues(local: Values, daemon: Pick<DaemonSettings, 'values'>
 export class SettingsSync implements Disposable {
   private mirroring = false;
   private running: Promise<void> | null = null;
+  private pushing: Promise<void> | null = null;
   private last: DaemonSettings | null = null;
   private readonly disposables: Disposable[] = [];
   private readonly timer: NodeJS.Timeout;
@@ -76,7 +77,25 @@ export class SettingsSync implements Disposable {
       window.onDidChangeWindowState((s) => {
         if (s.focused) void this.sync();
       }),
+      // Every health answer carries the settings revision: an edit made elsewhere
+      // (Web settings, another window) is pulled within one poll, not up to 15 s later.
+      api.onHealth?.((h) => this.observe(h.settings_revision)) ?? { dispose() {} },
     );
+  }
+
+  /** A revision the daemon reported: pull when it moved past the last one seen. */
+  observe(revision: unknown): void {
+    if (typeof revision === 'number' && this.last && revision !== this.last.revision && !this.running && !this.pushing) void this.sync();
+  }
+
+  /** Daemon values as of the last pull or push (null before first contact). */
+  baseline(): Record<string, unknown> | null {
+    return this.last?.values ?? null;
+  }
+
+  /** Wait until no pull or push is in flight. */
+  async flush(): Promise<void> {
+    while (this.running || this.pushing) await Promise.all([this.running, this.pushing?.catch(() => undefined)]);
   }
 
   private read(): Values {
@@ -120,7 +139,14 @@ export class SettingsSync implements Disposable {
   }
 
   /** A VS Code-side edit: send only what differs from the daemon's last known values. */
-  private async push(): Promise<void> {
+  private push(): Promise<void> {
+    const run = (this.pushing ?? Promise.resolve()).catch(() => undefined).then(() => this.pushNow());
+    const tracked: Promise<void> = run.finally(() => { if (this.pushing === tracked) this.pushing = null; });
+    this.pushing = tracked;
+    return tracked;
+  }
+
+  private async pushNow(): Promise<void> {
     await this.running;
     const local = this.read();
     const base = this.last;
@@ -132,7 +158,18 @@ export class SettingsSync implements Disposable {
     if (keys.length === 0) return;
     const values = Object.fromEntries(keys.map((k) => [k, local[k]]));
     try {
-      this.last = await this.api.patchSettings(values);
+      try {
+        // Bound to the revision these edits were made against: a write made elsewhere
+        // in between is never overwritten blindly.
+        this.last = await this.api.patchSettings(values, base.revision);
+      } catch (e) {
+        if ((e as { message?: unknown } | null)?.message !== 'revision_conflict') throw e;
+        // The daemon moved on: keep the keys edited here (they differ from the old base),
+        // resend them on the new revision, and mirror everything else from the daemon.
+        const fresh = await this.api.settings();
+        this.last = await this.api.patchSettings(values, fresh.revision);
+        await this.mirror(this.last);
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.log.appendLine(`settings: BlackHole rejected ${keys.join(', ')}: ${message}`);

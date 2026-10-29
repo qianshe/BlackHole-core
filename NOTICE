@@ -1,0 +1,24 @@
+BlackHole
+Copyright 2026 qianshe and BlackHole contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Source: https://github.com/qianshe/BlackHole-core
+
+This product includes separately licensed third-party software. Their own license
+and notice files remain controlling for those components:
+
+- src/semantic: search code derived from SammySnake-d/fast-context-mcp (MIT);
+  see src/semantic/LICENSE-MIT and src/semantic/NOTICE.md.
+- Local sandbox portions derived from deepseek-ai/deepseek-harness,
+  Copyright (c) 2026 DeepSeek (MIT); see packages/vscode/licenses/deepseek-harness-MIT.txt.
+- Koffi and other components shipped in the VS Code extension:
+  packages/vscode/THIRD_PARTY_NOTICES.md.
+- npm packages bundled into the extension, background service and Local Web UI,
+  with their license texts: packages/vscode/THIRD_PARTY_LICENSES.md.
+
+The hosted BlackHole Cloud service (accounts, subscriptions and payment) is not part
+of this repository and is not covered by this license.
+
+"BlackHole" and the BlackHole logo identify the official project. As stated in
+section 6 of the Apache License, the license does not grant permission to use them;
+derived works should use a different name and logo.

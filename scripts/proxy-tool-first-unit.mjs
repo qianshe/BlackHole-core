@@ -15,7 +15,7 @@ const proxyPreview = args => preview({tool:'proxy',args_json:JSON.stringify(args
 for (const server of [undefined, 'browser-server']) {
   assert.equal(proxyPreview({command:'explain',tool:'list_pages',server}), '查看 list_pages');
   assert.equal(proxyPreview({command:'call',tool:'list_pages',server}), '调用 list_pages');
-  assert.equal(proxyPreview({command:'call',tool:'list_pages',server,argsJson:'{"limit":5}'}), '调用 list_pages · limit=5');
+  assert.equal(proxyPreview({command:'call',tool:'list_pages',server,argsJson:'{"limit":5}'}), '调用 list_pages limit=5');
   assert.equal(proxyPreview({command:'list',server}), '列出可用工具');
   assert.equal(proxyPreview({command:'cancel',server}), '取消代理调用');
 }
