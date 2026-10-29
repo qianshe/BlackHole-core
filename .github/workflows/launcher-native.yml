@@ -61,18 +61,18 @@ jobs:
     env:
       GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.10'
           cache-dependency-path: packages/desktop-launcher/go.sum
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.0.0
           run_install: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.20.0
           cache: pnpm
@@ -131,10 +131,10 @@ jobs:
           - { goos: linux, goarch: amd64, ext: '', ldflags: '-s -w', runner: ubuntu-latest, cgo: '1' }
           - { goos: linux, goarch: arm64, ext: '', ldflags: '-s -w', runner: ubuntu-24.04-arm, cgo: '1' }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.10'
           cache-dependency-path: packages/desktop-launcher/go.sum
@@ -145,7 +145,7 @@ jobs:
           # webview_go asks pkg-config for webkit2gtk-4.0; link the 4.1 ABI current distros ship.
           mkdir -p "$RUNNER_TEMP/pc" && printf 'Name: webkit2gtk-4.0\nDescription: shim\nVersion: 2.40\nRequires: webkit2gtk-4.1\n' > "$RUNNER_TEMP/pc/webkit2gtk-4.0.pc"
           echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pc" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.20.0
       - name: Require explicit source security approval before producing executable artifacts
@@ -160,7 +160,7 @@ jobs:
           out="launcher/${GOOS}-${GOARCH}"
           go -C packages/desktop-launcher build -trimpath -ldflags="${{ matrix.target.ldflags }}" -o "../../${out}/blackhole${{ matrix.target.ext }}" ./cmd/blackhole
           ( cd "$out" && shasum -a 256 blackhole* > SHA256SUMS && printf 'commit=%s\ngo=%s\ntarget=%s/%s\nprotocol=1\n' "$GITHUB_SHA" "$(go version)" "$GOOS" "$GOARCH" > BUILDINFO )
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: blackhole-launcher-dev-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
           path: launcher/
@@ -188,20 +188,20 @@ jobs:
       BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
       RECOVERY_MODE: ${{ inputs.release_metadata }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: v0.4.31
           persist-credentials: false
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.0.0
           run_install: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.20.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile && pnpm --dir packages/contracts build
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           run-id: 40696972257
           github-token: ${{ github.token }}
@@ -245,7 +245,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload v0.4.31 .tmp/published-metadata/latest-* .tmp/published-metadata/desktop-preview-catalog.ts
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: community-release-metadata-${{ inputs.release_metadata }}-${{ github.run_id }}
           path: .tmp/published-metadata/
