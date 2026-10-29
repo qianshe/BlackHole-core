@@ -1,0 +1,6 @@
+{
+  "coreKeyId": "prod-host-node-v1",
+  "corePublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAD2DVrcEAJAnYZqdX5bg8K9lch/fyCBY0ZMYC9xzOdp0=\n-----END PUBLIC KEY-----\n",
+  "updateKeyId": "prod-desktop-update-v1",
+  "updatePublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAc62949xnnmk3qONhLdMFTiRSy86QHtEgSP7X6gpUkGA=\n-----END PUBLIC KEY-----\n"
+}

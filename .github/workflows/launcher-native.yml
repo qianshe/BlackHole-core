@@ -18,6 +18,21 @@ on:
       - '.github/workflows/desktop-release.yml'
   workflow_dispatch:
     inputs:
+      release_metadata:
+        description: 'Recover signed metadata or verify published downloads for the immutable 0.4.31 release; never rebuild installers'
+        type: choice
+        options: [none, export, readback]
+        default: none
+      publish_community_release:
+        description: 'Publish the community prerelease only after five native installer receipts and signed artifacts verify'
+        type: boolean
+        required: false
+        default: false
+      community_packages:
+        description: 'Build all five production community installers after native tests; do not publish'
+        type: boolean
+        required: false
+        default: false
       build_artifacts:
         description: 'Build development launchers after tests (not a VSIX or a release)'
         type: boolean
@@ -36,6 +51,7 @@ jobs:
   # against an isolated daemon (never port 7306 or a real ~/.blackhole).
   # Dev artifacts only: no signing, no release secrets.
   test:
+    if: github.event_name != 'workflow_dispatch' || inputs.release_metadata == 'none'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -81,7 +97,7 @@ jobs:
       - name: Bootstrap against an isolated daemon
         run: pnpm test:host-runtime
       - name: Desktop delivery policies and native-status boundary
-        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs packages/web/test/desktop-update-client.test.mjs
+        run: node --test scripts/default-port-policy.test.mjs scripts/desktop-packaging.test.mjs scripts/storage-installer.test.mjs scripts/desktop-release-gate.test.mjs scripts/desktop-delivery-policy.test.mjs scripts/desktop-node-info.test.mjs scripts/macos-community-signing.test.mjs scripts/linux-package-modes.test.mjs scripts/review-desktop-community-release.test.mjs scripts/desktop-release-index.test.mjs scripts/verify-desktop-release-discovery.test.mjs packages/web/test/desktop-update-client.test.mjs
       - name: Host-provided Node and lightweight VSIX packaging boundaries
         run: node --test scripts/host-node-packaging.test.mjs scripts/core-host-node.test.mjs packages/vscode/test/managed-core-session.test.mjs
       - name: Read-only installer preflight (disposable HOME only)
@@ -149,3 +165,88 @@ jobs:
           name: blackhole-launcher-dev-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
           path: launcher/
           retention-days: 7
+
+  community-packages:
+    if: github.event_name == 'workflow_dispatch' && inputs.community_packages
+    permissions:
+      contents: write
+    needs: test
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      environment: production
+      publish_github_release: ${{ inputs.publish_community_release }}
+    secrets: inherit
+
+  release-metadata:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_metadata != 'none'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
+      RECOVERY_MODE: ${{ inputs.release_metadata }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: v0.4.31
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile && pnpm --dir packages/contracts build
+      - uses: actions/download-artifact@v5
+        with:
+          run-id: 40696972257
+          github-token: ${{ github.token }}
+          pattern: desktop-release-*
+          path: .tmp/published-artifacts
+      - name: Verify immutable release source and signed artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "9443e5b6a1f936433555eb6843b9f352ffeab8b6"
+          mkdir -p .tmp/published-metadata
+          if [ "$RECOVERY_MODE" = "export" ]; then
+            mode=prepublish
+          elif [ "$RECOVERY_MODE" = "readback" ]; then
+            mode=release
+          else
+            exit 1
+          fi
+          node scripts/review-desktop-community-release.mjs --artifacts .tmp/published-artifacts --mode "$mode" --output .tmp/published-metadata/community-review.json
+      - name: Export exact signed manifests and preview catalog
+        if: inputs.release_metadata == 'export'
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {renderDesktopReleaseCatalog} from './scripts/generate-cloud-desktop-catalog.mjs';
+          const pins=JSON.parse(fs.readFileSync('release/production-public-keys.json'));
+          const feeds=[];
+          for(const target of ['windows-x64','macos-x64','macos-arm64','linux-x64','linux-arm64']){
+            const base='.tmp/published-artifacts/desktop-release-'+target+'/update-feed/'+target+'/latest.json';
+            const manifestJson=fs.readFileSync(base,'utf8'),signature=fs.readFileSync(base+'.sig','utf8');
+            feeds.push({manifestJson,signature});
+            fs.writeFileSync('.tmp/published-metadata/latest-'+target+'.json',manifestJson,{flag:'wx'});
+            fs.writeFileSync('.tmp/published-metadata/latest-'+target+'.json.sig',signature,{flag:'wx'});
+          }
+          const result=renderDesktopReleaseCatalog({keyId:pins.updateKeyId,publicKeyPem:pins.updatePublicKey,channel:'preview',feeds});
+          fs.writeFileSync('.tmp/published-metadata/desktop-preview-catalog.ts',result.source,{flag:'wx'});
+          NODE
+      - name: Add metadata without replacing any existing release asset
+        if: inputs.release_metadata == 'export'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.4.31 .tmp/published-metadata/latest-* .tmp/published-metadata/desktop-preview-catalog.ts
+      - uses: actions/upload-artifact@v6
+        with:
+          name: community-release-metadata-${{ inputs.release_metadata }}-${{ github.run_id }}
+          path: .tmp/published-metadata/
+          retention-days: 30

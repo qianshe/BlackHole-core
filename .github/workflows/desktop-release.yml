@@ -3,9 +3,17 @@ name: Desktop Multi-Platform Release
 # Multi-platform (Windows x64, macOS x64/arm64, Linux x64/arm64) Desktop + Core
 # packaging and GitHub Release workflow. VS Code Marketplace publishing remains
 # manual; this workflow builds matched signed Core archives, Desktop installers,
-# per-platform signed update feeds, and generates BlackHole-cloud's
-# desktop-release-catalog.ts.
+# per-platform signed update feeds, and the data-only desktop-release.json index
+# discovered automatically by Cloud. No Cloud credential or deployment is needed.
 on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      publish_github_release:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
@@ -41,15 +49,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22.20.0
+          package-manager-cache: false
       - name: Enforce reviewed source and release gate policy
         env:
           BLACKHOLE_APPROVED_SOURCE_SHA: ${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}
         run: |
-          if [ "${{ inputs.environment }}" = "production" ] && [ "${{ inputs.publish_github_release }}" = "true" ]; then
-            node scripts/desktop-release-gate.mjs --mode release
-          else
-            node scripts/desktop-release-gate.mjs --mode candidate
-          fi
+          # Build first; installer acceptance and Cloud readback refer to real artifacts.
+          node scripts/desktop-release-gate.mjs --mode candidate
 
   package:
     name: Package Desktop (${{ matrix.target }})
@@ -89,7 +95,7 @@ jobs:
       - name: WebKitGTK dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev dpkg-dev
+          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev dpkg-dev bubblewrap
           mkdir -p "$RUNNER_TEMP/pc" && printf 'Name: webkit2gtk-4.0\nDescription: shim\nVersion: 2.40\nRequires: webkit2gtk-4.1\n' > "$RUNNER_TEMP/pc/webkit2gtk-4.0.pc"
           echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pc" >> "$GITHUB_ENV"
       - name: Windows icon & Inno Setup toolchain
@@ -132,6 +138,8 @@ jobs:
           trap 'rm -rf "$key_dir"' EXIT
           printf '%s\n' "$CORE_PRIVATE_KEY_SECRET" > "$key_dir/core-private.pem"
           printf '%s\n' "$UPDATE_PRIVATE_KEY_SECRET" > "$key_dir/update-private.pem"
+          # Keys remain private in the 0700 temporary directory; public payloads use standard permissions.
+          umask 022
           node -e "
             const fs = require('fs'), crypto = require('crypto');
             const corePub = crypto.createPublicKey(fs.readFileSync(process.argv[1])).export({ type: 'spki', format: 'pem' });
@@ -234,6 +242,8 @@ jobs:
               --signing-key "$key_dir/update-private.pem" \
               --output ".tmp/ci-desktop/update-feed/${{ matrix.target }}"
           fi
+      - name: Real installer, headless bootstrap, reinstall and data-preserving uninstall
+        run: node scripts/desktop-installer-native-smoke.mjs .tmp/ci-desktop/desktop
       - name: Upload platform Desktop release package (${{ matrix.target }})
         uses: actions/upload-artifact@v6
         with:
@@ -241,6 +251,7 @@ jobs:
           path: |
             .tmp/ci-desktop/BlackHole-Core-*.zip
             .tmp/ci-desktop/desktop/distribution-audit.json
+            .tmp/ci-desktop/desktop/installer-smoke.json
             .tmp/ci-desktop/desktop/installer/*
             .tmp/ci-desktop/update-feed/${{ matrix.target }}/latest.json
             .tmp/ci-desktop/update-feed/${{ matrix.target }}/latest.json.sig
@@ -262,6 +273,12 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22.20.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.0.0
+          run_install: false
+      - run: pnpm install --frozen-lockfile && pnpm --dir packages/contracts build
       - name: Download all platform Desktop packages
         uses: actions/download-artifact@v5
         with:
@@ -272,6 +289,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .tmp/release-bundle/installers .tmp/release-bundle/feeds
+          cp release/community-install.txt .tmp/release-bundle/INSTALL.txt
           for dir in .tmp/collected/desktop-release-*; do
             target="${dir##*desktop-release-}"
             mkdir -p ".tmp/release-bundle/feeds/$target"
@@ -285,9 +303,10 @@ jobs:
             node scripts/generate-cloud-desktop-catalog.mjs \
               --feeds-dir .tmp/release-bundle/feeds \
               --public-key .tmp/release-bundle/update-public.pem \
-              --key-id prod-update-v1 \
+              --key-id prod-desktop-update-v1 \
               --channel stable \
-              --output .tmp/release-bundle/desktop-release-catalog.ts
+              --output .tmp/release-bundle/desktop-release-catalog.ts \
+              --index-output .tmp/release-bundle/desktop-release.json
           fi
       - name: Upload unified multi-platform release bundle & Cloud catalog
         uses: actions/upload-artifact@v6
@@ -306,12 +325,26 @@ jobs:
           version=$(node -p "require('./package.json').version")
           if [ "${{ inputs.environment }}" = "production" ]; then
             tag="v${version}"
+            # Cloud discovers the signed JSON index from GitHub after the complete release is public.
+            BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/review-desktop-community-release.mjs --artifacts .tmp/collected --mode prepublish --output .tmp/release-bundle/prepublish-review.json
             # Production versions are immutable; create fails if this release already exists.
-            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "$tag" --notes "BlackHole Desktop ${version} multi-platform release."
-            gh release upload "$tag" .tmp/release-bundle/installers/*
-            gh release edit "$tag" --draft=false
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "BlackHole Desktop $tag" --notes-file release/community-install.txt
+            (cd .tmp/release-bundle/installers && sha256sum * > ../SHA256SUMS.txt)
+            gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/desktop-release.json .tmp/release-bundle/SHA256SUMS.txt .tmp/release-bundle/INSTALL.txt .tmp/release-bundle/prepublish-review.json
+            gh release edit "$tag" --draft=false --latest
+            node scripts/verify-desktop-release-discovery.mjs --feeds-dir .tmp/release-bundle/feeds
+            BLACKHOLE_APPROVED_SOURCE_SHA='${{ vars.BLACKHOLE_APPROVED_SOURCE_SHA }}' node scripts/review-desktop-community-release.mjs --artifacts .tmp/collected --mode release --output .tmp/release-bundle/published-review.json
           else
             tag="desktop-test"
             gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Desktop Test Channel" --prerelease --notes "BlackHole Desktop test channel."
             gh release upload "$tag" .tmp/release-bundle/installers/* .tmp/release-bundle/feeds/windows-x64/latest.json .tmp/release-bundle/feeds/windows-x64/latest.json.sig --clobber
           fi
+
+      - name: Preserve published download verification
+        if: inputs.publish_github_release && inputs.environment == 'production'
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-published-review-${{ github.sha }}
+          path: .tmp/release-bundle/published-review.json
+          if-no-files-found: error
+          retention-days: 30

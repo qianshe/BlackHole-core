@@ -111,7 +111,18 @@ export function renderDesktopReleaseCatalog({ keyId, publicKeyPem, channel = 'st
     ']);',
     '',
   ].join('\n');
-  return { source, version, targets: [...seenTargets].sort(), publicKeyBase64: pubBase64, entries: verifiedEntries.length };
+  return { source, version, targets: [...seenTargets].sort(), publicKeyBase64: pubBase64, entries: verifiedEntries.length,
+    catalog: verifiedEntries.map(({target: _target,...entry})=>entry) };
+}
+
+/** Public, data-only index. Cloud pins its own key and verifies every exact
+ * manifest; neither JavaScript nor trust roots are downloaded from a Release. */
+export function renderDesktopReleaseIndex(options) {
+  if (options.channel && options.channel !== 'stable') throw Error('release_index_stable_only');
+  const rendered = renderDesktopReleaseCatalog({...options,channel:'stable'});
+  const expected = ['linux-arm64','linux-x64','macos-arm64','macos-x64','windows-x64'];
+  if (rendered.targets.join(',') !== expected.join(',')) throw Error('release_index_requires_five_targets');
+  return JSON.stringify({schemaVersion:1,version:rendered.version,entries:rendered.catalog},null,2)+'\n';
 }
 
 export function collectFeedsFromDirectory(feedsDir) {
@@ -149,6 +160,7 @@ export function main(argv = process.argv.slice(2)) {
       'key-id': { type: 'string' },
       channel: { type: 'string' },
       output: { type: 'string' },
+      'index-output': { type: 'string' },
     },
   });
   for (const field of ['feeds-dir', 'public-key', 'key-id', 'output']) {
@@ -162,6 +174,12 @@ export function main(argv = process.argv.slice(2)) {
     channel: a.channel ?? 'stable',
     feeds,
   });
+  if (a['index-output']) {
+    const pins = JSON.parse(fs.readFileSync(new URL('../release/production-public-keys.json',import.meta.url),'utf8'));
+    if(a['key-id'] !== pins.updateKeyId || rendered.publicKeyBase64 !== extractRawEd25519PublicKeyBase64(pins.updatePublicKey)) throw Error('release_index_production_key_mismatch');
+    const index = renderDesktopReleaseIndex({keyId:a['key-id'],publicKeyPem,channel:a.channel??'stable',feeds});
+    const indexPath = path.resolve(a['index-output']);fs.mkdirSync(path.dirname(indexPath),{recursive:true});fs.writeFileSync(indexPath,index,'utf8');
+  }
   const outPath = path.resolve(a.output);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, rendered.source, { encoding: 'utf8' });

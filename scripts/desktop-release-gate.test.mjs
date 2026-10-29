@@ -27,3 +27,19 @@ test('known blocked artifact hash cannot be authorized by toggling review flags'
 test('missing and invalid policy states are not approvals',()=>{
  const p=approved();delete p.securityReview;assert.throws(()=>evaluateDesktopGates(p,options),/release_policy_invalid/);
 });
+
+test('community disclosure is explicit and never claims a vendor certificate',()=>{
+ const p=approved();
+ p.distributionProfile='community';
+ p.platformSigning={state:'disclosed',evidence:'release/community-install.txt',windows:'unsigned',macos:'adhoc-unnotarized',linux:'core-and-update-ed25519'};
+ assert.equal(evaluateDesktopGates(p,options).allowed,true);
+ delete p.distributionProfile;
+ assert.throws(()=>evaluateDesktopGates(p,options),/release_policy_invalid/);
+});
+test('prepublish retains installer requirements but defers Cloud readback until assets exist',()=>{
+ const p=approved();p.cloudDownloadReadback={state:'pending',evidence:null};
+ assert.equal(evaluateDesktopGates(p,{...options,mode:'prepublish'}).allowed,true);
+ assert.equal(evaluateDesktopGates(p,{...options,mode:'release'}).allowed,false);
+ p.installerTransaction={state:'pending',evidence:null};
+ assert.equal(evaluateDesktopGates(p,{...options,mode:'prepublish'}).allowed,false);
+});

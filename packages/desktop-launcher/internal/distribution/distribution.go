@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -149,6 +150,16 @@ func Locate() (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+	return Load(payloadRoot(exe, runtime.GOOS), EncodedManifest)
+}
+
+// A macOS app keeps non-code payloads in Resources, never inside MacOS where
+// codesign treats nested folders as code bundles. Paths remain compiler-pinned.
+func payloadRoot(exe, platform string) string {
 	root := filepath.Dir(exe)
-	return Load(root, EncodedManifest)
+	contents := filepath.Dir(root)
+	if platform == "darwin" && filepath.Base(root) == "MacOS" && filepath.Base(contents) == "Contents" && strings.HasSuffix(filepath.Base(filepath.Dir(contents)), ".app") {
+		return filepath.Join(contents, "Resources", "BlackHole")
+	}
+	return root
 }

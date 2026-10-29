@@ -6,7 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // A v2 daemon must not hold the replaceable Desktop installation open. The one
@@ -43,6 +46,19 @@ func safeRuntimeDirectory(dir string) error {
 }
 
 func verifyRuntimeCache(dir, nodeHash, licenseHash string) error {
+	// A losing concurrent Windows rename can briefly hold the published directory
+	// without read sharing. Retry only that OS lock error; integrity failures remain fatal.
+	for attempt := 0; ; attempt++ {
+		err := verifyRuntimeCacheOnce(dir, nodeHash, licenseHash)
+		if err == nil || runtime.GOOS != "windows" || attempt >= 25 ||
+			(!errors.Is(err, syscall.Errno(32)) && !errors.Is(err, syscall.Errno(33))) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func verifyRuntimeCacheOnce(dir, nodeHash, licenseHash string) error {
 	st, err := os.Lstat(dir)
 	if err != nil {
 		return err
